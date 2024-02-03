@@ -28,7 +28,7 @@ DEBUG = True
 
 ALLOWED_HOSTS = ['localhost', '20.101.63.100']
 
-CORS_ALLOWED_ORIGINS = ALLOWED_HOSTS
+CSRF_TRUSTED_ORIGINS = ['localhost', '20.101.63.100']
 
 AUTH_USER_MODEL = 'core_service.CustomUser'
 
