@@ -1,0 +1,67 @@
+import os
+import json
+from requests import get, post, Session
+from requests.auth import HTTPBasicAuth
+from pathlib import Path
+from dotenv import load_dotenv
+
+dotenv_path = os.path.join(Path(__file__).resolve().parent.parent, '.env')
+load_dotenv(dotenv_path)
+
+
+class RESTServices:
+
+	endpoint = os.getenv('SAP_URL')
+	username = os.getenv('SAP_USER')
+	password = os.getenv('SAP_PASS')
+
+	def __init__(self, ):
+		self.auth = None
+		self.session = None
+
+		self.connect()
+
+	def connect(self, ):
+		self.auth = HTTPBasicAuth(self.username, self.password)
+
+	def get_vendor_by_id(self, vendor_id, id_type='email'):
+		action_url = f'{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=1'
+		query_url = f"{action_url}&$filter=EMail/URI eq '{vendor_id}'"
+
+		if id_type == 'phone':
+			query_url = f"{action_url}&$filter=ConventionalPhone/NormalisedNumberDescription endswith('{vendor_id}')"
+
+		# Make a request with HTTP Basic Authentication
+		response = get(query_url, auth=self.auth)
+
+		if response.status_code == 200:
+			try:
+				response_json = json.loads(response.text)
+			except Exception as e:
+				raise e
+
+			results = response_json["d"]["results"]
+
+			if results:
+				return results[0]
+
+		return False
+
+	def get_vendor_purchase_orders(self, internal_id):
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khpurchaseorder/PurchaseOrderCollection?$format=json&$expand=Supplier&$filter=Supplier/PartyID eq '{internal_id}'"
+
+		# Make a request with HTTP Basic Authentication
+		response = get(action_url, auth=self.auth)
+
+		if response.status_code == 200:
+			try:
+				response_json = json.loads(response.text)
+			except Exception as e:
+				raise e
+
+			results = response_json["d"]["results"]
+
+			if results:
+				return results[0]
+
+		return False
