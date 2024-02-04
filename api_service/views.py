@@ -35,11 +35,9 @@ class NewUserView(APIView):
 					try:
 						obj, created = TempUser.objects.update_or_create(identifier=vendor_id, defaults=new_values)
 						if created:
-							# obj.update(**new_values)
 							return APIResponse(f'Verification process initiated for vendor \'{vendor_id}\'; please check your {id_type} for further instructions to verify your identity and complete your account setup.', status.HTTP_201_CREATED)
 						else:
-							print("not created")
-							return APIResponse(f'You have a pending verification, we have resent instructions to your {id_type} \'{vendor_id}\'.', status.HTTP_200_OK)
+							return APIResponse(f'Setup already initiated for vendor with {id_type} \'{vendor_id}\'.', status.HTTP_200_OK)
 
 					except IntegrityError as e:
 						return APIResponse(f'Vendor with {id_type} \'{vendor_id}\' has already been setup on the system.', status.HTTP_400_BAD_REQUEST)

@@ -42,15 +42,23 @@ class TempUser(models.Model):
 	byd_metadata = models.JSONField(default=dict)
 
 	def save(self, *args, **kwargs):
+
+		self.token = self.__generate_auth_token__()
+
 		if not self.verified and not self.account_created:
+			#If it's an update, update the token
+			kwargs["update_fields"].update({"token": self.token}) if kwargs.get("update_fields") else None
+
 			try:
 				self.__send_auth_email__() if self.id_type == 'email' else None
 				self.__send_auth_sms__() if self.id_type == 'phone' else None
+
 			except Exception as e:
 				raise e
+
 		elif self.verified and not self.account_created:
-			self.token = self.__generate_auth_token__()
 			print("send verification success email")
+
 		elif self.verified and self.account_created:
 			print("send account created email")
 
@@ -107,7 +115,7 @@ class TempUser(models.Model):
 		email.content_subtype = 'html'
 
 		logging.debug(f"{sender_name} <{email_from}>")
-
+		
 		try:
 			email.send()
 			return True

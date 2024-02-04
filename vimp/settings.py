@@ -28,7 +28,9 @@ DEBUG = True
 
 ALLOWED_HOSTS = ['localhost', '20.101.63.100']
 
-CSRF_TRUSTED_ORIGINS = ['localhost', '20.101.63.100']
+CORS_ORIGIN_ALLOW_ALL = True
+
+# CSRF_TRUSTED_ORIGINS = ['localhost:3000', '20.101.63.100', "*.wajesmarthrms.website"]
 
 AUTH_USER_MODEL = 'core_service.CustomUser'
 
