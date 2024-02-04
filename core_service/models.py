@@ -87,7 +87,7 @@ class TempUser(models.Model):
 		hash_concat = f'{self.identifier}{self.id_type}{self.byd_metadata["BusinessPartner"]["BusinessPartnerFormattedName"]}{self.token}'
 		id_hash.update(str.encode(hash_concat))
 
-		verification_link = f'{os.getenv("HOST")}/verifysetup?{id_hash.hexdigest()}={self.token}'
+		verification_link = f'{os.getenv("DEV_HOST")}/sign-up?{id_hash.hexdigest()}={self.token}'
 
 		template_file = os.getenv("VERIFICATION_EMAIL_TEMPLATE")
 		try:
