@@ -29,7 +29,8 @@ class RESTServices:
 		query_url = f"{action_url}&$filter=EMail/URI eq '{vendor_id}'"
 
 		if id_type == 'phone':
-			query_url = f"{action_url}&$filter=ConventionalPhone/NormalisedNumberDescription endswith('{vendor_id}')"
+			vendor_id = vendor_id.strip()[-10:]
+			query_url = f"{action_url}&$filter=substringof('{vendor_id}',ConventionalPhone/NormalisedNumberDescription)"
 
 		# Make a request with HTTP Basic Authentication
 		response = get(query_url, auth=self.auth)
@@ -48,7 +49,7 @@ class RESTServices:
 		return False
 
 	def get_vendor_purchase_orders(self, internal_id):
-		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khpurchaseorder/PurchaseOrderCollection?$format=json&$expand=Supplier&$filter=Supplier/PartyID eq '{internal_id}'"
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khpurchaseorder/PurchaseOrderCollection?$format=json&$expand=Supplier,Item&$filter=Supplier/PartyID eq '{internal_id}'"
 
 		# Make a request with HTTP Basic Authentication
 		response = get(action_url, auth=self.auth)
@@ -56,12 +57,17 @@ class RESTServices:
 		if response.status_code == 200:
 			try:
 				response_json = json.loads(response.text)
+				results = response_json["d"]["results"]
+
+				# Keys to unset
+				keys_to_unset = ['AttachmentFolder', 'Notes', 'PaymentTerms', 'BuyerParty', 'BillToParty', 'EmployeeResponsible', 'PurchasingUnit', 'Supplier', '__metadata']
+				for result in results:
+					# Unset keys from the dictionary
+					for key in keys_to_unset:
+						if key in result:
+							del result[key]
+				return results
 			except Exception as e:
 				raise e
-
-			results = response_json["d"]["results"]
-
-			if results:
-				return results[0]
 
 		return False

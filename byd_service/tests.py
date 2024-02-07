@@ -10,8 +10,8 @@ class RESTServicesTest(TestCase):
 		self.main_model = RESTServices()
 
 	def test_get_vendor_by_id(self):
-		results = self.main_model.get_vendor_by_id('babasola.olumide@gmail.com')
-
+		results = self.main_model.get_vendor_by_id('07033245515', "phone")
+		
 		# Assert that the response status code is 200 (OK)
 		self.assertEqual(type(results), dict)
 

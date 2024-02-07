@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
 from .overrides.rest_framework import APIResponse
+from rest_framework.permissions import IsAuthenticated
 from core_service.models import TempUser, VendorProfile
 from rest_framework_simplejwt.views import TokenObtainPairView
 from .serializers.user_serializers import CustomTokenObtainPairSerializer
@@ -92,8 +93,8 @@ class NewUserView(APIView):
 
 		except Exception as e:
 			logging.error(e)
-			raise e
 			return APIResponse("Internal Error.", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
 			
 class CustomTokenObtainPairView(TokenObtainPairView):
 
@@ -102,3 +103,21 @@ class CustomTokenObtainPairView(TokenObtainPairView):
 	def post(self, request, *args, **kwargs):
 		response = super().post(request, *args, **kwargs)
 		return APIResponse('Authenticated', status.HTTP_200_OK, data=response.data)
+
+
+class PurchaseOrdersView(APIView):
+
+	def get(self, request, *args, **kwargs):
+		try:
+			self.permission_classes = [IsAuthenticated]
+			pos = byd_rest_services.get_vendor_purchase_orders(request.user.username)
+			
+			if pos:
+				return APIResponse("Purchase Orders Retrieved", status.HTTP_200_OK, data=pos)
+
+		except Exception as e:
+			logging.error(e)
+			return APIResponse("Internal Error.", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+		return APIResponse("Error.", status.HTTP_400_BAD_REQUEST)
+		

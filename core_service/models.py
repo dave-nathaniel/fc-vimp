@@ -6,6 +6,7 @@ from django.contrib.auth.models import AbstractUser
 import hashlib, random
 from django.db import IntegrityError
 from django.core.mail import EmailMessage
+from .services import send_sms
 
 load_dotenv()
 
@@ -45,13 +46,17 @@ class TempUser(models.Model):
 
 		self.token = self.__generate_auth_token__()
 
+		id_hash = hashlib.sha256()
+		hash_concat = f'{self.identifier}{self.id_type}{self.byd_metadata["BusinessPartner"]["BusinessPartnerFormattedName"]}{self.token}'
+		id_hash.update(str.encode(hash_concat))
+
 		if not self.verified and not self.account_created:
 			#If it's an update, update the token
 			kwargs["update_fields"].update({"token": self.token}) if kwargs.get("update_fields") else None
 
 			try:
-				self.__send_auth_email__() if self.id_type == 'email' else None
-				self.__send_auth_sms__() if self.id_type == 'phone' else None
+				self.__send_auth_email__(id_hash) if self.id_type == 'email' else None
+				self.__send_auth_sms__(id_hash) if self.id_type == 'phone' else None
 
 			except Exception as e:
 				raise e
@@ -74,18 +79,14 @@ class TempUser(models.Model):
 
 		return t.hexdigest()
 
-	def __send_auth_email__(self, ):
-		sender_name = "Food Concepts Plc"
+	def __send_auth_email__(self, id_hash):
+		sender_name = os.getenv("MESSAGE_FROM")
 		email_from = os.getenv("EMAIL_USER")
 		merchant_name = str(self.byd_metadata["BusinessPartner"]["BusinessPartnerFormattedName"])
 		# email_to = self.identifier.strip().split(" ")
 		email_to = "davynathaniel@gmail.com oguntoyeadebola21@gmail.com".split(" ")
 		email_subject = f"Complete your account setup"
 		email_body = ""
-
-		id_hash = hashlib.sha256()
-		hash_concat = f'{self.identifier}{self.id_type}{self.byd_metadata["BusinessPartner"]["BusinessPartnerFormattedName"]}{self.token}'
-		id_hash.update(str.encode(hash_concat))
 
 		verification_link = f'{os.getenv("DEV_HOST")}/sign-up?{id_hash.hexdigest()}={self.token}'
 
@@ -125,8 +126,13 @@ class TempUser(models.Model):
 
 		return False
 
-	def __send_sms__(self, ):
-		pass
+	def __send_auth_sms__(self, id_hash):
+		sender_name = os.getenv("SMS_FROM")
+		verification_link = f'{self.token}'
+		message = f"Your vendor verification code is {verification_link[:5]}."
+		recipient = ["08101225426"]
+		
+		return send_sms(recipient, sender_name, message)
 
 	def __str__(self,):
 		return f'{self.identifier}\'s {self.id_type}'
