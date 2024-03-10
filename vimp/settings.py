@@ -55,7 +55,7 @@ INSTALLED_APPS = [
 	'corsheaders',
 
 	'core_service',
-	'egrn_service'
+	'egrn_service',
 ]
 
 REST_FRAMEWORK = {

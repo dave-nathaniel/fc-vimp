@@ -6,7 +6,7 @@ from django.db import IntegrityError
 from rest_framework.views import APIView
 from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
-from .overrides.rest_framework import APIResponse
+from overrides.rest_framework import APIResponse
 from rest_framework.permissions import IsAuthenticated
 from core_service.models import TempUser, VendorProfile
 from rest_framework_simplejwt.views import TokenObtainPairView
