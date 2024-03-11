@@ -1,7 +1,7 @@
 from rest_framework.response import Response
 
 class APIResponse(Response):
-    def __init__(self, message, status, **kwargs):
+    def __init__(self, message: object, status: object, **kwargs: object) -> object:
         response_data = {
             'message': message,
         }
