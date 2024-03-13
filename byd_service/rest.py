@@ -10,7 +10,6 @@ load_dotenv(dotenv_path)
 
 
 class RESTServices:
-
 	endpoint = os.getenv('SAP_URL')
 	username = os.getenv('SAP_USER')
 	password = os.getenv('SAP_PASS')
@@ -60,13 +59,38 @@ class RESTServices:
 				results = response_json["d"]["results"]
 
 				# Keys to unset
-				keys_to_unset = ['AttachmentFolder', 'Notes', 'PaymentTerms', 'BuyerParty', 'BillToParty', 'EmployeeResponsible', 'PurchasingUnit', 'Supplier', '__metadata']
+				keys_to_unset = ['AttachmentFolder', 'Notes', 'PaymentTerms', 'BuyerParty', 'BillToParty',
+								 'EmployeeResponsible', 'PurchasingUnit', 'Supplier', '__metadata']
 				for result in results:
 					# Unset keys from the dictionary
 					for key in keys_to_unset:
 						if key in result:
 							del result[key]
 				return results
+			except Exception as e:
+				raise e
+
+		return False
+
+	def get_purchase_order_by_id(self, PurchaseOrderID):
+		action_url: str = (f"{self.endpoint}/sap/byd/odata/cust/v1/khpurchaseorder/PurchaseOrderCollection?$format=json"
+						   f"&$expand=Supplier/SupplierName,Supplier/SupplierFormattedAddress,"
+						   f"Supplier/SupplierPostalAddress,PurchasingUnit/PurchasingUnitName,"
+						   f"EmployeeResponsible/EmployeeResponsibleName,BillToParty/BillToPartyName,"
+						   f"BuyerParty/BuyerPartyName,PaymentTerms,Notes,AttachmentFolder,"
+						   f"ApproverParty/ApproverPartyName,"
+						   f"Item/ItemShipToLocation/DeliveryAddress/DeliveryAddressName,"
+						   f"Item/ItemShipToLocation/DeliveryAddress/DeliveryPostalAddress&$filter=ID eq '"
+						   f"{PurchaseOrderID}'")
+
+		# Make a request with HTTP Basic Authentication
+		response = get(action_url, auth=self.auth)
+
+		if response.status_code == 200:
+			try:
+				response_json = json.loads(response.text)
+				results = response_json["d"]["results"]
+				return results[0] if results else False
 			except Exception as e:
 				raise e
 

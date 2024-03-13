@@ -97,9 +97,16 @@ class NewUserView(APIView):
 
 					new_user = User.objects.create_user(username=username, email=email, password=password)
 					new_user.first_name = temp_user.byd_metadata['BusinessPartner']['BusinessPartnerFormattedName'].strip()
-
-					# Create vendor profile
-					vendor = VendorProfile.objects.create(user=new_user, phone=phone, byd_internal_id=username, byd_metadata=temp_user.byd_metadata)
+					# We get or create because services like GRN might have already created a profile and
+					# attached models to it before the vendor does their onboarding.
+					vendor, created = VendorProfile.objects.get_or_create(byd_internal_id=internal_id)
+					# Attach the newly created user
+					vendor.user = new_user
+					# Phone from Byd
+					vendor.phone = phone
+					# Full BYD metadata
+					vendor.byd_metadata = temp_user.byd_metadata
+					# Save the model
 					vendor.save()
 
 					return APIResponse(f'Vendor \'{username}\' created.', status.HTTP_201_CREATED)

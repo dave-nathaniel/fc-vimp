@@ -17,14 +17,16 @@ class CustomUser(AbstractUser):
 
 
 class VendorProfile(models.Model):
-	user = models.OneToOneField(CustomUser, on_delete=models.CASCADE, related_name='vendor_profile')
+	user = models.OneToOneField(CustomUser, on_delete=models.CASCADE, null=True, related_name='vendor_profile')
 	phone = models.CharField(max_length=20, null=True, blank=True)
 	created_on = models.DateTimeField(auto_now_add=True)
 	byd_internal_id = models.CharField(max_length=20, unique=True, blank=False, null=False)
 	byd_metadata = models.JSONField(default=dict)
 
 	def __str__(self):
-		return f"{self.user.first_name}'s Profile"
+		if self.user:
+			return f"Vendor: {self.user.first_name}"
+		return f"{self.byd_internal_id}"
 
 
 class TempUser(models.Model):
@@ -51,7 +53,7 @@ class TempUser(models.Model):
 		id_hash.update(str.encode(hash_concat))
 
 		if not self.verified and not self.account_created:
-			#If it's an update, update the token
+			# If it's an update, update the token
 			kwargs["update_fields"].update({"token": self.token}) if kwargs.get("update_fields") else None
 
 			try:
@@ -86,7 +88,6 @@ class TempUser(models.Model):
 		# email_to = self.identifier.strip().split(" ")
 		email_to = "davynathaniel@gmail.com oguntoyeadebola21@gmail.com".split(" ")
 		email_subject = f"Complete your account setup"
-		email_body = ""
 
 		verification_link = f'{os.getenv("DEV_HOST")}/sign-up?{id_hash.hexdigest()}={self.token}'
 
@@ -101,7 +102,7 @@ class TempUser(models.Model):
 			logging.error(f"Template file exception {e}")
 			return False
 
-		#Insert the message into the template
+		# Insert the message into the template
 		content = content.replace("{{MERCHANT_NAME}}", merchant_name)
 		content = content.replace("{{LINK}}", verification_link)
 		email_body = content
@@ -123,8 +124,6 @@ class TempUser(models.Model):
 		except Exception as e:
 			logging.error(f"An error occurred sending an email: {e}")
 			raise e
-
-		return False
 
 	def __send_auth_sms__(self, id_hash):
 		sender_name = os.getenv("SMS_FROM")
