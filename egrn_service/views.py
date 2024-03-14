@@ -7,9 +7,10 @@ from django.db import IntegrityError
 from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
+from django.core.exceptions import ObjectDoesNotExist
 
-from .models import GoodsReceivedNote
-from .serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer
+from .models import GoodsReceivedNote, PurchaseOrder
+from .serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer, PurchaseOrderSerializer
 
 
 # Initialize REST services
@@ -97,6 +98,22 @@ def get_order_items(request, po_id):
     return APIResponse("Error.", status.HTTP_400_BAD_REQUEST)
 
 
+@api_view(['GET'])
+def get_order_with_grns(request, po_id):
+    try:
+        orders = PurchaseOrder.objects.get(po_id=po_id)
+        
+        serializer = PurchaseOrderSerializer(orders)
+        orders = serializer.data
+        
+        return APIResponse("Purchase Orders Retrieved", status.HTTP_200_OK, data=orders)
+        
+    except ObjectDoesNotExist:
+        return APIResponse(f"No GRNs created for PO {po_id}", status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+
 @api_view(['POST'])
 def create_grn(request,):
     identifier = "PONumber" #should be PO_ID
@@ -124,11 +141,11 @@ def create_grn(request,):
         
         # Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
         grn_serializer = GoodsReceivedNoteSerializer(created_grn)
-        related_line_items = created_grn.goodsreceivedlineitem_set.all()
-        line_items_serializer = GoodsReceivedLineItemSerializer(related_line_items, many=True)
+        # related_line_items = created_grn.goodsreceivedlineitem_set.all()
+        # line_items_serializer = GoodsReceivedLineItemSerializer(related_line_items, many=True)
         
         goods_received_note = grn_serializer.data
-        goods_received_note["line_items"] = line_items_serializer.data
+        # goods_received_note["line_items"] = line_items_serializer.data
         
         # print(po_data)
         return APIResponse("GRN Created", status.HTTP_201_CREATED, data=goods_received_note)
