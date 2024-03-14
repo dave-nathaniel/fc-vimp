@@ -77,7 +77,11 @@ class PurchaseOrderLineItem(models.Model):
 	quantity = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_price = models.DecimalField(max_digits=15, decimal_places=3)
 	metadata = models.JSONField(default=dict)
-
+	
+	# @property
+	# def outstanding_quantity(self):
+	# 	return self.grn_line_item.quantity_received
+		
 	def __str__(self):
 		return f"{self.product_name} ({self.quantity})"
 
@@ -133,8 +137,8 @@ class GoodsReceivedNote(models.Model):
 
 
 class GoodsReceivedLineItem(models.Model):
-	grn = models.ForeignKey(GoodsReceivedNote, on_delete=models.CASCADE)
-	purchase_order_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE)
+	grn = models.ForeignKey(GoodsReceivedNote, on_delete=models.CASCADE, related_name='line_items')
+	purchase_order_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE, related_name='grn_line_item')
 	quantity_received = models.DecimalField(max_digits=15, decimal_places=3, default=0.000)
 	
 	def save(self, *args, **kwargs):
