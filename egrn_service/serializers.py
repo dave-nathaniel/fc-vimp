@@ -1,14 +1,27 @@
 from rest_framework import serializers
 from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem
 from django.db.models import Sum
+from django.forms.models import model_to_dict
 
 class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
+	#items description, unit price, product code and amount
+	purchase_order = serializers.SerializerMethodField()
+	def get_purchase_order(self, obj):
+		po_model = obj.purchase_order_line_item
+		po_line_item = model_to_dict(po_model)
+		po_line_item.pop("metadata")
+		return  po_line_item
+	
 	class Meta:
 		model = GoodsReceivedLineItem
-		fields = ['id', 'grn', 'purchase_order_line_item', 'quantity_received']
+		fields = ['id', 'grn', 'quantity_received', 'purchase_order']
 
 class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	line_items = GoodsReceivedLineItemSerializer(many=True, read_only=True)
+	# purchase_order = serializers.SerializerMethodField()
+	#
+	# def get_purchase_order(self, obj):
+	# 	return obj.purchase_order
 	
 	class Meta:
 		model = GoodsReceivedNote

@@ -141,11 +141,35 @@ def create_grn(request,):
         
         # Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
         grn_serializer = GoodsReceivedNoteSerializer(created_grn)
-        # related_line_items = created_grn.goodsreceivedlineitem_set.all()
-        # line_items_serializer = GoodsReceivedLineItemSerializer(related_line_items, many=True)
-        
         goods_received_note = grn_serializer.data
-        # goods_received_note["line_items"] = line_items_serializer.data
         
         # print(po_data)
         return APIResponse("GRN Created", status.HTTP_201_CREATED, data=goods_received_note)
+    
+    
+@api_view(['GET'])
+def get_all_grns(request, ):
+    try:
+        grns = GoodsReceivedNote.objects.all()
+        # Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
+        grn_serializer = GoodsReceivedNoteSerializer(grns, many=True)
+        goods_received_note = grn_serializer.data
+        
+        return APIResponse("GRNs Retrieved", status.HTTP_200_OK, data=goods_received_note)
+    except Exception as e:
+        return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+def get_grn(request, grn_number):
+    try:
+        grn = GoodsReceivedNote.objects.get()
+        if grn:
+            # Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
+            grn_serializer = GoodsReceivedNoteSerializer(grn)
+            goods_received_note = grn_serializer.data
+            return APIResponse("GRN Retrieved", status.HTTP_200_OK, data=goods_received_note)
+        else:
+            return APIResponse("GRN Not Found", status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
