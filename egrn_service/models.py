@@ -87,7 +87,7 @@ class PurchaseOrderLineItem(models.Model):
 
 
 class GoodsReceivedNote(models.Model):
-	purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE)
+	purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='purchase_order')
 	store = models.ForeignKey(Store, on_delete=models.CASCADE)
 	grn_number = models.IntegerField(blank=False, null=False, unique=True)
 	received_date = models.DateField(auto_now=True)
