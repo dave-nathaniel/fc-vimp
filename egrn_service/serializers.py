@@ -9,8 +9,12 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	def get_purchase_order(self, obj):
 		po_model = obj.purchase_order_line_item
 		po_line_item = model_to_dict(po_model)
-		po_line_item.pop("metadata")
-		return  po_line_item
+		# metadata = po_line_item.pop("metadata")
+		# po_line_item["QuantityUnitCode"] = metadata["QuantityUnitCode"]
+		# po_line_item["QuantityUnitCodeText"] = metadata["QuantityUnitCodeText"]
+		# po_line_item["TaxAmount"] = metadata["TaxAmount"]
+		# po_line_item["TaxAmountCurrencyCode"] = metadata["TaxAmountCurrencyCode"]
+		return po_line_item
 	
 	class Meta:
 		model = GoodsReceivedLineItem

@@ -24,7 +24,7 @@ class RESTServices:
 		self.auth = HTTPBasicAuth(self.username, self.password)
 
 	def get_vendor_by_id(self, vendor_id, id_type='email'):
-		action_url = f'{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=1'
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=1"
 		query_url = f"{action_url}&$filter=EMail/URI eq '{vendor_id}'"
 
 		if id_type == 'phone':
@@ -75,11 +75,8 @@ class RESTServices:
 	def get_purchase_order_by_id(self, PurchaseOrderID):
 		action_url: str = (f"{self.endpoint}/sap/byd/odata/cust/v1/khpurchaseorder/PurchaseOrderCollection?$format=json"
 						   f"&$expand=Supplier/SupplierName,Supplier/SupplierFormattedAddress,"
-						   f"Supplier/SupplierPostalAddress,PurchasingUnit/PurchasingUnitName,"
-						   f"EmployeeResponsible/EmployeeResponsibleName,BillToParty/BillToPartyName,"
-						   f"BuyerParty/BuyerPartyName,PaymentTerms,Notes,AttachmentFolder,"
+						   f"Supplier/SupplierPostalAddress,"
 						   f"ApproverParty/ApproverPartyName,"
-						   f"Item/ItemShipToLocation/DeliveryAddress/DeliveryAddressName,"
 						   f"Item/ItemShipToLocation/DeliveryAddress/DeliveryPostalAddress&$filter=ID eq '"
 						   f"{PurchaseOrderID}'")
 
@@ -95,3 +92,6 @@ class RESTServices:
 				raise e
 
 		return False
+	
+	def create_order_receipt(self, ):
+		...
