@@ -6,30 +6,36 @@ from django.forms.models import model_to_dict
 class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	#items description, unit price, product code and amount
 	purchase_order = serializers.SerializerMethodField()
+	grn_id = serializers.SerializerMethodField()
+	grn_number = serializers.SerializerMethodField()
+	
 	def get_purchase_order(self, obj):
 		po_model = obj.purchase_order_line_item
 		po_line_item = model_to_dict(po_model)
-		# metadata = po_line_item.pop("metadata")
-		# po_line_item["QuantityUnitCode"] = metadata["QuantityUnitCode"]
-		# po_line_item["QuantityUnitCodeText"] = metadata["QuantityUnitCodeText"]
-		# po_line_item["TaxAmount"] = metadata["TaxAmount"]
-		# po_line_item["TaxAmountCurrencyCode"] = metadata["TaxAmountCurrencyCode"]
 		return po_line_item
+	
+	def get_grn_id(self, obj):
+		return obj.grn.id
+	
+	def get_grn_number(self, obj):
+		return obj.grn.grn_number
 	
 	class Meta:
 		model = GoodsReceivedLineItem
-		fields = ['id', 'grn', 'quantity_received', 'purchase_order']
+		fields = ['id', 'grn_id', 'grn_number', 'quantity_received', 'purchase_order']
+
 
 class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	line_items = GoodsReceivedLineItemSerializer(many=True, read_only=True)
-	# purchase_order = serializers.SerializerMethodField()
-	#
-	# def get_purchase_order(self, obj):
-	# 	return obj.purchase_order
+	po_id = serializers.SerializerMethodField()
+	
+	def get_po_id(self, obj):
+		return obj.purchase_order.po_id
 	
 	class Meta:
 		model = GoodsReceivedNote
-		fields = ['id', 'purchase_order', 'store', 'grn_number', 'received_date', 'line_items']
+		fields = ['id', 'po_id', 'store', 'grn_number', 'received_date', 'line_items']
+
 
 class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	grn_line_item = GoodsReceivedLineItemSerializer(many=True, read_only=True)
@@ -51,6 +57,7 @@ class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = PurchaseOrderLineItem
 		fields = ['object_id', 'product_name', 'quantity', 'unit_price', 'outstanding_quantity', 'completed_delivery', 'grn_line_item']
+
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):
 	Item = PurchaseOrderLineItemSerializer(many=True, read_only=True, source='line_items')
@@ -75,4 +82,4 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 	
 	class Meta:
 		model = PurchaseOrder
-		fields = ['id', 'vendor', 'object_id', 'po_id', 'total_net_amount', 'total_gross_amount', 'date', 'completed_delivery', 'Item']
+		fields = ['id', 'vendor', 'object_id', 'po_id', 'total_net_amount', 'total_gross_amount', 'date', 'completed_delivery', 'Item', 'metadata']
