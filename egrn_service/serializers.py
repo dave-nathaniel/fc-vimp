@@ -2,84 +2,103 @@ from rest_framework import serializers
 from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem
 from django.db.models import Sum
 from django.forms.models import model_to_dict
+from byd_service.rest import RESTServices
+
 
 class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
-	#items description, unit price, product code and amount
-	purchase_order = serializers.SerializerMethodField()
-	grn_id = serializers.SerializerMethodField()
+	# items description, unit price, product code and amount
+	purchase_order_line_item = serializers.SerializerMethodField()
 	grn_number = serializers.SerializerMethodField()
 	
-	def get_purchase_order(self, obj):
-		po_model = obj.purchase_order_line_item
-		po_line_item = model_to_dict(po_model)
+	def get_purchase_order_line_item(self, obj):
+		po_line_item = model_to_dict(obj.purchase_order_line_item)
+		po_line_item.pop('metadata')
 		return po_line_item
-	
-	def get_grn_id(self, obj):
-		return obj.grn.id
 	
 	def get_grn_number(self, obj):
 		return obj.grn.grn_number
 	
 	class Meta:
 		model = GoodsReceivedLineItem
-		fields = ['id', 'grn_id', 'grn_number', 'quantity_received', 'purchase_order']
-
-
-class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
-	line_items = GoodsReceivedLineItemSerializer(many=True, read_only=True)
-	po_id = serializers.SerializerMethodField()
-	
-	def get_po_id(self, obj):
-		return obj.purchase_order.po_id
-	
-	class Meta:
-		model = GoodsReceivedNote
-		fields = ['id', 'po_id', 'store', 'grn_number', 'received_date', 'line_items']
+		fields = ['id', 'grn_number', 'quantity_received', 'date_received', 'purchase_order_line_item']
 
 
 class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
-	grn_line_item = GoodsReceivedLineItemSerializer(many=True, read_only=True)
+	grn_line_items = serializers.SerializerMethodField()
 	outstanding_quantity = serializers.SerializerMethodField()
-	completed_delivery = serializers.SerializerMethodField()
+	delivery_status_code = serializers.SerializerMethodField()
+	delivery_status_text = serializers.SerializerMethodField()
+	delivered_quantity = serializers.SerializerMethodField()
+	delivery_completed = serializers.SerializerMethodField()
+	
+	# get delivered quantity
+	def get_delivered_quantity(self, obj):
+		return obj.delivered_quantity
 	
 	def get_outstanding_quantity(self, obj):
-		# Access related GoodsReceivedLineItem instances and calculate total received quantity
-		total_received_quantity = obj.grn_line_item.aggregate(total_received=Sum('quantity_received'))['total_received']
-		if total_received_quantity is None:
-			total_received_quantity = 0
 		# Calculate and return outstanding quantity
-		return obj.quantity - total_received_quantity
+		return float(obj.quantity) - float(obj.delivered_quantity)
 	
-	def get_completed_delivery(self, obj):
+	def get_delivery_status_code(self, obj):
+		return obj.delivery_status[0]
+	
+	def get_delivery_status_text(self, obj):
+		return obj.delivery_status[1]
+	
+	def get_delivery_completed(self, obj):
 		# Check if outstanding quantity is equal to the quantity
 		return self.get_outstanding_quantity(obj) == 0
 	
+	def get_grn_line_items(self, obj):
+		# return the grn_line_items using model_to_dict
+		all_grn_line_items = obj.grn_line_item.all()
+		grn_line_items_serializer = GoodsReceivedLineItemSerializer(all_grn_line_items, many=True).data
+		without_the_po_line_item = [item.pop('purchase_order_line_item') for item in grn_line_items_serializer]
+		return grn_line_items_serializer
+	
 	class Meta:
 		model = PurchaseOrderLineItem
-		fields = ['object_id', 'product_name', 'quantity', 'unit_price', 'outstanding_quantity', 'completed_delivery', 'grn_line_item']
+		fields = ['object_id', 'product_name', 'unit_price', 'quantity', 'unit_of_measurement', 'delivery_status_code',
+		          'delivery_status_text', 'delivered_quantity', 'outstanding_quantity', 'delivery_completed',
+		          'metadata', 'grn_line_items']
 
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):
 	Item = PurchaseOrderLineItemSerializer(many=True, read_only=True, source='line_items')
-	completed_delivery = serializers.SerializerMethodField()
+	delivery_status_code = serializers.SerializerMethodField()
+	delivery_status_text = serializers.SerializerMethodField()
+	delivery_completed = serializers.SerializerMethodField()
 	vendor = serializers.SerializerMethodField()
 	
-	def get_completed_delivery(self, obj):
-		# Retrieve all related PurchaseOrderLineItems
-		line_items = obj.line_items.all()
-		# Check if all PurchaseOrderLineItems are completed
-		for line_item in line_items:
-			total_received_quantity = line_item.grn_line_item.aggregate(total_received=Sum('quantity_received'))[
-				'total_received']
-			if total_received_quantity is None:
-				total_received_quantity = 0
-			if line_item.quantity - total_received_quantity != 0:
-				return False
-		return True
-	
 	def get_vendor(self, obj):
+		# vendor = byd_rest_services.get_vendor_by_id(obj.vendor.byd_internal_id, id_type=query_param[1])
 		return obj.vendor.byd_internal_id
+	
+	def get_delivery_status_code(self, obj):
+		return obj.delivery_status[0]
+	
+	def get_delivery_status_text(self, obj):
+		return obj.delivery_status[1]
+	
+	def get_delivery_completed(self, obj):
+		return obj.delivery_status[0] == 3
 	
 	class Meta:
 		model = PurchaseOrder
-		fields = ['id', 'vendor', 'object_id', 'po_id', 'total_net_amount', 'total_gross_amount', 'date', 'completed_delivery', 'Item', 'metadata']
+		fields = ['po_id', 'object_id', 'vendor', 'total_net_amount', 'date', 'delivery_status_code',
+		          'delivery_status_text', 'delivery_completed', 'Item', 'metadata']
+
+
+class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
+	purchase_order = serializers.SerializerMethodField()
+	line_items = GoodsReceivedLineItemSerializer(many=True, read_only=True)
+	
+	def get_purchase_order(self, obj):
+		po_dict = PurchaseOrderSerializer(obj.purchase_order, many=False).data
+		po_dict.pop('metadata')
+		po_dict.pop('Item')
+		return po_dict
+	
+	class Meta:
+		model = GoodsReceivedNote
+		fields = ['grn_number', 'store', 'created', 'purchase_order', 'line_items']
