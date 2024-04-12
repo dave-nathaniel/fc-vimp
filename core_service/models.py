@@ -25,7 +25,7 @@ class VendorProfile(models.Model):
 
 	def __str__(self):
 		if self.user:
-			return f"Vendor: {self.user.first_name}"
+			return f"{self.byd_internal_id} | {self.user.email}"
 		return f"{self.byd_internal_id}"
 
 
@@ -135,4 +135,4 @@ class TempUser(models.Model):
 
 	def __str__(self,):
 		return f'{self.identifier}\'s {self.id_type}'
-
+	

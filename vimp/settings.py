@@ -56,6 +56,7 @@ INSTALLED_APPS = [
 
 	'core_service',
 	'egrn_service',
+	'invoice_service',
 ]
 
 REST_FRAMEWORK = {
