@@ -1,8 +1,6 @@
 from rest_framework import serializers
 from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem
-from django.db.models import Sum
 from django.forms.models import model_to_dict
-from byd_service.rest import RESTServices
 
 
 class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
@@ -12,6 +10,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	
 	def get_purchase_order_line_item(self, obj):
 		po_line_item = model_to_dict(obj.purchase_order_line_item)
+		po_line_item['ItemShipToLocation'] = po_line_item['metadata']['ItemShipToLocation']
 		po_line_item.pop('metadata')
 		return po_line_item
 	
@@ -31,7 +30,6 @@ class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	delivered_quantity = serializers.SerializerMethodField()
 	delivery_completed = serializers.SerializerMethodField()
 	
-	# get delivered quantity
 	def get_delivered_quantity(self, obj):
 		return obj.delivered_quantity
 	
@@ -53,7 +51,8 @@ class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 		# return the grn_line_items using model_to_dict
 		all_grn_line_items = obj.grn_line_item.all()
 		grn_line_items_serializer = GoodsReceivedLineItemSerializer(all_grn_line_items, many=True).data
-		without_the_po_line_item = [item.pop('purchase_order_line_item') for item in grn_line_items_serializer]
+		for item in grn_line_items_serializer:
+			item.pop('purchase_order_line_item')
 		return grn_line_items_serializer
 	
 	class Meta:
@@ -71,7 +70,6 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 	vendor = serializers.SerializerMethodField()
 	
 	def get_vendor(self, obj):
-		# vendor = byd_rest_services.get_vendor_by_id(obj.vendor.byd_internal_id, id_type=query_param[1])
 		return obj.vendor.byd_internal_id
 	
 	def get_delivery_status_code(self, obj):
@@ -95,6 +93,7 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	
 	def get_purchase_order(self, obj):
 		po_dict = PurchaseOrderSerializer(obj.purchase_order, many=False).data
+		po_dict["BuyerParty"] = obj.purchase_order.metadata["BuyerParty"]
 		po_dict.pop('metadata')
 		po_dict.pop('Item')
 		return po_dict
