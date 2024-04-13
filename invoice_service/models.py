@@ -6,7 +6,7 @@ from datetime import datetime
 
 # Create your models here.
 class Surcharge(models.Model):
-	code = models.IntegerField(max_length=5, verbose_name='Code')
+	code = models.IntegerField(verbose_name='Code')
 	description = models.CharField(max_length=255, verbose_name='Description')
 	type = models.CharField(max_length=50, blank=False, null=False, default="Value Added Tax", verbose_name='Type')
 	rate = models.DecimalField(max_digits=6, decimal_places=3, verbose_name='Rate')
@@ -47,7 +47,7 @@ class InvoiceLineItem(models.Model):
 		('fixed', 'Fixed'),
 		('none', 'None'),
 	]
-	invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="invoive_line_items")
+	invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="invoice_line_items")
 	po_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE)
 	quantity = models.DecimalField(max_digits=15, decimal_places=3, null=False, blank=False, default=0.00)
 	surcharges = models.ManyToManyField(Surcharge)

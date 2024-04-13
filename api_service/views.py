@@ -1,27 +1,23 @@
 # Import necessary modules and classes
+import sys
 import logging
 import hashlib
-import sys
-
-from django.core.exceptions import ObjectDoesNotExist
-from rest_framework import status
 from django.db import IntegrityError
+from django.core.exceptions import ObjectDoesNotExist
+from django.contrib.auth import get_user_model
+from rest_framework import status
 from rest_framework.decorators import permission_classes, api_view
 from rest_framework.views import APIView
-from byd_service.rest import RESTServices
-from django.contrib.auth import get_user_model
-from overrides.rest_framework import APIResponse
 from rest_framework.permissions import IsAuthenticated
-from core_service.models import TempUser, VendorProfile
 from rest_framework_simplejwt.views import TokenObtainPairView
+from overrides.rest_framework import APIResponse
 from .serializers.user_serializers import CustomTokenObtainPairSerializer
-
-from egrn_service.models import PurchaseOrder
 from egrn_service.serializers import PurchaseOrderSerializer
-
-# from invoice_service.models import Invoice, InvoiceLineItem, Surcharge
 from invoice_service.serializers import InvoiceSerializer, InvoiceLineItemSerializer
-from django.shortcuts import get_object_or_404
+from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem
+from core_service.models import TempUser, VendorProfile
+# from invoice_service.models import Invoice, InvoiceLineItem, Surcharge
+from byd_service.rest import RESTServices
 
 # Initialize REST services
 byd_rest_services = RESTServices()
@@ -177,27 +173,31 @@ def get_vendors_orders(request, po_id=None):
 @api_view(['POST'])
 @permission_classes((IsAuthenticated,))
 def create_invoice(request):
+	# The request must be a POST request
 	data = request.data
-	
+	# Required fields
+	required_fields = ['po_id', 'vendor_document_id', 'due_date', 'payment_terms', 'payment_reason', 'invoice_line_items']
 	# Check if all required fields are present
-	required_fields = ['po_id', 'vendor_document_id', 'due_date', 'payment_terms', 'payment_reason',
-	                   'invoice_line_items']
-	for field in required_fields:
-		if field not in data:
-			return Response({"error": f"Missing required field: {field}"}, status=status.HTTP_400_BAD_REQUEST)
+	if not all(field in data for field in required_fields):
+		return APIResponse(f"Missing required fields: {required_fields}", status=status.HTTP_400_BAD_REQUEST)
 	
-	# Retrieve the PurchaseOrder object
-	purchase_order_id = data['po_id']
-	purchase_order = get_object_or_404(PurchaseOrder, pk=purchase_order_id)
+	try:
+		# Retrieve the PurchaseOrder object
+		purchase_order_id = data['po_id']
+		purchase_order = PurchaseOrder.objects.get(po_id=purchase_order_id, vendor=request.user.vendor_profile)
+	except ObjectDoesNotExist:
+		return APIResponse(f"A Purchase Order with ID {purchase_order_id} was not found for this vendor.", status=status.HTTP_404_NOT_FOUND)
 	
 	# Create the Invoice object
 	invoice_data = {
-		'purchase_order': purchase_order,
-		'supplier_document_id': data.get('vendor_document_id'),
+		'purchase_order': purchase_order.id,  # Associate with the purchase order
+		'supplier': request.user.vendor_profile.id,  # Associate with the vendor
+		'external_document_id': data.get('vendor_document_id'),
 		'description': data.get('description', ''),
 		'due_date': data['due_date'],
 		'payment_terms': data['payment_terms'],
 		'payment_reason': data['payment_reason'],
+		'invoice_line_items': data['invoice_line_items'],
 	}
 	invoice_serializer = InvoiceSerializer(data=invoice_data)
 	if invoice_serializer.is_valid():
@@ -206,21 +206,27 @@ def create_invoice(request):
 		return APIResponse(invoice_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 	
 	# Create InvoiceLineItem objects
-	line_items_data = data['invoice_line_items']
-	for line_item_data in line_items_data:
-		# Retrieve PurchaseOrderLineItem object
-		po_item_object_id = line_item_data['po_item_object_id']
-		po_line_item = get_object_or_404(PurchaseOrderLineItem, object_id=po_item_object_id)
-		
+	invoice_line_items = data['invoice_line_items']
+	for line_item in invoice_line_items:
+		try:
+			# Retrieve PurchaseOrderLineItem object
+			po_item_object_id = line_item['po_line_item']
+			po_line_item = PurchaseOrderLineItem.objects.get(object_id=po_line_item, purchase_order=purchase_order.id)
+		except ObjectDoesNotExist:
+			# Rollback the created invoice if line item creation fails
+			invoice.delete()
+			return APIResponse(f"A Purchase Order Line Item with ID {po_line_item} was not found for this purchase order.",
+		                   status=status.HTTP_400_BAD_REQUEST)
+
 		# Create InvoiceLineItem object
-		line_item_data['invoice'] = invoice.id  # Associate with the created invoice
-		line_item_data['po_line_item'] = po_line_item.id  # Associate with the corresponding PO line item
-		line_item_serializer = InvoiceLineItemSerializer(data=line_item_data)
+		line_item['invoice'] = invoice.id  # Associate with the created invoice
+		line_item['po_line_item'] = po_line_item.id  # Associate with the corresponding PO line item
+		line_item_serializer = InvoiceLineItemSerializer(data=line_item)
 		if line_item_serializer.is_valid():
 			line_item_serializer.save()
 		else:
 			# Rollback the created invoice if line item creation fails
 			invoice.delete()
-			return Response(line_item_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-	
-	return Response({"message": "Invoice created successfully"}, status=status.HTTP_201_CREATED)
+			return APIResponse(line_item_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+		
+	return APIResponse("Invoice created successfully", status=status.HTTP_201_CREATED)

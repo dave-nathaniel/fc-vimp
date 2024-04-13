@@ -9,7 +9,8 @@ class SurchargeSerializer(serializers.ModelSerializer):
 
 
 class InvoiceLineItemSerializer(serializers.ModelSerializer):
-	surcharges = SurchargeSerializer(many=True)
+	# surcharges = SurchargeSerializer(many=True)
+	po_line_item = serializers.SerializerMethodField()
 	
 	class Meta:
 		model = InvoiceLineItem
@@ -17,10 +18,13 @@ class InvoiceLineItemSerializer(serializers.ModelSerializer):
 	
 	def create(self, validated_data):
 		surcharge_data = validated_data.pop('surcharges')
+		surcharges = Surcharge.objects.filter(id__in=surcharge_data)
 		invoice_line_item = InvoiceLineItem.objects.create(**validated_data)
-		for surcharge in surcharge_data:
-			invoice_line_item.surcharges.add(Surcharge.objects.get(pk=surcharge['id']))
+		invoice_line_item.surcharges.set(surcharges)
 		return invoice_line_item
+	
+	def get_po_line_item(self, obj):
+		return obj.po_line_item.id
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
@@ -28,12 +32,12 @@ class InvoiceSerializer(serializers.ModelSerializer):
 	
 	class Meta:
 		model = Invoice
-		fields = ['purchase_order', 'supplier_document_id', 'description', 'due_date', 'payment_terms',
+		fields = ['purchase_order', 'supplier', 'external_document_id', 'description', 'due_date', 'payment_terms',
 		          'payment_reason', 'invoice_line_items']
 	
 	def create(self, validated_data):
-		line_items_data = validated_data.pop('invoice_line_items')
+		invoice_line_items = validated_data.pop('invoice_line_items')
 		invoice = Invoice.objects.create(**validated_data)
-		for line_item_data in line_items_data:
-			InvoiceLineItem.objects.create(invoice=invoice, **line_item_data)
+		for line_item in invoice_line_items:
+			InvoiceLineItem.objects.create(invoice=invoice, **line_item)
 		return invoice
