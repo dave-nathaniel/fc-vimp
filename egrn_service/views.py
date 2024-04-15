@@ -87,7 +87,6 @@ def get_order_items(request, po_id):
 	                "Item"]
 	try:
 		orders = byd_rest_services.get_purchase_order_by_id(po_id)
-		# orders = filter_objects(keys_to_keep, list(map(delete_items, orders)))
 		
 		if orders:
 			return APIResponse("Purchase Orders Retrieved", status.HTTP_200_OK, data=orders)
@@ -105,7 +104,6 @@ def get_order_items(request, po_id):
 def get_order_with_grns(request, po_id):
 	try:
 		orders = PurchaseOrder.objects.get(po_id=po_id)
-		
 		serializer = PurchaseOrderSerializer(orders)
 		orders = serializer.data
 		
