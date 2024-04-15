@@ -1,8 +1,5 @@
 from django.db import models
 from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem
-from core_service.models import VendorProfile
-from datetime import datetime
-
 
 # Create your models here.
 class Surcharge(models.Model):
@@ -18,15 +15,10 @@ class Surcharge(models.Model):
 
 
 class Invoice(models.Model):
-	purchase_order = models.OneToOneField(
+	purchase_order = models.ForeignKey(
 		PurchaseOrder,
 		on_delete=models.CASCADE,
 		related_name="invoice",
-	)
-	supplier = models.ForeignKey(
-		VendorProfile,
-		on_delete=models.CASCADE,
-		related_name="invoices",
 	)
 	external_document_id = models.CharField(max_length=32, blank=True, null=True)
 	description = models.TextField(blank=True, null=True)
@@ -48,12 +40,14 @@ class InvoiceLineItem(models.Model):
 		('none', 'None'),
 	]
 	invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="invoice_line_items")
-	po_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE)
-	quantity = models.DecimalField(max_digits=15, decimal_places=3, null=False, blank=False, default=0.00)
+	po_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE, related_name="invoice_items")
 	surcharges = models.ManyToManyField(Surcharge)
+	quantity = models.DecimalField(max_digits=15, decimal_places=3, null=False, blank=False, default=0.00)
 	discountable = models.BooleanField(default=False)
 	discount_type = models.CharField(
 		max_length=10,
+		blank=False,
+		null=False,
 		choices=discount_types,
 		default=discount_types[2][0],
 		verbose_name="Discount Type"
@@ -67,5 +61,15 @@ class InvoiceLineItem(models.Model):
 		verbose_name="Discount"
 	)
 	
+	# Computed property gross_total that returns the gross total of the line item
+	@property
+	def gross_total(self):
+		return float(self.quantity) * float(self.po_line_item.unit_price)
+	
+	# Computed property discounted_gross_total that returns the gross total of the line item after applying the discount
+	@property
+	def discounted_gross_total(self, ):
+		...
+	
 	def __str__(self):
-		return f"{self.description} ({self.quantity})"
+		return f"{self.po_line_item.product_name} ({self.quantity})"
