@@ -59,8 +59,8 @@ class NewUserView(APIView):
 						return APIResponse(
 							f'Vendor with {id_type} \'{vendor_id}\' has already been setup on the system.',
 							status.HTTP_400_BAD_REQUEST)
-				
-				return APIResponse(f'No vendor found with {id_type} \'{vendor_id}\'', status.HTTP_404_NOT_FOUND)
+				else:
+					return APIResponse(f'No vendor found with {id_type} \'{vendor_id}\'', status.HTTP_404_NOT_FOUND)
 			
 			if action == 'verifysetup':
 				# Extract data from request
@@ -83,6 +83,8 @@ class NewUserView(APIView):
 						temp_user.save()
 					
 					return APIResponse("Verification successful", status.HTTP_200_OK, data={"token": temp_user.token})
+				else:
+					return APIResponse(f'Invalid parameters.', status.HTTP_400_BAD_REQUEST)
 			
 			if action == 'createpassword':
 				# Extract data from request
@@ -122,14 +124,14 @@ class NewUserView(APIView):
 					vendor.save()
 					
 					return APIResponse(f'Vendor \'{username}\' created.', status.HTTP_201_CREATED)
-				
-				return APIResponse(f'Illegal operation.', status.HTTP_401_UNAUTHORIZED)
+				else:
+					return APIResponse(f'Illegal operation.', status.HTTP_400_BAD_REQUEST)
 			
-			return APIResponse("Malformed Request.", status.HTTP_400_BAD_REQUEST)
+			return APIResponse("Unknown operation.", status.HTTP_400_BAD_REQUEST)
 		
 		except Exception as e:
 			logging.error(e)
-			return APIResponse("Internal Error.", status.HTTP_500_INTERNAL_SERVER_ERROR)
+			return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class VendorProfileView(APIView):
