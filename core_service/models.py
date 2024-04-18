@@ -20,10 +20,10 @@ class CustomUser(AbstractUser):
 
 class TempUser(models.Model):
 	"""docstring for TempUser"""
-	_ID_TYPES = {
+	_ID_TYPES = (
 		("email", "EMAIL"),
 		("phone", "PHONE")
-	}
+	)
 	
 	identifier = models.CharField(max_length=255, null=False, blank=False, unique=True)
 	id_type = models.CharField(max_length=7, null=False, blank=False, choices=_ID_TYPES)
@@ -58,7 +58,7 @@ class TempUser(models.Model):
 		elif self.verified and self.account_created:
 			print("send account created email")
 		
-		super(TempUser, self).save(*args, **kwargs)
+		return super().save(*args, **kwargs)
 	
 	def __generate_auth_token__(self, ):
 		t = hashlib.sha256()
