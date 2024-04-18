@@ -141,8 +141,9 @@ class VendorProfile(models.Model):
 		}
 	
 	def save(self, *args, **kwargs):
-		# if this is a new instance, set the default settings
-		self.vendor_settings = self.__default_settings__() if not self.pk else self.vendor_settings
+		# if this vendor has no settings, add the default settings; but make sure a user has also been assigned too
+		if not self.vendor_settings and self.user:
+			self.vendor_settings = self.__default_settings__()
 		# If the data has been passed in, update accordingly
 		data = kwargs.pop('data') if kwargs.get('data') else {}
 		# If the vendor settings have been passed, merge with existing settings

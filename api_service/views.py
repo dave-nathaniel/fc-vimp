@@ -90,10 +90,8 @@ class NewUserView(APIView):
 				# Extract data from request
 				token = request.data.get("token")
 				password = request.data.get("new_password")
-				
 				# Fetch temporary user with provided token
 				temp_user = TempUser.objects.filter(token=token).first()
-				
 				if temp_user and temp_user.verified and not temp_user.account_created:
 					# Extract user details from metadata
 					business_name = temp_user.byd_metadata['BusinessPartner']['BusinessPartnerFormattedName'].strip()
@@ -102,8 +100,7 @@ class NewUserView(APIView):
 					email = temp_user.identifier if temp_user.id_type == 'email' else temp_user.byd_metadata['Email'][
 						'URI']
 					phone = temp_user.byd_metadata['ConventionalPhone'].get('NormalisedNumberDescription', None)
-					phone = phone[:-10] if phone else phone
-					
+					phone = phone[-10:] if phone else phone
 					# Update temporary user and create new user
 					temp_user.account_created = True
 					temp_user.save()
