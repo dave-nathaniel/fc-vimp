@@ -135,10 +135,15 @@ class VendorProfile(models.Model):
 	vendor_settings = models.JSONField(default=dict, blank=True)
 	
 	def __default_settings__(self):
-		return {
-			"logo": self.generate_vendor_logo(),
-			"invoice_color": "#000000",
-		}
+		default_settings = {}
+		# Default invoice color
+		default_settings["invoice_color"] = "#000000"
+		try:
+			default_settings["logo"] = self.generate_vendor_logo()
+		except Exception as e:
+			logging.error(f"An error occurred generating the logo: {e}")
+		
+		return default_settings
 	
 	def save(self, *args, **kwargs):
 		# if this vendor has no settings, add the default settings; but make sure a user has also been assigned too
