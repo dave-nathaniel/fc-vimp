@@ -9,15 +9,14 @@ from rest_framework import status
 from rest_framework.decorators import permission_classes, api_view
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
-from rest_framework_simplejwt.views import TokenObtainPairView
 from overrides.rest_framework import APIResponse
-from .serializers.user_serializers import CustomTokenObtainPairSerializer
-from egrn_service.serializers import PurchaseOrderSerializer
-from invoice_service.serializers import InvoiceSerializer, InvoiceLineItemSerializer, SurchargeSerializer
-from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem
-from core_service.models import TempUser, VendorProfile
-from invoice_service.models import Invoice, Surcharge
 from byd_service.rest import RESTServices
+from core_service.models import TempUser, VendorProfile
+from core_service.serializers import VendorProfileSerializer
+from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem
+from egrn_service.serializers import PurchaseOrderSerializer
+from invoice_service.models import Invoice, Surcharge
+from invoice_service.serializers import InvoiceSerializer, InvoiceLineItemSerializer, SurchargeSerializer
 
 # Initialize REST services
 byd_rest_services = RESTServices()
@@ -29,7 +28,6 @@ User = get_user_model()
 class NewUserView(APIView):
 	
 	def post(self, request, *args, **kwargs):
-		
 		# Get the action from URL parameters
 		action = kwargs.get("action")
 		
@@ -134,17 +132,122 @@ class NewUserView(APIView):
 			return APIResponse("Internal Error.", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
-# Custom Token Obtain Pair View
-class CustomTokenObtainPairView(TokenObtainPairView):
-	# Override the default serializer class
-	serializer_class = CustomTokenObtainPairSerializer
+class VendorProfileView(APIView):
+	"""
+    Retrieve, update or delete a vendor profile instance.
+    """
+	serializer_class = VendorProfileSerializer
+	permission_classes = (IsAuthenticated,)
 	
-	# Override the default permission classes
-	def post(self, request, *args, **kwargs):
-		response = super().post(request, *args, **kwargs)
-		return APIResponse('Authenticated', status.HTTP_200_OK, data=response.data)
+	def get(self, request, format=None):
+		try:
+			vendor_profile = VendorProfile.objects.get(user=request.user)
+		except ObjectDoesNotExist:
+			return APIResponse(f"A Vendor Profile was not found for this user.", status=status.HTTP_404_NOT_FOUND)
+		
+		vendor_profile_serializer = VendorProfileSerializer(vendor_profile)
+		return APIResponse("Vendor Profile Retrieved", status.HTTP_200_OK, data=vendor_profile_serializer.data)
+
+	def put(self, request, format=None):
+		"""
+		Update the Vendor's Profile.
+		"""
+		try:
+			vendor_profile = VendorProfile.objects.get(user=request.user)
+		except ObjectDoesNotExist:
+			return APIResponse(f"No profile found for this vendor.", status=status.HTTP_404_NOT_FOUND)
+		
+		update = {**request.data}
+		vendor_profile_serializer = VendorProfileSerializer(vendor_profile, data=update, partial=True)
+		
+		if vendor_profile_serializer.is_valid():
+			vendor_profile.save(data={**vendor_profile_serializer.validated_data})
+			return APIResponse("Vendor Profile Updated", status.HTTP_200_OK, data=vendor_profile_serializer.data)
+		else:
+			return APIResponse(vendor_profile_serializer.errors, status.HTTP_400_BAD_REQUEST)
 
 
+class VendorInvoiceView(APIView):
+	"""
+    Retrieve, update or delete a vendor invoice instance.
+    """
+	serializer_class = InvoiceSerializer
+	permission_classes = (IsAuthenticated,)
+	
+	def get(self, request):
+		# Get all invoices for the authenticated vendor
+		invoices = Invoice.objects.filter(purchase_order__vendor=request.user.vendor_profile)
+		serializer = InvoiceSerializer(invoices, many=True)
+		return APIResponse("Invoices Retrieved", status.HTTP_200_OK, data=serializer.data)
+	
+	def post(self, request):
+		# The request must be a POST request
+		data = request.data
+		# Required fields
+		required_fields = ['po_id', 'vendor_document_id', 'due_date', 'payment_terms', 'payment_reason',
+		                   'invoice_line_items']
+		# Check if all required fields are present
+		if not all(field in data for field in required_fields):
+			return APIResponse(f"Missing required fields: {required_fields}", status=status.HTTP_400_BAD_REQUEST)
+		
+		try:
+			# Retrieve the PurchaseOrder object
+			purchase_order_id = data['po_id']
+			purchase_order = PurchaseOrder.objects.get(po_id=purchase_order_id, vendor=request.user.vendor_profile)
+		except ObjectDoesNotExist:
+			return APIResponse(f"A Purchase Order with ID {purchase_order_id} was not found for this vendor.",
+			                   status=status.HTTP_404_NOT_FOUND)
+		
+		# Create the Invoice object
+		invoice_data = {
+			'purchase_order': purchase_order.id,  # Associate with the purchase order
+			'external_document_id': data.get('vendor_document_id'),
+			'description': data.get('description', ''),
+			'due_date': data['due_date'],
+			'payment_terms': data['payment_terms'],
+			'payment_reason': data['payment_reason']
+		}
+		invoice_serializer = InvoiceSerializer(data=invoice_data)
+		if invoice_serializer.is_valid():
+			invoice = invoice_serializer.save()
+		else:
+			# print invoice not created
+			return APIResponse(invoice_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+		# Create InvoiceLineItem objects
+		for line_item in data.get('invoice_line_items', []):
+			po_item_object_id = line_item['po_line_item']
+			try:
+				# Retrieve PurchaseOrderLineItem object
+				po_line_item = PurchaseOrderLineItem.objects.get(object_id=po_item_object_id,
+				                                                 purchase_order=purchase_order.id)
+			except ObjectDoesNotExist:
+				# Rollback the created invoice if line item creation fails
+				invoice.delete()
+				return APIResponse(
+					f"A Purchase Order Line Item with ID {po_line_item} was not found for this purchase order.",
+					status=status.HTTP_400_BAD_REQUEST)
+			
+			# Create InvoiceLineItem object
+			line_item['invoice'] = invoice.id  # Associate with the created invoice
+			line_item['po_line_item'] = po_line_item.id  # Associate with the corresponding PO line item
+			line_item['surcharge_ids'] = line_item.pop('surcharges')
+			
+			try:
+				line_item_serializer = InvoiceLineItemSerializer(data=line_item)
+				if line_item_serializer.is_valid():
+					line_item_serializer.save()
+				else:
+					# Rollback the created invoice if line item creation fails
+					invoice.delete()
+					return APIResponse(line_item_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+			except Exception as e:
+				# Rollback the created invoice if line item creation fails
+				invoice.delete()
+				return APIResponse(f"Internal Error: {e}", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+			
+		created_invoice = InvoiceSerializer(invoice).data
+		return APIResponse(f"Invoice created successfully.", status=status.HTTP_201_CREATED, data=created_invoice)
+		
 # View for retrieving purchase orders
 @api_view(['GET'])
 @permission_classes((IsAuthenticated,))
@@ -176,84 +279,3 @@ def get_surcharges(request):
 	surcharges = Surcharge.objects.all()
 	serializer = SurchargeSerializer(surcharges, many=True)
 	return APIResponse("Surcharges Retrieved", status.HTTP_200_OK, data=serializer.data)
-
-
-# View for creating an invoice
-@api_view(['POST'])
-@permission_classes((IsAuthenticated,))
-def create_invoice(request):
-	# The request must be a POST request
-	data = request.data
-	# Required fields
-	required_fields = ['po_id', 'vendor_document_id', 'due_date', 'payment_terms', 'payment_reason',
-	                   'invoice_line_items']
-	# Check if all required fields are present
-	if not all(field in data for field in required_fields):
-		return APIResponse(f"Missing required fields: {required_fields}", status=status.HTTP_400_BAD_REQUEST)
-	
-	try:
-		# Retrieve the PurchaseOrder object
-		purchase_order_id = data['po_id']
-		purchase_order = PurchaseOrder.objects.get(po_id=purchase_order_id, vendor=request.user.vendor_profile)
-	except ObjectDoesNotExist:
-		return APIResponse(f"A Purchase Order with ID {purchase_order_id} was not found for this vendor.",
-		                   status=status.HTTP_404_NOT_FOUND)
-	
-	# Create the Invoice object
-	invoice_data = {
-		'purchase_order': purchase_order.id,  # Associate with the purchase order
-		'external_document_id': data.get('vendor_document_id'),
-		'description': data.get('description', ''),
-		'due_date': data['due_date'],
-		'payment_terms': data['payment_terms'],
-		'payment_reason': data['payment_reason']
-	}
-	invoice_serializer = InvoiceSerializer(data=invoice_data)
-	if invoice_serializer.is_valid():
-		invoice = invoice_serializer.save()
-	else:
-		# print invoice not created
-		return APIResponse(invoice_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-	
-	# Create InvoiceLineItem objects
-	invoice_line_items = data['invoice_line_items']
-	for line_item in invoice_line_items:
-		po_item_object_id = line_item['po_line_item']
-		try:
-			# Retrieve PurchaseOrderLineItem object
-			po_line_item = PurchaseOrderLineItem.objects.get(object_id=po_item_object_id,
-			                                                 purchase_order=purchase_order.id)
-		except ObjectDoesNotExist:
-			# Rollback the created invoice if line item creation fails
-			invoice.delete()
-			return APIResponse(
-				f"A Purchase Order Line Item with ID {po_line_item} was not found for this purchase order.",
-				status=status.HTTP_400_BAD_REQUEST)
-		
-		# Create InvoiceLineItem object
-		line_item['invoice'] = invoice.id  # Associate with the created invoice
-		line_item['po_line_item'] = po_line_item.id  # Associate with the corresponding PO line item
-		line_item['surcharge_ids'] = line_item.pop('surcharges')
-		
-		try:
-			line_item_serializer = InvoiceLineItemSerializer(data=line_item)
-			if line_item_serializer.is_valid():
-				line_item_serializer.save()
-			else:
-				# Rollback the created invoice if line item creation fails
-				invoice.delete()
-				return APIResponse(line_item_serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-		except Exception as e:
-			invoice.delete()
-			return APIResponse(f"Internal Error: {e}", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-		
-		return APIResponse(f"Invoice created successfully.", status=status.HTTP_201_CREATED)
-
-
-@api_view(['GET'])
-@permission_classes((IsAuthenticated,))
-def get_vendor_invoices(request):
-	# Get all invoices for the authenticated vendor
-	invoices = Invoice.objects.filter(purchase_order__vendor=request.user.vendor_profile)
-	serializer = InvoiceSerializer(invoices, many=True)
-	return APIResponse("Invoices Retrieved", status.HTTP_200_OK, data=serializer.data)
