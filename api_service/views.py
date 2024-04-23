@@ -246,7 +246,8 @@ class VendorInvoiceView(APIView):
 			
 		created_invoice = InvoiceSerializer(invoice).data
 		return APIResponse(f"Invoice created successfully.", status=status.HTTP_201_CREATED, data=created_invoice)
-		
+
+	
 # View for retrieving purchase orders
 @api_view(['GET'])
 @permission_classes((IsAuthenticated,))

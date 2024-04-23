@@ -193,6 +193,10 @@ class GoodsReceivedLineItem(models.Model):
 	quantity_received = models.DecimalField(max_digits=15, decimal_places=3, default=0.000)
 	date_received = models.DateField(auto_now=True)
 	
+	@property
+	def value_received(self):
+		return self.quantity_received * self.purchase_order_line_item.unit_price
+	
 	def save(self, *args, **kwargs):
 		"""
 		Saves the instance to the database.

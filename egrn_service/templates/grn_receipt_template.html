@@ -1,4 +1,4 @@
-<html lang="en-GB">
+{% load l10n %}
 <head>
     <title>GRN from Food Concepts PLC</title>
     <meta name="viewport" content="width=device-width">
@@ -74,15 +74,16 @@
                                     <td>
                                         <table class="aapl-desktop-tbl" border="0" bordercolor="#ffffff" cellpadding="0" cellspacing="0" style="border-collapse:collapse;border-spacing:0;color:rgb(51,51,51);background-color: rgb(250,250,250);border-radius:3px;font-size:12px;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
                                             <tr height="46">
-                                                <td width="320" colspan="2" style="padding-left:20px;border-style: solid;border-color: white;border-left-width:0;border-right-width:1px;border-bottom-width: 1px;border-top-width: 0px;"><span style="color:rgb(102,102,102);font-size:10px;">VENDOR</span><br>
-                                                    {{ data.purchase_order.BuyerParty.__deferred.uri }}
+                                                <td width="320" colspan="2" style="padding-left:20px;border-style: solid;border-color: white;border-left-width:0;border-right-width:1px;border-bottom-width: 1px;border-top-width: 0px;"><span style="color:rgb(102,102,102);font-size:10px;">Received By</span><br>
+                                                    {{ data.purchase_order.BuyerParty.BuyerPartyName.FormattedName }}
                                                 </td>
                                                 <td width="340" rowspan="3"
                                                     style="padding-right:20px;border-style:solid;border-color:white;border-left-width:0px;border-right-width:0px;border-top-width:0px; border-bottom-width:0px;text-align: right;">
-                                                    <span style="color:rgb(102,102,102);font-size:10px;">RECEIVED BY</span><br>
-                                                    Laughter Nathaniel<br>
-                                                    Lekki, Lagos 101222<br>
-                                                    NGA
+                                                    <span style="color:rgb(102,102,102);font-size:10px;">Vendor</span><br>
+                                                    <b>{{ data.purchase_order.Supplier.SupplierName.FormattedName }}</b><br>
+                                                    {{ data.purchase_order.Supplier.SupplierPostalAddress.HouseID }} {{ data.purchase_order.Supplier.SupplierPostalAddress.StreetName }}<br>
+                                                    {{ data.purchase_order.Supplier.SupplierPostalAddress.CityName }}, {{ data.purchase_order.Supplier.SupplierPostalAddress.RegionCodeText }}<br>
+                                                    {{ data.purchase_order.Supplier.SupplierPostalAddress.CountryCodeText }}<br>
                                                 </td>
                                             </tr>
                                             <tr height="46">
@@ -98,11 +99,11 @@
                                             <tr height="46">
                                                 <td style="padding-left:20px;border-style:solid;border-color:white;border-left-width:0;border-right-width:1px;border-bottom-width:0px;border-top-width:0px;">
                                                     <span style="color:rgb(102,102,102);font-size:10px;">PURCHASE ORDER ID</span><br>
-                                                    {{ data.purchase_order.po_id }}
+                                                    PO{{ data.purchase_order.po_id }}
                                                 </td>
                                                 <td style="padding-left:20px;border-style:solid;border-color:white;border-left-width:0;border-right-width:1px;border-bottom-width:0px;border-top-width:0px;">
                                                     <span style="color:rgb(102,102,102);font-size:10px;">DOCUMENT NO.</span><br>
-                                                    {{ data.grn_number }}
+                                                    GRN{{ data.grn_number }}
                                                 </td>
                                             </tr>
                                         </table>
@@ -134,21 +135,22 @@
                                             <tr height="15">
                                                 <td colspan="4"></td>
                                             </tr>
+                                            {% localize on %}
                                             {% for item in data.line_items %}
-                                            <tr style="max-height:114px;" class="padded-row">
+                                            <tr style="height:40px;" class="padded-row">
                                                 <td style="" class="item-cell">
                                                     <span class="title" dir="auto" style="font-weight:600;">
                                                         {{ item.purchase_order_line_item.product_name }}
                                                     </span><br>
                                                 </td>
-                                                <td class="price-cell" align="center" valign="top">
-                                                    <span>{{ item.purchase_order_line_item.unit_price }} / {{ item.purchase_order_line_item.unit_of_measurement }}</span>
+                                                <td class="price-cell" align="center">
+                                                    <span>{{ item.purchase_order_line_item.unit_price|floatformat:2 }} (per {{ item.purchase_order_line_item.unit_of_measurement }})</span>
                                                 </td>
-                                                <td class="price-cell" align="center" valign="top">
-                                                    <span>{{ item.quantity_received }} {{ item.purchase_order_line_item.unit_of_measurement }}</span>
+                                                <td class="price-cell" align="center">
+                                                    <span>{{ item.quantity_received|floatformat:2 }} {{ item.purchase_order_line_item.unit_of_measurement }}s</span>
                                                 </td>
-                                                <td class="price-cell" align="right" valign="top" style="">
-                                                    <span style="font-weight:600;white-space:nowrap;">{{ item.quantity_received|floatformat:2 }} * {{ item.purchase_order_line_item.unit_price|floatformat:2 }}</span>
+                                                <td class="price-cell" align="right" style="">
+                                                    <span style="font-weight:600;white-space:nowrap;">₦ {{ item.value_received|floatformat:2 }}</span>
                                                 </td>
                                             </tr>
                                             <tr class="divider-row">
@@ -156,6 +158,7 @@
                                                 <td align="right" colspan="2"></td>
                                             </tr>
                                             {% endfor %}
+                                            {% endlocalize  %}
                                         </table>
                                     </td>
                                 </tr>
@@ -169,12 +172,14 @@
                                             </tr>
                                             <tr height="48">
                                                 <td align="right" style="color:rgb(102,102,102);font-size:10px;font-weight:600;padding: 0 30px 0 0;border-width:1px;border-color:rgb(238,238,238);">
-                                                    TOTAL
+                                                    GRAND TOTAL
                                                 </td>
                                                 <td width="1" style="background-color:rgb(238,238,238);width:1px;"></td>
+                                                {% localize on %}
                                                 <td width="90" align="right" style="width:120px;padding:0 20px 0 0;font-size:16px;font-weight:600;white-space:nowrap;">
-                                                    {{ total_of_all_received }}
+                                                    ₦ {{ data.total_value_received|floatformat:2 }}
                                                 </td>
+                                                {% endlocalize  %}
                                             </tr>
                                             <tr height="1">
                                                 <td height="1" colspan="4" style="padding:0 10px 0 10px;">
@@ -210,4 +215,3 @@
 </table>
 <br><br>
 </body>
-</html>
