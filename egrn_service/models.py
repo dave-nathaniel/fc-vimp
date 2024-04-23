@@ -1,3 +1,5 @@
+import logging
+
 from django.db import models
 from django.db.utils import IntegrityError
 from core_service.models import VendorProfile
@@ -5,6 +7,7 @@ from byd_service.rest import RESTServices
 from byd_service.util import to_python_time
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Sum
+from .converters import ProductConverters
 
 # Initialize REST services
 byd_rest_services = RESTServices()
@@ -52,9 +55,7 @@ class PurchaseOrder(models.Model):
 	def create_purchase_order(self, po):
 		# Get the vendor's profile (if they've completed their onboarding), or create a profile that will be attached
 		# to the vendor whenever they complete their onboarding.
-		supplier = po.pop("Supplier")
-		po = po
-		po_items = po.pop("Item")
+		supplier = po.get("Supplier")
 		vendor, created = VendorProfile.objects.get_or_create(byd_internal_id=supplier["PartyID"])
 		if created:
 			vendor.byd_metadata = supplier
@@ -65,6 +66,7 @@ class PurchaseOrder(models.Model):
 		self.total_net_amount = po["TotalNetAmount"]
 		self.po_id = po["ID"]
 		self.date = to_python_time(po["LastChangeDateTime"])
+		po_items = po.pop("Item")
 		self.metadata = po
 		self.save()
 		
@@ -114,7 +116,6 @@ class PurchaseOrderLineItem(models.Model):
 		delivered_quantity = self.grn_line_item.aggregate(total_received=Sum('quantity_received'))['total_received']
 		return delivered_quantity or 0.00
 	
-	
 	def __str__(self):
 		return f"{self.product_name} ({self.quantity})"
 
@@ -128,48 +129,58 @@ class GoodsReceivedNote(models.Model):
 	def save(self, *args, **kwargs):
 		grn_data = kwargs.pop('grn_data')
 		po_id = grn_data['po_id']
-		
+		# Set the store where this GRN is being received
+		self.store = Store.objects.all()[0]
 		try:
 			# Try to retrieve an object by a specific field
 			# If the object is found, you can work with it here
-			purchase_order = PurchaseOrder.objects.get(po_id=po_id)
+			self.purchase_order = PurchaseOrder.objects.get(po_id=po_id)
 		except ObjectDoesNotExist:
 			# Create the Purchase Order
 			po_data = byd_rest_services.get_purchase_order_by_id(po_id)
 			new_po = PurchaseOrder()
-			purchase_order = new_po.create_purchase_order(po_data)
+			self.purchase_order = new_po.create_purchase_order(po_data)
 		except Exception as e:
 			raise e
 		
-		self.purchase_order = purchase_order
-		self.store = Store.objects.all()[0]
-		self.grn_number = po_id
-		
-		try:
-			super().save(*args, **kwargs)
-			grn = self
-		except IntegrityError as e:
-			grn = GoodsReceivedNote.objects.get(grn_number=po_id)
-		
-		grn_line_items = grn_data["recievedGoods"]
-		
-		for line_item in grn_line_items:
-			self.__create_line_items__(grn, line_item)
-		
-		return grn
+		# Create the GRN Number by appending a number to the end of the PO ID
+		self.grn_number = int(str(po_id) + '1')
+		# Progressively increment the GRN number until it is unique
+		saved_as_grn = False # Boolean to control the loop
+		while not saved_as_grn:
+			try:
+				super().save(*args, **kwargs)
+				saved_as_grn = True
+			except IntegrityError:
+				self.grn_number = int(self.grn_number) + 1
+			except Exception as e:
+				logging.error(e)
+				raise e
+		# If none of the line items were created (meaning there was an error with all the line items),
+		# then delete the GRN altogether and return False
+		if not self.__create_line_items__(grn_data.get("recievedGoods")):
+			self.delete()
+			return False
+		# Return True if any line items were created
+		return self
 	
-	def __create_line_items__(self, grn, line_item):
-		grn_line_item = GoodsReceivedLineItem()
-		try:
-			# Get the purchase order line item that corresponds to this line item from the purchase order of this Goods Received Note
-			po_line_item = PurchaseOrderLineItem.objects.get(purchase_order=grn.purchase_order,
-			                                                 object_id=line_item["itemObjectID"])
-			grn_line_item.grn = grn
-			grn_line_item.purchase_order_line_item = po_line_item
-			grn_line_item.save(quantity_received=float(line_item["quantityReceived"]))
-		except ObjectDoesNotExist:
-			raise ObjectDoesNotExist(
-				f"Could not find purchase order line item with object id: {line_item['itemObjectID']}")
+	def __create_line_items__(self, line_items):
+		# An object to hold the status of line items that were created
+		created_line_items = {}
+		for line_item in line_items:
+			try:
+				grn_line_item = GoodsReceivedLineItem()
+				# Get the purchase order line item that corresponds to this line item from the purchase order of this Goods Received Note
+				grn_line_item.purchase_order_line_item = PurchaseOrderLineItem.objects.get(purchase_order=self.purchase_order,
+				                                                 object_id=line_item["itemObjectID"])
+				grn_line_item.grn = self
+				grn_line_item.save(quantity_received=float(line_item["quantityReceived"]))
+				created_line_items[line_item['itemObjectID']] = True
+			except Exception as e:
+				logging.error(f"{line_item['itemObjectID']}: {e}")
+				created_line_items[line_item['itemObjectID']] = False
+		# If any of the line items were created, return True.
+		return any(created_line_items.values())
 	
 	def __str__(self):
 		return f"e-GRN #{self.grn_number}"
@@ -229,3 +240,13 @@ class GoodsReceivedLineItem(models.Model):
 	
 	def __str__(self):
 		return f"GRN Entry for '{self.purchase_order_line_item.product_name}'"
+
+
+class ProductConversion(models.Model):
+	'''
+		Defines how specified goods should be converted.
+	'''
+	product_id = models.CharField(max_length=32, blank=False, null=False, unique=True)
+	required_fields = models.JSONField(default=dict) # ['number_of_birds'. 'quantityReceived']
+	conversion_factor = models.JSONField(default=dict)
+	created_on = models.DateTimeField(auto_now_add=True)
