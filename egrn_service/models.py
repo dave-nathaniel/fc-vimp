@@ -158,9 +158,11 @@ class GoodsReceivedNote(models.Model):
 				raise e
 		# If none of the line items were created (meaning there was an error with all the line items),
 		# then delete the GRN altogether and return False
-		if not self.__create_line_items__(grn_data.get("recievedGoods")):
+		try:
+			self.__create_line_items__(grn_data.get("recievedGoods"))
+		except Exception as e:
 			self.delete()
-			return False
+			raise e
 		# Return True if any line items were created
 		return self
 	
@@ -179,6 +181,7 @@ class GoodsReceivedNote(models.Model):
 			except Exception as e:
 				logging.error(f"{line_item['itemObjectID']}: {e}")
 				created_line_items[line_item['itemObjectID']] = False
+				raise e
 		# If any of the line items were created, return True.
 		return any(created_line_items.values())
 	

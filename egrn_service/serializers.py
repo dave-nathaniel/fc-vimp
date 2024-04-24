@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from rest_framework import serializers
 from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem
 from django.forms.models import model_to_dict
@@ -20,7 +22,8 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	
 	class Meta:
 		model = GoodsReceivedLineItem
-		fields = ['id', 'grn_number', 'quantity_received', 'value_received', 'date_received', 'purchase_order_line_item']
+		fields = ['id', 'grn_number', 'quantity_received', 'value_received', 'date_received',
+		          'purchase_order_line_item']
 
 
 class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
@@ -79,6 +82,12 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 	def get_delivery_completed(self, obj):
 		return obj.delivery_status[0] == 3
 	
+	def to_representation(self, instance):
+		# Convert the datetime object to a date
+		instance.date = instance.date.date() if isinstance(instance.date, datetime) else instance.date
+		serialized = super().to_representation(instance)
+		return serialized
+
 	class Meta:
 		model = PurchaseOrder
 		fields = ['po_id', 'object_id', 'vendor', 'total_net_amount', 'date', 'delivery_status_code',
@@ -100,7 +109,6 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	
 	def get_total_value_received(self, obj):
 		return sum([item.value_received for item in obj.line_items.all()])
-		
 	
 	class Meta:
 		model = GoodsReceivedNote
