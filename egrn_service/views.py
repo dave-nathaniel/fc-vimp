@@ -9,7 +9,7 @@ from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
-from asgiref.sync import async_to_sync
+from copy import deepcopy
 
 from .models import GoodsReceivedNote, PurchaseOrder
 from .serializers import GoodsReceivedNoteSerializer, PurchaseOrderSerializer
@@ -147,12 +147,13 @@ def create_grn(request, ):
 			created_grn = GoodsReceivedNote.objects.get(id=grn_saved.id)
 			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
 			goods_received_note = GoodsReceivedNoteSerializer(created_grn).data
+			template_data = deepcopy(goods_received_note)
 			# Modify some fields for more straightforward rendering
-			goods_received_note['purchase_order']['BuyerParty']['BuyerPartyName'] = goods_received_note['purchase_order']['BuyerParty']['BuyerPartyName'][0]
-			goods_received_note['purchase_order']['Supplier']['SupplierName'] = goods_received_note['purchase_order']['Supplier']['SupplierName'][0]
-			goods_received_note['purchase_order']['Supplier']['SupplierPostalAddress'] = goods_received_note['purchase_order']['Supplier']['SupplierPostalAddress'][0]
+			template_data['purchase_order']['BuyerParty']['BuyerPartyName'] = template_data['purchase_order']['BuyerParty']['BuyerPartyName'][0]
+			template_data['purchase_order']['Supplier']['SupplierName'] = template_data['purchase_order']['Supplier']['SupplierName'][0]
+			template_data['purchase_order']['Supplier']['SupplierPostalAddress'] = template_data['purchase_order']['Supplier']['SupplierPostalAddress'][0]
 			# Render the HTML content of the template and send the email asynchronously
-			html_content = render_to_string('grn_receipt_template.html', {'data': goods_received_note})
+			html_content = render_to_string('grn_receipt_template.html', {'data': template_data})
 			send_email_async(html_content)
 			return APIResponse("GRN Created.", status.HTTP_201_CREATED, data=goods_received_note)
 		else:

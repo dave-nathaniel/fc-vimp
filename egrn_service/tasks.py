@@ -11,7 +11,7 @@ def send_email_async(html_content):
 			'Your Goods Received Note',
 			html_content,
 			'network@foodconceptsplc.com',
-			['davynathaniel@gmail.com']
+			['davynathaniel@gmail.com', 'oguntoyeadebola21@gmail.com']
 		)
 		email.content_subtype = 'html'
 		email.send()
