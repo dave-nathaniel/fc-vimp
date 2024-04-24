@@ -41,6 +41,9 @@ EMAIL_PORT = os.getenv("SMTP_PORT")
 EMAIL_HOST_USER = os.getenv("EMAIL_USER")
 EMAIL_HOST_PASSWORD = os.getenv("EMAIL_PASSWORD")
 
+USE_L10N = False
+USE_THOUSAND_SEPARATOR = True
+
 # Application definition
 INSTALLED_APPS = [
 	'django.contrib.admin',
@@ -128,6 +131,8 @@ DATABASES = {
         'PORT': os.getenv('DB_PORT'),
     }
 }
+
+CELERY_BROKER_URL = "memory://localhost"
 
 
 # Password validation

@@ -75,6 +75,7 @@ class RESTServices:
 	def get_purchase_order_by_id(self, PurchaseOrderID):
 		action_url: str = (f"{self.endpoint}/sap/byd/odata/cust/v1/khpurchaseorder/PurchaseOrderCollection?$format=json"
 						   f"&$expand=Supplier/SupplierName,Supplier/SupplierFormattedAddress,"
+						   f"BuyerParty,BuyerParty/BuyerPartyName,"
 						   f"Supplier/SupplierPostalAddress,"
 						   f"ApproverParty/ApproverPartyName,"
 						   f"Item/ItemShipToLocation/DeliveryAddress/DeliveryPostalAddress&$filter=ID eq '"

@@ -7,6 +7,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	# items description, unit price, product code and amount
 	purchase_order_line_item = serializers.SerializerMethodField()
 	grn_number = serializers.SerializerMethodField()
+	value_received = serializers.FloatField()
 	
 	def get_purchase_order_line_item(self, obj):
 		po_line_item = model_to_dict(obj.purchase_order_line_item)
@@ -19,7 +20,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	
 	class Meta:
 		model = GoodsReceivedLineItem
-		fields = ['id', 'grn_number', 'quantity_received', 'date_received', 'purchase_order_line_item']
+		fields = ['id', 'grn_number', 'quantity_received', 'value_received', 'date_received', 'purchase_order_line_item']
 
 
 class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
@@ -27,11 +28,8 @@ class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	outstanding_quantity = serializers.SerializerMethodField()
 	delivery_status_code = serializers.SerializerMethodField()
 	delivery_status_text = serializers.SerializerMethodField()
-	delivered_quantity = serializers.SerializerMethodField()
+	delivered_quantity = serializers.FloatField()
 	delivery_completed = serializers.SerializerMethodField()
-	
-	def get_delivered_quantity(self, obj):
-		return obj.delivered_quantity
 	
 	def get_outstanding_quantity(self, obj):
 		# Calculate and return outstanding quantity
@@ -90,14 +88,21 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	purchase_order = serializers.SerializerMethodField()
 	line_items = GoodsReceivedLineItemSerializer(many=True, read_only=True)
+	total_value_received = serializers.SerializerMethodField()
 	
 	def get_purchase_order(self, obj):
 		po_dict = PurchaseOrderSerializer(obj.purchase_order, many=False).data
 		po_dict["BuyerParty"] = obj.purchase_order.metadata["BuyerParty"]
+		po_dict["Supplier"] = obj.purchase_order.metadata["Supplier"]
 		po_dict.pop('metadata')
 		po_dict.pop('Item')
 		return po_dict
 	
+	def get_total_value_received(self, obj):
+		return sum([item.value_received for item in obj.line_items.all()])
+		
+	
 	class Meta:
 		model = GoodsReceivedNote
-		fields = ['grn_number', 'store', 'created', 'purchase_order', 'line_items']
+		fields = ['grn_number', 'store', 'created', 'total_value_received', 'purchase_order', 'line_items']
+		depth = 1
