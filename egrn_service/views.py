@@ -81,40 +81,28 @@ def search_vendor(request, ):
 
 
 @api_view(['GET'])
-def get_order_items(request, po_id):
-	'''
-		Retrieve a purchase order with the specified ID from ByD.
-		This method is used by the frontend at the point of creating a GoodsReceivedNote to get the items to
-		be received.
-	'''
+def get_purchase_order(request, po_id):
 	try:
-		orders = byd_rest_services.get_purchase_order_by_id(po_id)
-		
-		if orders:
-			# Check if conversions have been defined for any orders in the PO,
-			return APIResponse("Purchase Orders Retrieved", status.HTTP_200_OK, data=orders)
-		
-		return APIResponse(f"Order with ID {po_id} not found.", status.HTTP_404_NOT_FOUND)
-	
-	except Exception as e:
-		logging.error(e)
-		return APIResponse("Internal Error.", status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@api_view(['GET'])
-def get_order_with_grns(request, po_id):
-	try:
-		orders = PurchaseOrder.objects.get(po_id=po_id)
+		try:
+			# Fetch purchase orders from the database
+			orders = PurchaseOrder.objects.get(po_id=po_id)
+		except ObjectDoesNotExist:
+			# If the order does not exist in the database, fetch the order from ByD
+			byd_orders = byd_rest_services.get_purchase_order_by_id(po_id)
+			if byd_orders:
+				# If the order exists in ByD, create a new PurchaseOrder object
+				po = PurchaseOrder()
+				orders = po.create_purchase_order(byd_orders)
+			else:
+				# If the order does not exist in ByD, return an error
+				return APIResponse(f"Order with ID {po_id} not found.", status.HTTP_404_NOT_FOUND)
+		# Serialize the PurchaseOrder object
 		serializer = PurchaseOrderSerializer(orders)
-		orders = serializer.data
-		
-		return APIResponse("Purchase Orders Retrieved", status.HTTP_200_OK, data=orders)
-	
-	except ObjectDoesNotExist:
-		return APIResponse(f"No GRNs created for PO {po_id}", status.HTTP_404_NOT_FOUND)
+		return APIResponse("Purchase Orders Retrieved", status.HTTP_200_OK, data=serializer.data)
 	except Exception as e:
+		# Handle any other errors
+		logging.error(f"An error occurred creating a Purchase Order: {e}")
 		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 @api_view(['POST'])
 def create_grn(request, ):
@@ -142,8 +130,8 @@ def create_grn(request, ):
 		# Try to create the GRN
 		new_grn = GoodsReceivedNote()
 		grn_saved = new_grn.save(grn_data=request_data)
-		# If the GRN was created successfully, return the created GRN
 		if grn_saved:
+			# If the GRN was created successfully, return the created GRN
 			created_grn = GoodsReceivedNote.objects.get(id=grn_saved.id)
 			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
 			goods_received_note = GoodsReceivedNoteSerializer(created_grn).data
@@ -156,11 +144,9 @@ def create_grn(request, ):
 			html_content = render_to_string('grn_receipt_template.html', {'data': template_data})
 			send_email_async(html_content)
 			return APIResponse("GRN Created.", status.HTTP_201_CREATED, data=goods_received_note)
-		else:
-			return APIResponse("Internal Error", status.HTTP_500_INTERNAL_SERVER_ERROR)
 	# Return an error if there is an exception
 	except Exception as e:
-		return APIResponse(str(e), status.HTTP_500_INTERNAL_SERVER_ERROR)
+		return APIResponse(str(e), status.HTTP_400_BAD_REQUEST)
 
 
 @api_view(['GET'])
