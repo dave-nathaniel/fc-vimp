@@ -4,7 +4,9 @@ import logging
 import asyncio
 from django.template.loader import render_to_string
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
+
 from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
@@ -25,7 +27,6 @@ def delete_items(po):
 	del po["Item"]
 	return po
 
-
 def filter_objects(keys_to_keep, objects):
 	filtered_objects = []
 	# Use dictionary comprehension to filter objects
@@ -34,7 +35,6 @@ def filter_objects(keys_to_keep, objects):
 		filtered_objects.append(filtered_obj)
 	
 	return filtered_objects
-
 
 def get_formatted_vendor(id, id_type):
 	data = byd_rest_services.get_vendor_by_id(id, id_type=id_type)
@@ -78,7 +78,6 @@ def search_vendor(request, ):
 	except Exception as e:
 		logging.error(e)
 		return APIResponse("Internal Error.", status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 @api_view(['GET'])
 def get_purchase_order(request, po_id):
@@ -148,7 +147,6 @@ def create_grn(request, ):
 	except Exception as e:
 		return APIResponse(str(e), status.HTTP_400_BAD_REQUEST)
 
-
 @api_view(['GET'])
 def get_all_grns(request, ):
 	try:
@@ -158,6 +156,26 @@ def get_all_grns(request, ):
 		goods_received_note = grn_serializer.data
 		
 		return APIResponse("GRNs Retrieved", status.HTTP_200_OK, data=goods_received_note)
+	except Exception as e:
+		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
+	
+
+@api_view(['GET'])
+@permission_classes((IsAuthenticated,))
+def get_vendors_grns(request, ):
+	'''
+		Get all GRNs for the authenticated user
+	'''
+	try:
+		po_id = request.query_params.get('po_id')
+		grns = GoodsReceivedNote.objects.filter(purchase_order__vendor=request.user.vendor_profile)
+		# If the request params contain po_id, filter by po_id
+		grns = grns.filter(purchase_order__po_id=po_id) if po_id else grns
+		if grns:
+			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
+			serialized_grns = GoodsReceivedNoteSerializer(grns, many=True).data
+			return APIResponse("GRNs Retrieved", status.HTTP_200_OK, data=serialized_grns)
+		return APIResponse(f"No GRN found.", status=status.HTTP_404_NOT_FOUND)
 	except Exception as e:
 		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
