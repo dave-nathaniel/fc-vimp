@@ -12,7 +12,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	value_received = serializers.FloatField()
 	
 	def get_purchase_order_line_item(self, obj):
-		po_line_item = model_to_dict(obj.purchase_order_line_item)
+		po_line_item = PurchaseOrderLineItemSerializer(obj.purchase_order_line_item, many=False).data
 		po_line_item['ItemShipToLocation'] = po_line_item['metadata']['ItemShipToLocation']
 		po_line_item.pop('metadata')
 		return po_line_item
@@ -27,7 +27,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 
 
 class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
-	grn_line_items = serializers.SerializerMethodField()
+	grn_line_items = GoodsReceivedLineItemSerializer(many=True, read_only=True, source="line_items")
 	outstanding_quantity = serializers.SerializerMethodField()
 	delivery_status_code = serializers.SerializerMethodField()
 	delivery_status_text = serializers.SerializerMethodField()
@@ -47,14 +47,6 @@ class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	def get_delivery_completed(self, obj):
 		# Check if outstanding quantity is equal to the quantity
 		return self.get_outstanding_quantity(obj) == 0
-	
-	def get_grn_line_items(self, obj):
-		# return the grn_line_items using model_to_dict
-		all_grn_line_items = obj.grn_line_item.all()
-		grn_line_items_serializer = GoodsReceivedLineItemSerializer(all_grn_line_items, many=True).data
-		for item in grn_line_items_serializer:
-			item.pop('purchase_order_line_item')
-		return grn_line_items_serializer
 	
 	class Meta:
 		model = PurchaseOrderLineItem
@@ -101,8 +93,7 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	
 	def get_purchase_order(self, obj):
 		po_dict = PurchaseOrderSerializer(obj.purchase_order, many=False).data
-		po_dict["BuyerParty"] = obj.purchase_order.metadata["BuyerParty"]
-		po_dict["Supplier"] = obj.purchase_order.metadata["Supplier"]
+		po_dict["BuyerParty"], po_dict["Supplier"]= po_dict["metadata"]["BuyerParty"], po_dict["metadata"]["Supplier"]
 		po_dict.pop('metadata')
 		po_dict.pop('Item')
 		return po_dict
@@ -112,5 +103,5 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	
 	class Meta:
 		model = GoodsReceivedNote
-		fields = ['grn_number', 'store', 'created', 'total_value_received', 'purchase_order', 'line_items']
+		fields = ['grn_number', 'created', 'total_value_received', 'store', 'purchase_order', 'line_items']
 		depth = 1
