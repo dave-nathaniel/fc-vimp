@@ -14,7 +14,6 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	def get_purchase_order_line_item(self, obj):
 		po_line_item = PurchaseOrderLineItemSerializer(obj.purchase_order_line_item, many=False).data
 		po_line_item['ItemShipToLocation'] = po_line_item['metadata']['ItemShipToLocation']
-		po_line_item.pop('metadata')
 		return po_line_item
 	
 	def get_grn_number(self, obj):
