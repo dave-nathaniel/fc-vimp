@@ -71,7 +71,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 		return obj.delivery_status[1]
 	
 	def get_delivery_completed(self, obj):
-		return obj.delivery_status[0] == 3
+		return obj.delivery_status[0] == '3'
 	
 	def to_representation(self, instance):
 		# Convert the datetime object to a date
