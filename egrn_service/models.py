@@ -40,16 +40,12 @@ class PurchaseOrder(models.Model):
 		# Retrieve all related PurchaseOrderLineItems
 		order_items = self.line_items.all()
 		# Check if all PurchaseOrderLineItems are completed
-		delivered_quantities = [
-			item.grn_line_item.aggregate(
-				total_received=Sum('quantity_received')
-			)['total_received'] for item in order_items
-		]
-		if any(delivered_quantities):
+		delivered_quantities = [item.delivery_status[0] == '3' for item in order_items]
+		if any(delivered_quantities) and not all(delivered_quantities):
 			status = self.delivery_status_code[1]
 		elif all(delivered_quantities):
 			status = self.delivery_status_code[2]
-		
+			
 		return status
 	
 	def create_purchase_order(self, po):
