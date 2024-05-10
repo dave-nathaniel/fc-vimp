@@ -50,7 +50,7 @@ class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = PurchaseOrderLineItem
 		fields = ['object_id', 'product_name', 'unit_price', 'quantity', 'unit_of_measurement', 'delivery_status_code',
-		          'delivery_status_text', 'delivered_quantity', 'outstanding_quantity', 'delivery_completed',
+		          'delivery_status_text', 'delivered_quantity', 'outstanding_quantity', 'delivery_completed', 'extra_fields',
 		          'metadata', 'grn_line_items']
 
 
