@@ -74,6 +74,11 @@ class PurchaseOrder(models.Model):
 	
 	def __create_line_items__(self, line_item):
 		po_line_item = PurchaseOrderLineItem()
+		try:
+			# Get the receipt fields for the product if any are defined
+			receipt_fields = ProductReceiptFields.objects.get(product_id=line_item["ProductID"])
+		except ObjectDoesNotExist:
+			receipt_fields = None
 		
 		po_line_item.purchase_order = self
 		po_line_item.object_id = line_item["ObjectID"]
@@ -81,6 +86,7 @@ class PurchaseOrder(models.Model):
 		po_line_item.quantity = float(line_item["Quantity"])
 		po_line_item.unit_price = line_item["ListUnitPriceAmount"]
 		po_line_item.unit_of_measurement = line_item["QuantityUnitCodeText"]
+		po_line_item.extra_fields = receipt_fields.extra_fields if receipt_fields else []
 		po_line_item.metadata = line_item
 		
 		po_line_item.save()
@@ -96,6 +102,7 @@ class PurchaseOrderLineItem(models.Model):
 	quantity = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_price = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_of_measurement = models.CharField(max_length=32, blank=False, null=False)
+	extra_fields = models.JSONField(default=dict, null=True, blank=True)
 	metadata = models.JSONField(default=dict)
 	
 	@property
@@ -254,3 +261,12 @@ class ProductConversion(models.Model):
 	required_fields = models.JSONField(default=dict) # ['number_of_birds'. 'quantityReceived']
 	conversion_factor = models.JSONField(default=dict)
 	created_on = models.DateTimeField(auto_now_add=True)
+	
+
+class ProductReceiptFields(models.Model):
+	'''
+		Defines extra fields that can be added to a Product Receipt.
+	'''
+	product_id = models.CharField(max_length=32, blank=False, null=False, unique=True) # The ByD Product ID
+	extra_fields = models.JSONField(default=dict, null=False, blank=False) # An array of extra fields that can be added to a Product Receipt
+	created_on = models.DateTimeField(auto_now_add=True) # The date and time that the Product Receipt Fields were created
