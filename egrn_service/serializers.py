@@ -21,7 +21,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	
 	class Meta:
 		model = GoodsReceivedLineItem
-		fields = ['id', 'grn_number', 'quantity_received', 'value_received', 'date_received',
+		fields = ['id', 'grn_number', 'quantity_received', 'value_received', 'extra_fields', 'date_received',
 		          'purchase_order_line_item']
 
 

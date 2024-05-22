@@ -52,7 +52,7 @@ INSTALLED_APPS = [
 	'django.contrib.sessions',
 	'django.contrib.messages',
 	'django.contrib.staticfiles',
-
+	
 	'rest_framework',
 	'rest_framework_simplejwt',
 	'corsheaders',
@@ -60,14 +60,64 @@ INSTALLED_APPS = [
 	'core_service',
 	'egrn_service',
 	'invoice_service',
+	'approval_service',
 ]
 
 REST_FRAMEWORK = {
 	'DEFAULT_AUTHENTICATION_CLASSES': (
+		'rest_framework_simplejwt.authentication.JWTAuthentication',
+		'django_auth_adfs.rest_framework.AdfsAccessTokenAuthentication',
 		'rest_framework.authentication.SessionAuthentication',
 		'rest_framework.authentication.BasicAuthentication',
-		'rest_framework_simplejwt.authentication.JWTAuthentication',
 	),
+	'DEFAULT_PERMISSION_CLASSES': (
+		'rest_framework.permissions.IsAuthenticated',
+	)
+}
+
+AUTHENTICATION_BACKENDS = (
+	'django_auth_adfs.backend.AdfsAccessTokenBackend',
+	'django.contrib.auth.backends.ModelBackend',
+)
+
+AUTH_ADFS = {
+    'AUDIENCE': os.getenv('CLIENT_ID'),
+    'CLIENT_ID': os.getenv('CLIENT_ID'),
+    'CLIENT_SECRET': os.getenv('CLIENT_SECRET'),
+    'CLAIM_MAPPING': {'first_name': 'given_name',
+                      'last_name': 'family_name',
+                      'email': 'upn'},
+    'GROUPS_CLAIM': 'roles',
+    'MIRROR_GROUPS': True,
+    'USERNAME_CLAIM': 'upn',
+    'TENANT_ID': os.getenv('TENANT_ID'),
+    'RELYING_PARTY_ID': os.getenv('CLIENT_ID'),
+    'LOGIN_EXEMPT_URLS': [
+        '^api',
+	    '^admin'
+    ],
+}
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '%(levelname)s %(asctime)s %(name)s %(message)s'
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'verbose'
+        },
+    },
+    'loggers': {
+        'django_auth_adfs': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+        },
+    },
 }
 
 SIMPLE_JWT = {
@@ -84,6 +134,7 @@ SIMPLE_JWT = {
 	'USER_ID_CLAIM': 'username',
 	'JTI_CLAIM': 'jti',
 	'SLIDING_TOKEN_REFRESH_EXP_CLAIM': 'refresh_exp',
+	"TOKEN_OBTAIN_SERIALIZER": "core_service.serializers.CustomTokenObtainPairSerializer",
 }
 
 MIDDLEWARE = [
@@ -133,7 +184,6 @@ DATABASES = {
 }
 
 CELERY_BROKER_URL = "memory://localhost"
-
 
 # Password validation
 # https://docs.djangoproject.com/en/4.2/ref/settings/#auth-password-validators

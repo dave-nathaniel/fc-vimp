@@ -102,7 +102,7 @@ class PurchaseOrderLineItem(models.Model):
 	quantity = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_price = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_of_measurement = models.CharField(max_length=32, blank=False, null=False)
-	extra_fields = models.JSONField(default=dict, null=True, blank=True)
+	extra_fields = models.JSONField(default=list, null=True, blank=True)
 	metadata = models.JSONField(default=dict)
 	
 	@property
@@ -180,7 +180,10 @@ class GoodsReceivedNote(models.Model):
 				grn_line_item.purchase_order_line_item = PurchaseOrderLineItem.objects.get(purchase_order=self.purchase_order,
 				                                                 object_id=line_item["itemObjectID"])
 				grn_line_item.grn = self
-				grn_line_item.save(quantity_received=float(line_item["quantityReceived"]))
+				grn_line_item.extra_fields = line_item.get("extra_fields", {})
+				grn_line_item.save(
+					quantity_received=float(line_item["quantityReceived"]),
+				)
 				created_line_items[line_item['itemObjectID']] = True
 			except Exception as e:
 				logging.error(f"{line_item['itemObjectID']}: {e}")
@@ -198,6 +201,7 @@ class GoodsReceivedLineItem(models.Model):
 	purchase_order_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE,
 	                                             related_name='grn_line_item')
 	quantity_received = models.DecimalField(max_digits=15, decimal_places=3, default=0.000)
+	extra_fields = models.JSONField(default=dict, null=True, blank=True)
 	date_received = models.DateField(auto_now=True)
 	
 	@property
@@ -270,3 +274,6 @@ class ProductReceiptFields(models.Model):
 	product_id = models.CharField(max_length=32, blank=False, null=False, unique=True) # The ByD Product ID
 	extra_fields = models.JSONField(default=dict, null=False, blank=False) # An array of extra fields that can be added to a Product Receipt
 	created_on = models.DateTimeField(auto_now_add=True) # The date and time that the Product Receipt Fields were created
+	
+	def __str__(self):
+		return f"Fields for '{self.product_id}'"

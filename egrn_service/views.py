@@ -4,8 +4,9 @@ import logging
 import asyncio
 from django.template.loader import render_to_string
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.permissions import IsAuthenticated
+from django_auth_adfs.rest_framework import AdfsAccessTokenAuthentication
 
 from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
@@ -49,6 +50,7 @@ def get_formatted_vendor(id, id_type):
 
 
 @api_view(['GET'])
+@authentication_classes([AdfsAccessTokenAuthentication,])
 def search_vendor(request, ):
 	params = dict(request.GET)
 	try:
@@ -80,6 +82,7 @@ def search_vendor(request, ):
 		return APIResponse("Internal Error.", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['GET'])
+@authentication_classes([AdfsAccessTokenAuthentication,])
 def get_purchase_order(request, po_id):
 	try:
 		try:
@@ -104,6 +107,7 @@ def get_purchase_order(request, po_id):
 		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['POST'])
+@authentication_classes([AdfsAccessTokenAuthentication,])
 def create_grn(request, ):
 	identifier = "PONumber"  # should be PO_ID
 	# keys we NEED to create a GRN
@@ -148,6 +152,7 @@ def create_grn(request, ):
 		return APIResponse(str(e), status.HTTP_400_BAD_REQUEST)
 
 @api_view(['GET'])
+@authentication_classes([AdfsAccessTokenAuthentication,])
 def get_all_grns(request, ):
 	try:
 		grns = GoodsReceivedNote.objects.all()
@@ -161,7 +166,7 @@ def get_all_grns(request, ):
 	
 
 @api_view(['GET'])
-@permission_classes((IsAuthenticated,))
+@authentication_classes([AdfsAccessTokenAuthentication,])
 def get_vendors_grns(request, ):
 	'''
 		Get all GRNs for the authenticated user
@@ -181,6 +186,7 @@ def get_vendors_grns(request, ):
 
 
 @api_view(['GET'])
+@authentication_classes([AdfsAccessTokenAuthentication,])
 def get_grn(request, grn_number):
 	try:
 		grn = GoodsReceivedNote.objects.get(grn_number=grn_number)
