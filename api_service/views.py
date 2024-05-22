@@ -19,7 +19,6 @@ from invoice_service.models import Surcharge
 from invoice_service.serializers import SurchargeSerializer
 
 from overrides.authenticate import CombinedAuthentication
-from django_auth_adfs.rest_framework import AdfsAccessTokenAuthentication
 
 # Initialize REST services
 byd_rest_services = RESTServices()
@@ -193,7 +192,7 @@ def get_vendors_orders(request, po_id=None):
 		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 @api_view(['GET'])
-@authentication_classes([AdfsAccessTokenAuthentication,])
+@authentication_classes([CombinedAuthentication,])
 # get surcharges
 def get_surcharges(request):
 	# return all surcharges from the models.Surcharge model
