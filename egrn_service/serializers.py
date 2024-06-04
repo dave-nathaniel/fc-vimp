@@ -27,6 +27,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 
 class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	grn_line_items = GoodsReceivedLineItemSerializer(many=True, read_only=True, source="line_items")
+	extra_fields = serializers.JSONField()
 	outstanding_quantity = serializers.SerializerMethodField()
 	delivery_status_code = serializers.SerializerMethodField()
 	delivery_status_text = serializers.SerializerMethodField()

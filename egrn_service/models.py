@@ -1,5 +1,6 @@
 import logging
-
+import inspect
+from . import converters
 from django.db import models
 from django.db.utils import IntegrityError
 from core_service.models import VendorProfile
@@ -7,10 +8,13 @@ from byd_service.rest import RESTServices
 from byd_service.util import to_python_time
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Sum
-from .converters import ProductConverters
 
 # Initialize REST services
 byd_rest_services = RESTServices()
+
+def get_conversion_methods():
+	methods = inspect.getmembers(converters, inspect.isfunction)
+	return [(name, name) for name, func in methods]
 
 
 class Store(models.Model):
@@ -102,7 +106,7 @@ class PurchaseOrderLineItem(models.Model):
 	quantity = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_price = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_of_measurement = models.CharField(max_length=32, blank=False, null=False)
-	extra_fields = models.JSONField(default=list, null=True, blank=True)
+	# extra_fields = models.JSONField(default=list, null=True, blank=True)
 	metadata = models.JSONField(default=dict)
 	
 	@property
@@ -119,6 +123,15 @@ class PurchaseOrderLineItem(models.Model):
 		# Access related GoodsReceivedLineItem instances and calculate total received quantity
 		delivered_quantity = self.grn_line_item.aggregate(total_received=Sum('quantity_received'))['total_received']
 		return delivered_quantity or 0.00
+	
+	@property
+	def extra_fields(self, ):
+		# If the product ID is defined in the ProductConversion model, return the conversion fields
+		try:
+			product_conversion = ProductConversion.objects.get(product_id=self.metadata["ProductID"])
+			return product_conversion.conversion.conversion_field
+		except ObjectDoesNotExist:
+			return []
 	
 	def __str__(self):
 		return f"{self.product_name} ({self.quantity})"
@@ -178,7 +191,7 @@ class GoodsReceivedNote(models.Model):
 				grn_line_item = GoodsReceivedLineItem()
 				# Get the purchase order line item that corresponds to this line item from the purchase order of this Goods Received Note
 				grn_line_item.purchase_order_line_item = PurchaseOrderLineItem.objects.get(purchase_order=self.purchase_order,
-				                                                 object_id=line_item["itemObjectID"])
+																 object_id=line_item["itemObjectID"])
 				grn_line_item.grn = self
 				grn_line_item.extra_fields = line_item.get("extra_fields", {})
 				grn_line_item.save(
@@ -199,9 +212,9 @@ class GoodsReceivedNote(models.Model):
 class GoodsReceivedLineItem(models.Model):
 	grn = models.ForeignKey(GoodsReceivedNote, on_delete=models.CASCADE, related_name='line_items')
 	purchase_order_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE,
-	                                             related_name='grn_line_item')
+												 related_name='grn_line_item')
 	quantity_received = models.DecimalField(max_digits=15, decimal_places=3, default=0.000)
-	extra_fields = models.JSONField(default=dict, null=True, blank=True)
+	metadata = models.JSONField(default=dict)
 	date_received = models.DateField(auto_now=True)
 	
 	@property
@@ -210,20 +223,10 @@ class GoodsReceivedLineItem(models.Model):
 	
 	def save(self, *args, **kwargs):
 		"""
-		Saves the instance to the database.
-	
-		Args:
-			*args: Variable length argument list.
-			**kwargs: Arbitrary keyword arguments.
-	
-		Raises:
-			ValueError: If the quantity received is greater than the outstanding quantity.
-	
-		Returns:
-			The saved instance.
+			Saves the instance to the database.
 		"""
-		# Get the sum of the quantity received for this item by adding up the quantity received for each
-		# line item that has been raised for this item.
+		# Get the sum of the quantity received for this item by adding up the quantity received
+		# of all GRN line items for this particular PO line item.
 		grns_raised_for_this = self.get_grn_for_po_line(self.purchase_order_line_item.object_id)
 		total_received = grns_raised_for_this.aggregate(total_sum=Sum('quantity_received'))['total_sum']
 		total_received = total_received or 0.00
@@ -257,23 +260,27 @@ class GoodsReceivedLineItem(models.Model):
 		return f"GRN Entry for '{self.purchase_order_line_item.product_name}'"
 
 
-class ProductConversion(models.Model):
+class Conversion(models.Model):
 	'''
-		Defines how specified goods should be converted.
+		Defines how a product can be converted to another unit of measurement.
 	'''
-	product_id = models.CharField(max_length=32, blank=False, null=False, unique=True)
-	required_fields = models.JSONField(default=dict) # ['number_of_birds'. 'quantityReceived']
-	conversion_factor = models.JSONField(default=dict)
+	name = models.CharField(max_length=100, blank=False, null=False, unique=True) # The name of the conversion.
+	conversion_field = models.JSONField(default=dict, blank=False) # The fields that define the conversion.
+	conversion_method = models.CharField(max_length=100, choices=get_conversion_methods()) #
 	created_on = models.DateTimeField(auto_now_add=True)
 	
+	def __str__(self):
+		return f"{self.name}"
+	
 
-class ProductReceiptFields(models.Model):
+class ProductConversion(models.Model):
 	'''
-		Defines extra fields that can be added to a Product Receipt.
+		Associates a product with a conversion.
 	'''
 	product_id = models.CharField(max_length=32, blank=False, null=False, unique=True) # The ByD Product ID
-	extra_fields = models.JSONField(default=dict, null=False, blank=False) # An array of extra fields that can be added to a Product Receipt
-	created_on = models.DateTimeField(auto_now_add=True) # The date and time that the Product Receipt Fields were created
+	conversion = models.ForeignKey(Conversion, on_delete=models.CASCADE, related_name='product_conversion')
+	created_on = models.DateTimeField(auto_now_add=True)
 	
 	def __str__(self):
-		return f"Fields for '{self.product_id}'"
+		return f"{self.conversion.name} for '{self.product_id}'"
+	
