@@ -1,10 +1,111 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>$Title$</title>
+    <meta charset="UTF-8">
+    <title>Title</title>
+    <!-- Other head tags -->
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.12/dist/tailwind.min.css" rel="stylesheet">
 </head>
 <body>
-$END$
+    <div class="bg-white p-4 w-full box-shadow">
+        <div id="pdf">
+            <div class=" items-center flex bg-white">
+                <div class="flex flex-col items-center">
+                    <img width="80%" height="42" alt="Food Concepts PLC"  src="https://foodconceptsplc.com/wp-content/uploads/2019/10/FoodConcepts_Logo-1.png" border="0" style="border:none;padding:0;margin:0;-ms-interpolation-mode:bicubic;">
+                </div>
+                <div class="flex flex-col items-center self-center justify-center">
+                    <p class="font-semibold text-3xl  text-blue-800 ml-16 my-4">
+                        Food Concepts (Chicken Republic)
+                    </p>
+                    <p class="text-[#474646] font-normal text-base ml-16">
+                        <span class="underline  pb-3">
+                            2, Ilupeju Bye Pass, Ilupeju, Lagos, Nigeria{" "}
+                        </span>
+                        Tel: +234 (0) 809 016 5972 | +234 (0) 809 016 5973
+                    </p>
+                </div>
+            </div>
+            <div class="flex justify-between items-center text-[#545454] text-base p-4">
+                <ul class="m-0 p-0 justify-end">
+                    <li class="flex gap-6 text-justify">
+                        <span class="flex-grow">Received from:</span>
+                        <span class="text-justify">{vendorname}</span>
+                    </li>
+                    <li class="flex gap-6 ">
+                        <span class="flex-grow">Store Name:</span>
+                        <span class="">{invoiceData.store.store_name}</span>
+                        {/* <span class='text-justify'>{deliveryLocation}</span> */}
+                    </li>
+                </ul>
+                <div class="flex flex-col">
+                    <div class="text-right text-[#5B5B5B] font-normal text-xl mb-2">
+                        Goods Reciept Note
+                    </div>
+                    <div class="border border-gray-200 font-normal flex flex-col">
+                        <div class="border-b border-gray-200  flex  p-2 m-0">
+                            <span>Date</span>
+                            <span class=" text-right flex-grow ">
+                                {invoiceData.created}
+                            </span>
+                        </div>
+                        <div class="border-b border-gray-200 flex gap-36  p-2 m-0">
+                            <span>Purchase Order Number</span>
+                            <span class="text-right flex-grow ">
+                                {invoiceData.purchase_order.po_id}
+                            </span>
+                        </div>
+                        <div class="border-b border-gray-200 flex gap-36  p-2 m-0">
+                            <span>GRN Number</span>
+                            <span class="text-right flex-grow ">
+                                {invoiceData.grn_number}
+                            </span>
+                        </div>
+                        <div class="flex gap-36 m-0 p-2">
+                            <span>Currency</span>
+                            <span class="flex-grow  text-right">₦</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <table class="w-full mt-8 shadow">
+                <thead class="text-sm bg-blue-800 text-white">
+                <tr>
+                    <th class="py-2 pl-8">Description</th>
+                    <th class=" py-2 pr-20">UoM</th>
+                    <th class=" py-2 pr-20">Quantity</th>
+                    <th class=" py-2 pr-16">Unit Price</th>
+                    <th class=" py-2 pr-16">Amount</th>
+                </tr>
+                </thead>
+                <tbody>
+                <tr class="text-sm  h-12 border-b dark:border-gray-700">
+                    <td class="pl-">
+                        product_name
+                    </td>
+                    <td class="pl-4">
+                        unit_of_measurement
+                    </td>
+                    <td class="pl-12">
+                        quantity_received
+                    </td>
+                    <td class="pl-10">
+                        unit_price
+                    </td>
+                    <td class="pl-8">
+                        item.quantity_received * unit_price
+                    </td>
+                </tr>
+                <tr class=" border-b dark:border-gray-700">
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td></td>
+                    <td class=" text-sm py-3 pl-8 ">Grand Total</td>
+                    <td class=" text-sm py-3 pl-8">20000</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
 </body>
 </html>

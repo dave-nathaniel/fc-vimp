@@ -1,43 +1,51 @@
 # Vendor Profile serializer
+import logging
 from rest_framework import serializers
 from core_service.models import VendorProfile
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import make_password
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
-from django.forms.models import model_to_dict
+from django.core.exceptions import ObjectDoesNotExist
 
 CustomUser = get_user_model()
 
 
+class RelatedObjectDoesNotExist:
+	pass
+
+
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
+	
+	def get_user_data(self, user):
+		user_data = {
+			'id': user.id,
+			'username': user.username,
+			'email': user.email
+		}
+		# Try to get the vendor_profile related to the user. If the user does not have a vendor_profile,
+		# then they are probably not a vendor; return the first_name and last_name
+		try:
+			user_data['vendor_settings'] = user.vendor_profile.vendor_settings
+			user_data['vendor_name'] = user.first_name
+		except ObjectDoesNotExist:
+			user_data['first_name'] = user.first_name
+			user_data['last_name'] = user.last_name
+		
+		return user_data
+	
 	@classmethod
 	def get_token(cls, user):
 		token = super().get_token(user)
-		# Add custom claims to the token, if needed
+		# Add custom claims to the token
+		token['user'] = cls.get_user_data(cls, user)
 		return token
 	
-	# noinspection PyTypeChecker
 	def validate(self, attrs):
 		data = super().validate(attrs)
 		user = self.user or self.context['request'].user
 		# Include user information in the response
-		data['user'] = {
-			'id': user.id,
-			'username': user.username,
-			'email': user.email,
-			'vendor_name': user.first_name,
-			'vendor_settings': user.vendor_profile.vendor_settings
-		}
-
+		data['user'] = self.get_user_data(user)
 		return data
-	
-	def to_representation(self, instance):
-		user = instance
-		return {
-			'username': user.username,
-			'email': user.email,
-			'vendor_name': user.first_name,
-		}
 	
 	class Meta:
 		model = CustomUser

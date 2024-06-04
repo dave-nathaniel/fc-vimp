@@ -21,12 +21,13 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	
 	class Meta:
 		model = GoodsReceivedLineItem
-		fields = ['id', 'grn_number', 'quantity_received', 'value_received', 'date_received',
+		fields = ['id', 'grn_number', 'quantity_received', 'value_received', 'extra_fields', 'date_received',
 		          'purchase_order_line_item']
 
 
 class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	grn_line_items = GoodsReceivedLineItemSerializer(many=True, read_only=True, source="line_items")
+	extra_fields = serializers.JSONField()
 	outstanding_quantity = serializers.SerializerMethodField()
 	delivery_status_code = serializers.SerializerMethodField()
 	delivery_status_text = serializers.SerializerMethodField()

@@ -8,7 +8,8 @@ class SurchargeSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = Surcharge
 		fields = '__all__'
-		
+
+	
 class InvoiceLineItemSerializer(serializers.ModelSerializer):
 	surcharges = SurchargeSerializer(many=True, read_only=True)
 	surcharge_ids = serializers.ListField(
@@ -44,6 +45,7 @@ class InvoiceLineItemSerializer(serializers.ModelSerializer):
 		model = InvoiceLineItem
 		fields = ['invoice', 'quantity', 'gross_total', 'discountable', 'discount_type', 'discount', 'discount_amount', 'discounted_gross_total', 'net_total_after_surcharges', 'surcharges', 'po_line_item', 'surcharge_ids']
 		write_only_fields = ['invoice']
+
 
 class InvoiceSerializer(serializers.ModelSerializer):
 	invoice_line_items = InvoiceLineItemSerializer(many=True, read_only=True)

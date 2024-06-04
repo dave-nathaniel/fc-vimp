@@ -1,6 +1,8 @@
 from django.urls import path, include
 from .views import *
-from core_service.views import CustomTokenObtainPairView
+from invoice_service.views import *
+from approval_service.views import *
+from core_service.views import CustomTokenObtainPairView, PermissionTestsView
 from egrn_service.views import get_vendors_grns
 
 urlpatterns = [
@@ -16,5 +18,9 @@ urlpatterns = [
 	# Invoice endpoints
 	path('vendor/invoices', VendorInvoiceView.as_view(), name='vendor_invoice'),
 	# Misc endpoints
-	path('surcharges', get_surcharges, name='get_surcharges')
+	path('surcharges', get_surcharges, name='get_surcharges'),
+	path('rights', PermissionTestsView.as_view(), name='get_user_rights'),
+	
+	# Approval endpoints
+	path('approvals/createkey', KeystoreAPIView.as_view(), name='manage_keystore'),
 ]
