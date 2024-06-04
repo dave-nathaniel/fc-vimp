@@ -78,19 +78,12 @@ class PurchaseOrder(models.Model):
 	
 	def __create_line_items__(self, line_item):
 		po_line_item = PurchaseOrderLineItem()
-		try:
-			# Get the receipt fields for the product if any are defined
-			receipt_fields = ProductReceiptFields.objects.get(product_id=line_item["ProductID"])
-		except ObjectDoesNotExist:
-			receipt_fields = None
-		
 		po_line_item.purchase_order = self
 		po_line_item.object_id = line_item["ObjectID"]
 		po_line_item.product_name = line_item["Description"]
 		po_line_item.quantity = float(line_item["Quantity"])
 		po_line_item.unit_price = line_item["ListUnitPriceAmount"]
 		po_line_item.unit_of_measurement = line_item["QuantityUnitCodeText"]
-		po_line_item.extra_fields = receipt_fields.extra_fields if receipt_fields else []
 		po_line_item.metadata = line_item
 		
 		po_line_item.save()
