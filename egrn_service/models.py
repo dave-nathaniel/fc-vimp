@@ -6,7 +6,7 @@ from django.db.utils import IntegrityError
 from core_service.models import VendorProfile
 from byd_service.rest import RESTServices
 from byd_service.util import to_python_time
-from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db.models import Sum
 
 # Initialize REST services
@@ -99,7 +99,6 @@ class PurchaseOrderLineItem(models.Model):
 	quantity = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_price = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_of_measurement = models.CharField(max_length=32, blank=False, null=False)
-	# extra_fields = models.JSONField(default=list, null=True, blank=True)
 	metadata = models.JSONField(default=dict)
 	
 	@property
@@ -186,10 +185,8 @@ class GoodsReceivedNote(models.Model):
 				grn_line_item.purchase_order_line_item = PurchaseOrderLineItem.objects.get(purchase_order=self.purchase_order,
 																 object_id=line_item["itemObjectID"])
 				grn_line_item.grn = self
-				grn_line_item.extra_fields = line_item.get("extra_fields", {})
-				grn_line_item.save(
-					quantity_received=float(line_item["quantityReceived"]),
-				)
+				grn_line_item.quantity_received = float(line_item["quantityReceived"])
+				grn_line_item.save(data=line_item)
 				created_line_items[line_item['itemObjectID']] = True
 			except Exception as e:
 				logging.error(f"{line_item['itemObjectID']}: {e}")
@@ -207,40 +204,72 @@ class GoodsReceivedLineItem(models.Model):
 	purchase_order_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE,
 												 related_name='grn_line_item')
 	quantity_received = models.DecimalField(max_digits=15, decimal_places=3, default=0.000)
-	metadata = models.JSONField(default=dict)
+	metadata = models.JSONField(default=dict, blank=True, null=True)
 	date_received = models.DateField(auto_now=True)
 	
 	@property
 	def value_received(self):
 		return self.quantity_received * self.purchase_order_line_item.unit_price
 	
-	def save(self, *args, **kwargs):
-		"""
-			Saves the instance to the database.
-		"""
+	def clean(self):
 		# Get the sum of the quantity received for this item by adding up the quantity received
 		# of all GRN line items for this particular PO line item.
 		grns_raised_for_this = self.get_grn_for_po_line(self.purchase_order_line_item.object_id)
 		total_received = grns_raised_for_this.aggregate(total_sum=Sum('quantity_received'))['total_sum']
 		total_received = total_received or 0.00
 		# Get the quantity that is being received for this item.
-		quantity_to_receive = kwargs.pop("quantity_received")
-		# Get the sum of the quantity received and the total quantity received for this item.
-		sum_quantity = float(quantity_to_receive) + float(total_received)
+		quantity_to_receive = self.quantity_received
+		# Check that quantity to receive is greater than 0.
+		if quantity_to_receive <= 0:
+			raise ValidationError("Quantity received must be greater than 0.")
 		# Get the outstanding delivery for this item.
 		outstanding_quantity = float(self.purchase_order_line_item.quantity) - float(total_received)
 		# Check to see if there is any outstanding delivery for this item.
 		if outstanding_quantity == 0:
-			raise ValueError("This item has been completely delivered.")
+			raise ValidationError("This item has been completely delivered.")
+		# Get the sum of the quantity received and the total quantity received for this item.
+		sum_quantity = float(quantity_to_receive) + float(total_received)
 		# Check to see if the quantity received is greater than the outstanding quantity.
 		if sum_quantity > self.purchase_order_line_item.quantity:
-			raise ValueError(
+			raise ValidationError(
 				f"Quantity received ({quantity_to_receive}) is greater than outstanding delivery quantity ({outstanding_quantity}).")
 		
-		# Set the quantity received for this line item to the quantity received.
-		self.quantity_received = quantity_to_receive
-		
-		return super().save(*args, **kwargs)
+	def convert_product(self, data):
+		# Get the product_id of the product being saved from the po line item metadata`
+		product_id = self.purchase_order_line_item.metadata.get('ProductID')
+		# Get conversion methods defined for this product
+		conversion_method = ProductConversion.objects.get(product_id=product_id).conversion.conversion_method
+		# Get the conversion method name from the instance
+		method_name = conversion_method
+		# Get all the functions from the conversion_methods module
+		methods = dict(inspect.getmembers(converters, inspect.isfunction))
+		# Get the specific method to call
+		method_to_call = methods.get(method_name)
+	
+		if method_to_call:
+			try:
+				input_fields = data.get('extra_fields')
+				# Call the conversion method with the Product instance
+				result = method_to_call(input_fields=input_fields)
+				# If any items in the result dict is an attribute of this class, remove it from the result dict and set it to the instance
+				for key, value in result.items():
+					if hasattr(self, key):
+						setattr(self, key, value)
+					else:
+						self.metadata[key] = value
+			except Exception as e:
+				logging.error(f"Error converting product with method {method_name}: {e}")
+		else:
+			logging.error(f"conversion method {method_name} not found in conversion_methods module")
+	
+	def save(self, *args, **kwargs):
+		"""
+			Saves the instance to the database.
+		"""
+		self.convert_product(data=kwargs.get('data'))
+		print(f"Quantity Received: {self.quantity_received}")
+		self.full_clean()
+		return super().save()
 	
 	def get_grn_for_po_line(self, object_id):
 		"""
