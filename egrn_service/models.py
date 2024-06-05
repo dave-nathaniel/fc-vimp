@@ -237,8 +237,11 @@ class GoodsReceivedLineItem(models.Model):
 	def convert_product(self, data):
 		# Get the product_id of the product being saved from the po line item metadata`
 		product_id = self.purchase_order_line_item.metadata.get('ProductID')
-		# Get conversion methods defined for this product
-		conversion_method = ProductConversion.objects.get(product_id=product_id).conversion.conversion_method
+		try:
+			# Get conversion methods defined for this product
+			conversion_method = ProductConversion.objects.get(product_id=product_id).conversion.conversion_method
+		except ObjectDoesNotExist:
+			return False
 		# Get the conversion method name from the instance
 		method_name = conversion_method
 		# Get all the functions from the conversion_methods module
@@ -266,7 +269,11 @@ class GoodsReceivedLineItem(models.Model):
 		"""
 			Saves the instance to the database.
 		"""
-		self.convert_product(data=kwargs.get('data'))
+		try:
+			self.convert_product(data=kwargs.get('data'))
+		except Exception as e:
+			logging.error(f"Error converting product: {e}")
+			
 		self.clean()
 		return super().save()
 	
