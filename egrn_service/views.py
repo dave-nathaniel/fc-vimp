@@ -125,10 +125,6 @@ def create_grn(request, ):
 	# If required keys are not present, return an error
 	if not all(required_keys_present):
 		return APIResponse(f"Missing required key(s) [{', '.join(required_keys)}]", status.HTTP_400_BAD_REQUEST)
-	# Check that all the quantityReceived in the recievedGoods object are greater than 0
-	for item in request_data["recievedGoods"]:
-		if item["quantityReceived"] <= 0:
-			return APIResponse(f"Invalid quantity received: {item['quantityReceived']}", status.HTTP_400_BAD_REQUEST)
 	# Make the PO_ID key consistent as the identifier
 	request_data["po_id"] = request_data[identifier]
 	try:
@@ -147,7 +143,7 @@ def create_grn(request, ):
 			template_data['purchase_order']['Supplier']['SupplierPostalAddress'] = template_data['purchase_order']['Supplier']['SupplierPostalAddress'][0]
 			# Render the HTML content of the template and send the email asynchronously
 			html_content = render_to_string('grn_receipt_template.html', {'data': template_data})
-			# send_email_async(html_content)
+			send_email_async(html_content)
 			return APIResponse("GRN Created.", status.HTTP_201_CREATED, data=goods_received_note)
 	# Return an error if there is an exception
 	except Exception as e:

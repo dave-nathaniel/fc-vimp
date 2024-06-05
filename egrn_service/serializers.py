@@ -10,6 +10,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	purchase_order_line_item = serializers.SerializerMethodField()
 	grn_number = serializers.SerializerMethodField()
 	value_received = serializers.FloatField()
+	metadata = serializers.JSONField()
 	
 	def get_purchase_order_line_item(self, obj):
 		po_line_item = PurchaseOrderLineItemSerializer(obj.purchase_order_line_item, many=False).data
@@ -21,7 +22,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	
 	class Meta:
 		model = GoodsReceivedLineItem
-		fields = ['id', 'grn_number', 'quantity_received', 'value_received', 'extra_fields', 'date_received',
+		fields = ['id', 'grn_number', 'quantity_received', 'value_received', 'metadata', 'date_received',
 		          'purchase_order_line_item']
 
 
