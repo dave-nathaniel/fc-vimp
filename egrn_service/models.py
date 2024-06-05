@@ -185,7 +185,7 @@ class GoodsReceivedNote(models.Model):
 				grn_line_item.purchase_order_line_item = PurchaseOrderLineItem.objects.get(purchase_order=self.purchase_order,
 																 object_id=line_item["itemObjectID"])
 				grn_line_item.grn = self
-				grn_line_item.quantity_received = float(line_item["quantityReceived"])
+				grn_line_item.quantity_received = round(float(line_item["quantityReceived"]),3)
 				grn_line_item.save(data=line_item)
 				created_line_items[line_item['itemObjectID']] = True
 			except Exception as e:
@@ -267,8 +267,7 @@ class GoodsReceivedLineItem(models.Model):
 			Saves the instance to the database.
 		"""
 		self.convert_product(data=kwargs.get('data'))
-		print(f"Quantity Received: {self.quantity_received}")
-		self.full_clean()
+		self.clean()
 		return super().save()
 	
 	def get_grn_for_po_line(self, object_id):

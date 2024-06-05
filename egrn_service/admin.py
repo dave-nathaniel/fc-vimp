@@ -1,9 +1,14 @@
 from django.contrib import admin
 from .forms import ConversionForm
 from .models import Store, PurchaseOrder, PurchaseOrderLineItem, GoodsReceivedNote, GoodsReceivedLineItem, Conversion, ProductConversion
+from django.db.models.fields.json import JSONField
+from jsoneditor.forms import JSONEditor
 
 class ConversionAdmin(admin.ModelAdmin):
     form = ConversionForm
+    formfield_overrides = {
+        JSONField: {'widget': JSONEditor},
+    }
 
 admin.site.register(Store)
 admin.site.register(PurchaseOrder)
