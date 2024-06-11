@@ -81,6 +81,7 @@ class PurchaseOrder(models.Model):
 		po_line_item.purchase_order = self
 		po_line_item.object_id = line_item["ObjectID"]
 		po_line_item.product_name = line_item["Description"]
+		po_line_item.product_code = line_item["ProductID"]
 		po_line_item.quantity = float(line_item["Quantity"])
 		po_line_item.unit_price = line_item["ListUnitPriceAmount"]
 		po_line_item.unit_of_measurement = line_item["QuantityUnitCodeText"]
@@ -95,6 +96,7 @@ class PurchaseOrder(models.Model):
 class PurchaseOrderLineItem(models.Model):
 	purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='line_items')
 	object_id = models.CharField(max_length=32, blank=False, null=False, unique=True)
+	product_code = models.CharField(max_length=32, blank=False, null=False)
 	product_name = models.CharField(max_length=100)
 	quantity = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_price = models.DecimalField(max_digits=15, decimal_places=3)
