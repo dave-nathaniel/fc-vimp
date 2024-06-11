@@ -2,6 +2,8 @@
 import os, sys
 import logging
 import asyncio
+
+from django.db.models import Avg
 from django.template.loader import render_to_string
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
@@ -16,7 +18,7 @@ from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
 from copy import deepcopy
 
-from .models import GoodsReceivedNote, PurchaseOrder
+from .models import GoodsReceivedNote, PurchaseOrder, PurchaseOrderLineItem
 from .serializers import GoodsReceivedNoteSerializer, PurchaseOrderSerializer
 from .tasks import send_email_async
 
@@ -197,3 +199,37 @@ def get_grn(request, grn_number):
 			return APIResponse("GRN Not Found", status=status.HTTP_404_NOT_FOUND)
 	except Exception as e:
 		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([CombinedAuthentication,])
+def weighted_average(request):
+	product_id = request.query_params.get('product_id')
+	start_date = request.query_params.get('start_date')
+	end_date = request.query_params.get('end_date')
+	
+	if not product_id or not start_date or not end_date:
+		return APIResponse("Product ID, start_date, and end_date are required parameters.", status=status.HTTP_400_BAD_REQUEST)
+	
+	try:
+		# Filter PurchaseOrderLineItems by product_name (assuming product_name is unique)
+		line_items = PurchaseOrderLineItem.objects.filter(
+			product_code=product_id,
+			purchase_order__date__range=[start_date, end_date]
+		)
+	
+		if not line_items.exists():
+			return APIResponse("No line items found for the given product ID and date range.", status=status.HTTP_404_NOT_FOUND)
+	
+		# Calculate the average price
+		avg_price = line_items.aggregate(average_price=Avg('unit_price'))['average_price']
+	
+		return APIResponse("Success", data={
+			"product_id": product_id,
+			"average_price": avg_price,
+			"start_date": start_date,
+			"end_date": end_date
+		}, status=status.HTTP_200_OK)
+	
+	except Exception as e:
+		return APIResponse(str(e), status=status.HTTP_500_INTERNAL_SERVER_ERROR)

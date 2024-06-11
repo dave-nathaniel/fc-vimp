@@ -55,7 +55,7 @@ class NewUserView(APIView):
 								status.HTTP_201_CREATED)
 						else:
 							return APIResponse(f'Setup already initiated for vendor with {id_type} \'{vendor_id}\'.',
-							                   status.HTTP_200_OK)
+											   status.HTTP_200_OK)
 					
 					except IntegrityError as e:
 						return APIResponse(
@@ -108,7 +108,7 @@ class NewUserView(APIView):
 					temp_user.save()
 					
 					new_user = User.objects.create_user(username=username, email=email, password=password,
-					                                    first_name=business_name)
+														first_name=business_name)
 					# We get or create because services like GRN might have already created a profile and
 					# attached models to it before the vendor does their onboarding.
 					vendor, created = VendorProfile.objects.get_or_create(byd_internal_id=internal_id)
@@ -135,8 +135,8 @@ class NewUserView(APIView):
 
 class VendorProfileView(APIView):
 	"""
-    Retrieve, update or delete a vendor profile instance.
-    """
+	Retrieve, update or delete a vendor profile instance.
+	"""
 	serializer_class = VendorProfileSerializer
 	permission_classes = (IsAuthenticated,)
 	
