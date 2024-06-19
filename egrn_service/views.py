@@ -6,10 +6,8 @@ import asyncio
 from django.db.models import Avg
 from django.template.loader import render_to_string
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes, authentication_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.decorators import api_view, authentication_classes
 from django_auth_adfs.rest_framework import AdfsAccessTokenAuthentication
-from rest_framework_simplejwt.authentication import JWTAuthentication
 from overrides.authenticate import CombinedAuthentication
 
 from byd_service.rest import RESTServices
@@ -18,8 +16,8 @@ from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
 from copy import deepcopy
 
-from .models import GoodsReceivedNote, PurchaseOrder, PurchaseOrderLineItem
-from .serializers import GoodsReceivedNoteSerializer, PurchaseOrderSerializer
+from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem
+from .serializers import GoodsReceivedNoteSerializer, PurchaseOrderSerializer, GoodsReceivedLineItemSerializer
 from .tasks import send_email_async
 
 # Initialize REST services
@@ -212,23 +210,27 @@ def weighted_average(request):
 		return APIResponse("Product ID, start_date, and end_date are required parameters.", status=status.HTTP_400_BAD_REQUEST)
 	
 	try:
-		# Filter PurchaseOrderLineItems by product_name (assuming product_name is unique)
-		line_items = PurchaseOrderLineItem.objects.filter(
-			product_code=product_id,
-			purchase_order__date__range=[start_date, end_date]
+		# Get the received line items for the given product ID and date range
+		line_items = GoodsReceivedLineItem.objects.filter(
+			purchase_order_line_item__product_code=product_id,
+			date_received__range=[start_date, end_date]
 		)
-	
+		
 		if not line_items.exists():
 			return APIResponse("No line items found for the given product ID and date range.", status=status.HTTP_404_NOT_FOUND)
 	
 		# Calculate the average price
-		avg_price = line_items.aggregate(average_price=Avg('unit_price'))['average_price']
-	
+		avg_price = line_items.aggregate(average_price=Avg('purchase_order_line_item__unit_price'))['average_price']
+		
+		# Serialize the GoodsReceivedLineItem instances
+		Goods = GoodsReceivedLineItemSerializer(line_items, many=True).data
+		
 		return APIResponse("Success", data={
 			"product_id": product_id,
 			"average_price": avg_price,
 			"start_date": start_date,
-			"end_date": end_date
+			"end_date": end_date,
+			"items": Goods
 		}, status=status.HTTP_200_OK)
 	
 	except Exception as e:
