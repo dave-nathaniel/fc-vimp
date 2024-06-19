@@ -227,6 +227,7 @@ def weighted_average(request):
 		
 		return APIResponse("Success", data={
 			"product_id": product_id,
+			"product_name": line_items[0].purchase_order_line_item.product_name,
 			"average_price": avg_price,
 			"start_date": start_date,
 			"end_date": end_date,
