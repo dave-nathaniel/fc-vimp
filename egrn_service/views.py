@@ -143,7 +143,7 @@ def create_grn(request, ):
 			template_data['purchase_order']['Supplier']['SupplierPostalAddress'] = template_data['purchase_order']['Supplier']['SupplierPostalAddress'][0]
 			# Render the HTML content of the template and send the email asynchronously
 			html_content = render_to_string('grn_receipt_template.html', {'data': template_data})
-			# send_email_async(html_content)
+			send_email_async(html_content)
 			return APIResponse("GRN Created.", status.HTTP_201_CREATED, data=goods_received_note)
 	# Return an error if there is an exception
 	except Exception as e:
