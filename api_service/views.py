@@ -13,9 +13,8 @@ from overrides.rest_framework import APIResponse
 from byd_service.rest import RESTServices
 from core_service.models import TempUser, VendorProfile
 from core_service.serializers import VendorProfileSerializer
-from egrn_service.models import PurchaseOrder
+from egrn_service.models import PurchaseOrder, Surcharge
 from egrn_service.serializers import PurchaseOrderSerializer
-from invoice_service.models import Surcharge
 from invoice_service.serializers import SurchargeSerializer
 
 from overrides.authenticate import CombinedAuthentication

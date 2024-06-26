@@ -1,22 +1,10 @@
 from django.db import models
 from django.db.models import Sum
-from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem
+from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem, Surcharge
 from approval_service.models import Signable, Workflow
 
 
 # Create your models here.
-class Surcharge(models.Model):
-	code = models.IntegerField(verbose_name='Code')
-	description = models.CharField(max_length=255, verbose_name='Description')
-	type = models.CharField(max_length=50, blank=False, null=False, default="Value Added Tax", verbose_name='Type')
-	rate = models.DecimalField(max_digits=6, decimal_places=3, verbose_name='Rate')
-	last_modified = models.DateTimeField(auto_now=True, verbose_name='Last Modified')
-	metadata = models.JSONField(default=dict, blank=True, null=True)
-	
-	def __str__(self):
-		return f'{self.code} - {self.description}'
-
-
 class InvoiceWorkflow(Workflow):
 	'''
 		Supporting class for the Invoice workflow. A subclass of the Workflow class.

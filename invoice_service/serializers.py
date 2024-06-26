@@ -1,15 +1,9 @@
 from rest_framework import serializers
-from .models import Invoice, InvoiceLineItem, Surcharge
+from .models import Invoice, InvoiceLineItem
 from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem
-from egrn_service.serializers import PurchaseOrderSerializer, PurchaseOrderLineItemSerializer
+from egrn_service.serializers import SurchargeSerializer, PurchaseOrderSerializer, PurchaseOrderLineItemSerializer
 
 
-class SurchargeSerializer(serializers.ModelSerializer):
-	class Meta:
-		model = Surcharge
-		fields = '__all__'
-
-	
 class InvoiceLineItemSerializer(serializers.ModelSerializer):
 	surcharges = SurchargeSerializer(many=True, read_only=True)
 	surcharge_ids = serializers.ListField(
