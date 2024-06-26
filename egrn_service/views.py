@@ -2,7 +2,7 @@
 import os, sys
 import logging
 import asyncio
-
+from datetime import datetime
 from django.db.models import Avg
 from django.template.loader import render_to_string
 from rest_framework import status
@@ -143,7 +143,7 @@ def create_grn(request, ):
 			template_data['purchase_order']['Supplier']['SupplierPostalAddress'] = template_data['purchase_order']['Supplier']['SupplierPostalAddress'][0]
 			# Render the HTML content of the template and send the email asynchronously
 			html_content = render_to_string('grn_receipt_template.html', {'data': template_data})
-			send_email_async(html_content)
+			# send_email_async(html_content)
 			return APIResponse("GRN Created.", status.HTTP_201_CREATED, data=goods_received_note)
 	# Return an error if there is an exception
 	except Exception as e:
@@ -202,37 +202,58 @@ def get_grn(request, grn_number):
 @api_view(['GET'])
 @authentication_classes([CombinedAuthentication,])
 def weighted_average(request):
-	product_id = request.query_params.get('product_id')
-	start_date = request.query_params.get('start_date')
-	end_date = request.query_params.get('end_date')
-	
-	if not product_id or not start_date or not end_date:
-		return APIResponse("Product ID, start_date, and end_date are required parameters.", status=status.HTTP_400_BAD_REQUEST)
-	
-	try:
+	'''
+		Get the weighted average of a product for a given date range
+	'''
+	def get_weighted_average(product_id, start_date, end_date):
 		# Get the received line items for the given product ID and date range
 		line_items = GoodsReceivedLineItem.objects.filter(
-			purchase_order_line_item__product_code=product_id,
+			purchase_order_line_item__product_id=product_id,
 			date_received__range=[start_date, end_date]
 		)
-		
+		# If no line items are found, return False
 		if not line_items.exists():
-			return APIResponse("No line items found for the given product ID and date range.", status=status.HTTP_404_NOT_FOUND)
-	
+			return False
 		# Calculate the average price
 		avg_price = line_items.aggregate(average_price=Avg('purchase_order_line_item__unit_price'))['average_price']
-		
 		# Serialize the GoodsReceivedLineItem instances
 		Goods = GoodsReceivedLineItemSerializer(line_items, many=True).data
-		
-		return APIResponse("Success", data={
+		# Return the weighted average result
+		return {
 			"product_id": product_id,
 			"product_name": line_items[0].purchase_order_line_item.product_name,
 			"average_price": avg_price,
 			"start_date": start_date,
 			"end_date": end_date,
 			"items": Goods
-		}, status=status.HTTP_200_OK)
+		}
+	
+	product_id = request.query_params.get('product_id')
+	# Get the start date or use the first date of the year as default
+	start_date = request.query_params.get('start_date') or datetime.now().replace(day=1, month=1).date()
+	# Get the end date or use todays date as default
+	end_date = request.query_params.get('end_date') or datetime.now().date()
+	# If the start date is after the end date, return an error
+	if start_date > end_date:
+		return APIResponse("Invalid date range.", status=status.HTTP_400_BAD_REQUEST)
+	
+	try:
+		if product_id:
+			# If a product ID is provided, get the weighted average for that product ID
+			result = get_weighted_average(product_id, start_date, end_date)
+			if result:
+				# Return the weighted average result if it exists
+				return APIResponse("Success", data=result, status=status.HTTP_200_OK)
+		else:
+			# If a product ID is not provided, get a unique list of product IDs
+			product_ids = GoodsReceivedLineItem.objects.values_list('purchase_order_line_item__product_id', flat=True).distinct()
+			# Get the weighted average for each product ID
+			results = [get_weighted_average(product_id, start_date, end_date) for product_id in product_ids]
+			if results:
+				# If any weighted average results exist, return them as a list of dictionaries
+				return APIResponse("Success", data=results, status=status.HTTP_200_OK)
+		# If no weighted average results exist, return an error
+		return APIResponse("No data found.", status=status.HTTP_404_NOT_FOUND)
 	
 	except Exception as e:
 		return APIResponse(str(e), status=status.HTTP_500_INTERNAL_SERVER_ERROR)
