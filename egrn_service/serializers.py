@@ -1,8 +1,13 @@
 from datetime import datetime
-
 from rest_framework import serializers
-from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem
+from .models import Surcharge, GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem
 from django.forms.models import model_to_dict
+
+
+class SurchargeSerializer(serializers.ModelSerializer):
+	class Meta:
+		model = Surcharge
+		fields = '__all__'
 
 
 class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
@@ -51,7 +56,7 @@ class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	
 	class Meta:
 		model = PurchaseOrderLineItem
-		fields = ['object_id', 'product_name', 'unit_price', 'quantity', 'unit_of_measurement', 'delivery_status_code',
+		fields = ['object_id', 'product_name', 'unit_price', 'quantity', 'tax_rates', 'unit_of_measurement', 'delivery_status_code',
 		          'delivery_status_text', 'delivered_quantity', 'outstanding_quantity', 'delivery_completed', 'extra_fields',
 		          'metadata', 'grn_line_items']
 

@@ -8,6 +8,33 @@ from byd_service.rest import RESTServices
 from byd_service.util import to_python_time
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db.models import Sum
+from django.forms.models import model_to_dict
+
+
+# Create your models here.
+class Surcharge(models.Model):
+	code = models.IntegerField(verbose_name='Code')
+	description = models.CharField(max_length=255, verbose_name='Description')
+	type = models.CharField(max_length=50, blank=False, null=False, default="Value Added Tax", verbose_name='Type')
+	rate = models.FloatField(verbose_name='Rate')
+	last_modified = models.DateTimeField(auto_now=True, verbose_name='Last Modified')
+	metadata = models.JSONField(default=dict, blank=True, null=True)
+	
+	def __str__(self):
+		return f'{self.code} - {self.description}'
+
+
+class ProductSurcharge(models.Model):
+	'''
+		Associates a product with a surcharge.
+	'''
+	
+	product_id = models.CharField(max_length=32, blank=False, null=False) # The ByD Product ID
+	surcharge = models.ForeignKey(Surcharge, on_delete=models.CASCADE, related_name='product_surcharge')
+	
+	class Meta:
+		unique_together = ('product_id', 'surcharge')
+
 
 # Initialize REST services
 byd_rest_services = RESTServices()
@@ -78,10 +105,11 @@ class PurchaseOrder(models.Model):
 	
 	def __create_line_items__(self, line_item):
 		po_line_item = PurchaseOrderLineItem()
+		
 		po_line_item.purchase_order = self
 		po_line_item.object_id = line_item["ObjectID"]
 		po_line_item.product_name = line_item["Description"]
-		po_line_item.product_code = line_item["ProductID"]
+		po_line_item.product_id = line_item["ProductID"]
 		po_line_item.quantity = float(line_item["Quantity"])
 		po_line_item.unit_price = line_item["ListUnitPriceAmount"]
 		po_line_item.unit_of_measurement = line_item["QuantityUnitCodeText"]
@@ -96,10 +124,11 @@ class PurchaseOrder(models.Model):
 class PurchaseOrderLineItem(models.Model):
 	purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='line_items')
 	object_id = models.CharField(max_length=32, blank=False, null=False, unique=True)
-	product_code = models.CharField(max_length=32, blank=False, null=False)
+	product_id = models.CharField(max_length=32, blank=False, null=False)
 	product_name = models.CharField(max_length=100)
 	quantity = models.DecimalField(max_digits=15, decimal_places=3)
 	unit_price = models.DecimalField(max_digits=15, decimal_places=3)
+	tax_rates = models.JSONField(default=list)
 	unit_of_measurement = models.CharField(max_length=32, blank=False, null=False)
 	metadata = models.JSONField(default=dict)
 	
@@ -111,7 +140,7 @@ class PurchaseOrderLineItem(models.Model):
 			return self.purchase_order.delivery_status_code[1]
 		elif self.delivered_quantity == self.quantity:
 			return self.purchase_order.delivery_status_code[2]
-
+	
 	@property
 	def delivered_quantity(self, ):
 		# Access related GoodsReceivedLineItem instances and calculate total received quantity
@@ -126,6 +155,25 @@ class PurchaseOrderLineItem(models.Model):
 			return product_conversion.conversion.conversion_field
 		except ObjectDoesNotExist:
 			return []
+	
+	def __get_tax_rate__(self,):
+		# Calculate the gross amount and tax rate based on the metadata['NetAmount'] and metadata['TaxAmount'] keys.
+		net_amount = float(self.metadata['NetAmount'])
+		tax_amount = float(self.metadata['TaxAmount'])
+		gross_amount = net_amount + tax_amount
+		
+		return (tax_amount / net_amount) * 100
+	
+	def save(self, ):
+		try:
+			# Get the surcharge with the tax rate
+			surcharge = Surcharge.objects.filter(rate=self.__get_tax_rate__())
+			self.tax_rates = [model_to_dict(i) for i in surcharge]
+		except ObjectDoesNotExist:
+			# If the surcharge percent is not found, create a new surcharge with the tax rate
+			pass
+			
+		super().save()
 	
 	def __str__(self):
 		return f"{self.product_name} ({self.quantity})"
@@ -264,6 +312,7 @@ class GoodsReceivedLineItem(models.Model):
 						self.metadata[key] = value
 			except Exception as e:
 				logging.error(f"Error converting product with method {method_name}: {e}")
+				raise e
 		else:
 			logging.error(f"conversion method {method_name} not found in conversion_methods module")
 	
@@ -281,7 +330,7 @@ class GoodsReceivedLineItem(models.Model):
 	
 	def get_grn_for_po_line(self, object_id):
 		"""
-		Returns the Goods Received Note for this line item.
+			Returns the Goods Received Note for this line item.
 		"""
 		line_items = GoodsReceivedLineItem.objects.filter(purchase_order_line_item__object_id=object_id)
 		return line_items
@@ -313,4 +362,3 @@ class ProductConversion(models.Model):
 	
 	def __str__(self):
 		return f"{self.conversion.name} for '{self.product_id}'"
-	
