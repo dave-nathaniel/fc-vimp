@@ -161,8 +161,9 @@ class PurchaseOrderLineItem(models.Model):
 		net_amount = float(self.metadata['NetAmount'])
 		tax_amount = float(self.metadata['TaxAmount'])
 		gross_amount = net_amount + tax_amount
+		tax_percentage =  (tax_amount / net_amount) * 100
 		
-		return (tax_amount / net_amount) * 100
+		return round(tax_percentage, 1)
 	
 	def save(self, ):
 		try:
