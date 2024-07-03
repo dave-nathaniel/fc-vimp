@@ -14,7 +14,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	# items description, unit price, product code and amount
 	purchase_order_line_item = serializers.SerializerMethodField()
 	grn_number = serializers.SerializerMethodField()
-	value_received = serializers.FloatField()
+	tax_value = serializers.SerializerMethodField()
 	metadata = serializers.JSONField()
 	
 	def get_purchase_order_line_item(self, obj):
@@ -25,9 +25,12 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	def get_grn_number(self, obj):
 		return obj.grn.grn_number
 	
+	def get_tax_value(self, obj):
+		return obj.gross_value_received - obj.net_value_received
+	
 	class Meta:
 		model = GoodsReceivedLineItem
-		fields = ['id', 'grn_number', 'quantity_received', 'value_received', 'metadata', 'date_received',
+		fields = ['id', 'grn_number', 'quantity_received', 'gross_value_received', 'net_value_received', 'tax_value', 'metadata', 'date_received',
 		          'purchase_order_line_item']
 
 
@@ -105,7 +108,7 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 		return po_dict
 	
 	def get_total_value_received(self, obj):
-		return sum([item.value_received for item in obj.line_items.all()])
+		return sum([item.net_value_received for item in obj.line_items.all()])
 	
 	class Meta:
 		model = GoodsReceivedNote

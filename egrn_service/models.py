@@ -255,12 +255,22 @@ class GoodsReceivedLineItem(models.Model):
 	purchase_order_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE,
 												 related_name='grn_line_item')
 	quantity_received = models.DecimalField(max_digits=15, decimal_places=3, default=0.000)
+	net_value_received = models.DecimalField(max_digits=15, decimal_places=3)
+	gross_value_received = models.DecimalField(max_digits=15, decimal_places=3)
 	metadata = models.JSONField(default=dict, blank=True, null=True)
 	date_received = models.DateField(auto_now=True)
 	
-	@property
-	def value_received(self):
-		return self.quantity_received * self.purchase_order_line_item.unit_price
+	def net_value(self):
+		return float(self.quantity_received) * float(self.purchase_order_line_item.unit_price)
+	
+	def calculate_tax_amount(self):
+		'''
+			Calculate the tax amount by getting the tax percentages from the purchase_order_line_item.tax_rates,
+			and adding it to the net value received.
+		'''
+		tax_rates = sum([rate['rate'] for rate in self.purchase_order_line_item.tax_rates])
+		tax_amount = self.net_value() * (tax_rates / 100)
+		return round(tax_amount, 3)
 	
 	def clean(self):
 		# Get the sum of the quantity received for this item by adding up the quantity received
@@ -326,7 +336,12 @@ class GoodsReceivedLineItem(models.Model):
 		except Exception as e:
 			logging.error(f"Error converting product: {e}")
 			
+		# Calculate the net and gross value received
+		self.net_value_received = self.net_value()
+		self.gross_value_received = self.net_value_received + self.calculate_tax_amount()
+		
 		self.clean()
+		
 		return super().save()
 	
 	def get_grn_for_po_line(self, object_id):
