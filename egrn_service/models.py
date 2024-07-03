@@ -291,7 +291,7 @@ class GoodsReceivedLineItem(models.Model):
 		# Get the sum of the quantity received and the total quantity received for this item.
 		sum_quantity = float(quantity_to_receive) + float(total_received)
 		# Check to see if the quantity received is greater than the outstanding quantity.
-		if sum_quantity > self.purchase_order_line_item.quantity:
+		if float(sum_quantity) > float(self.purchase_order_line_item.quantity):
 			raise ValidationError(
 				f"Quantity received ({quantity_to_receive}) is greater than outstanding delivery quantity ({outstanding_quantity}).")
 		
