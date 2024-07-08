@@ -92,8 +92,10 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 		# Recalculate the hash and check if the recalculated hash matches the stored hash, set the value of the verified property
 		self.verified = self.digest == self.calculate_digest()
 		
-	def sign(self, signer: user, comment: str, verdict: str) -> bool:
-		permission = "Signable.sign"
+	def sign(self, request: object) -> bool:
+		signatories = self.signatories
+		
+		print(signatories)
 
 
 class Signature(models.Model):
@@ -102,8 +104,8 @@ class Signature(models.Model):
 	"""
 	# VERDICT_CHOICES = (
 	# 	(1, 'Accepted'),
-    #     (-1, 'Rejected'),
-    #     (0, 'Review'),
+    #   (-1, 'Rejected'),
+    #   (0, 'Review'),
 	# )
 	# Define the signer field to store the user who signed the signable object
 	signer = models.ForeignKey(user, on_delete=models.CASCADE, related_name='signatures')
