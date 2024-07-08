@@ -5,7 +5,7 @@ from rest_framework.views import APIView
 
 from egrn_service.models import PurchaseOrderLineItem, PurchaseOrder
 from overrides.rest_framework import APIResponse
-from .models import Invoice, Surcharge
+from .models import Invoice
 from .serializers import InvoiceSerializer, InvoiceLineItemSerializer
 
 class VendorInvoiceView(APIView):
@@ -71,7 +71,6 @@ class VendorInvoiceView(APIView):
 			# Create InvoiceLineItem object
 			line_item['invoice'] = invoice.id  # Associate with the created invoice
 			line_item['po_line_item'] = po_line_item.id  # Associate with the corresponding PO line item
-			line_item['surcharge_ids'] = line_item.pop('surcharges')
 			
 			try:
 				line_item_serializer = InvoiceLineItemSerializer(data=line_item)

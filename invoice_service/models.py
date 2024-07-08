@@ -1,6 +1,7 @@
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Sum
-from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem, Surcharge
+from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem
 from approval_service.models import Signable, Workflow
 
 
@@ -74,12 +75,22 @@ class Invoice(Signable):
 		return self.gross_total - self.total_discount_amount
 	
 	@property
-	def total_surcharge_amount(self):
-		return self.invoice_line_items.aggregate(surcharge=Sum('surcharge_amount'))['surcharge']
+	def total_tax_amount(self):
+		return self.invoice_line_items.aggregate(tax=Sum('tax_amount'))['tax']
 	
 	@property
 	def net_total(self):
 		return self.invoice_line_items.aggregate(net_total=Sum('net_total'))['net_total']
+	
+	class Meta:
+		permissions = [
+			('line_manager', 'The line manager role.'),
+			('internal_control', 'The internal control role.'),
+			('head_of_finance', 'The head of finance role.'),
+			('snr_manager_finance', 'The snr manager  of finance role.'),
+			('dmd_ss', 'The DMD SS role.'),
+			('md', 'The managing director role.'),
+		]
 	
 	def __get_line_item_fields__(self):
 		return self.invoice_line_items.model._meta.get_fields()
@@ -88,7 +99,7 @@ class Invoice(Signable):
 		# Get the line item fields excluding the surcharges field, we can't directly "get" the ManyToMany surcharges field
 		line_item_fields = [field for field in self.__get_line_item_fields__() if field.name not in ['surcharges']]
 		return [[(lambda x, y: getattr(x, y))(line_item, field.name) for field in line_item_fields] for line_item in
-		        self.invoice_line_items.all()]
+				self.invoice_line_items.all()]
 	
 	def set_identity(self):
 		invoice_values = {
@@ -100,9 +111,7 @@ class Invoice(Signable):
 			'payment_reason': self.payment_reason,
 			'date_created': self.date_created,
 			'gross_total': self.gross_total,
-			'total_discount_amount': self.total_discount_amount,
-			'discounted_gross_total': self.discounted_gross_total,
-			'total_surcharge_amount': self.total_surcharge_amount,
+			'total_tax_amount': self.total_tax_amount,
 			'net_total': self.net_total,
 			'signatories': self.signatories
 		}
@@ -119,7 +128,6 @@ class Invoice(Signable):
 		# The workflow object. This is a custom workflow that is defined for the invoice model
 		workflow = InvoiceWorkflow(self)
 		self.signatories = list(workflow.get_signatories())
-		
 	
 	def seal_class(self, ):
 		# Set the signatories based on the workflow
@@ -136,72 +144,52 @@ class Invoice(Signable):
 
 
 class InvoiceLineItem(models.Model):
-	discount_types = [
-		('percentage', 'Percentage'),
-		('fixed', 'Fixed'),
-		('none', 'None'),
-	]
-	
 	invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="invoice_line_items")
 	po_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE, related_name="invoice_items")
-	surcharges = models.ManyToManyField(Surcharge)
 	quantity = models.DecimalField(max_digits=15, decimal_places=3, null=False, blank=False, default=0.00)
-	discountable = models.BooleanField(default=False)
-	discount_type = models.CharField(
-		max_length=10,
-		blank=False,
-		null=False,
-		choices=discount_types,
-		default=discount_types[2][0],
-		verbose_name="Discount Type"
-	)
-	discount = models.DecimalField(
-		max_digits=15,
-		decimal_places=2,
-		blank=False,
-		null=False,
-		default=0.00,
-		verbose_name="Discount"
-	)
-	gross_total = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
-	discount_amount = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
-	discounted_gross_total = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
-	surcharge_amount = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
 	net_total = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+	gross_total = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
+	tax_amount = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
 	
-	def calculate_gross_total(self):
-		return float(self.quantity) * float(self.po_line_item.unit_price)
-	
-	def calculate_discount_amount(self):
-		gross_total = self.calculate_gross_total()
-		discount = float(self.discount)
-		if self.discount_type == 'none' or self.discount == 0 or not self.discountable:
-			return 0.00
-		return gross_total * discount / 100 if self.discount_type == 'percentage' else discount
-	
-	def calculate_discounted_gross_total(self):
-		return self.calculate_gross_total() - self.calculate_discount_amount()
-	
-	def calculate_surcharge_amount(self, surcharges):
-		total_taxes = surcharges.aggregate(total_tax=Sum('rate'))['total_tax']
-		total_taxes = float(total_taxes) if total_taxes is not None else 0
-		return (total_taxes * self.calculate_discounted_gross_total()) / 100
+	def calculate_tax_amount(self, ):
+		tax_rates = sum([rate['rate'] for rate in self.po_line_item.tax_rates])
+		tax_amount = self.calculate_net_total() * (tax_rates / 100)
+		return round(tax_amount, 3)
 	
 	def calculate_net_total(self):
-		return self.calculate_discounted_gross_total() - self.surcharge_amount
+		return float(self.quantity) * float(self.po_line_item.unit_price)
 	
-	def set_surcharge_and_net(self, surcharges):
-		self.surcharge_amount = self.calculate_surcharge_amount(surcharges)
-		self.net_total = self.calculate_net_total()
-		self.save(update_fields=['surcharge_amount', 'net_total'])
+	def calculate_gross_total(self):
+		return self.calculate_net_total() + self.calculate_tax_amount()
+	
+	def get_invoiced_quantity(self):
+		'''
+			Return the quantity already invoiced for this line item.
+		'''
+		invoiced = InvoiceLineItem.objects.filter(po_line_item=self.po_line_item)
+		invoiced_quantity = invoiced.aggregate(Sum('quantity')).get('quantity__sum', 0)
+		invoiced_quantity = invoiced_quantity or 0.00
+		return float(invoiced_quantity)
+	
+	def get_invoiceable_quantity(self):
+		'''
+			Return the quantity that can be invoiced for this line item.
+		'''
+		invoiced = self.get_invoiced_quantity()
+		return float(self.po_line_item.delivered_quantity) - invoiced
+		
+	def clean(self, ):
+		if self.quantity < 1:
+			raise ValidationError("Invoice quantity must be greater than 0")
+		if self.quantity > self.get_invoiceable_quantity():
+			raise ValidationError(f"Invoice quantity exceeds the outstanding invoiceable quantity ({self.get_invoiceable_quantity()})")
 	
 	def save(self, *args, **kwargs):
-		if not self.pk:
-			# Save the instance with the calculated fields updated
-			self.gross_total = self.calculate_gross_total()
-			self.discount_amount = self.calculate_discount_amount()
-			self.discounted_gross_total = self.calculate_discounted_gross_total()
 		# Save the instance with the calculated fields updated
+		self.clean()
+		self.gross_total = self.calculate_gross_total()
+		self.net_total = self.calculate_net_total()
+		self.tax_amount = self.calculate_tax_amount()
 		super(InvoiceLineItem, self).save(*args, **kwargs)
 	
 	def __str__(self):
