@@ -1,7 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Sum
-from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem
+from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem, GoodsReceivedLineItem, GoodsReceivedNote
 from approval_service.models import Signable, Workflow
 
 
@@ -50,9 +50,15 @@ class InvoiceWorkflow(Workflow):
 
 class Invoice(Signable):
 	purchase_order = models.ForeignKey(
-		PurchaseOrder,
+        PurchaseOrder,
+        on_delete=models.CASCADE,
+        related_name="invoices",
+    )
+	grn = models.ForeignKey(
+		GoodsReceivedNote,
 		on_delete=models.CASCADE,
-		related_name="invoice",
+		related_name="grn",
+		null=True, blank=True
 	)
 	external_document_id = models.CharField(max_length=32, blank=True, null=True)
 	description = models.TextField(blank=True, null=True)
@@ -145,7 +151,9 @@ class Invoice(Signable):
 
 class InvoiceLineItem(models.Model):
 	invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="invoice_line_items")
-	po_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE, related_name="invoice_items")
+	po_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE)
+	grn_line_item = models.ForeignKey(GoodsReceivedLineItem, on_delete=models.CASCADE, null=True,
+	                                  blank=True, related_name="invoice_items")
 	quantity = models.DecimalField(max_digits=15, decimal_places=3, null=False, blank=False, default=0.00)
 	net_total = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
 	gross_total = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
@@ -166,8 +174,8 @@ class InvoiceLineItem(models.Model):
 		'''
 			Return the quantity already invoiced for this line item.
 		'''
-		invoiced = InvoiceLineItem.objects.filter(po_line_item=self.po_line_item)
-		invoiced_quantity = invoiced.aggregate(Sum('quantity')).get('quantity__sum', 0)
+		invoiced = InvoiceLineItem.objects.filter(grn_line_item=self.grn_line_item)
+		invoiced_quantity = invoiced.aggregate(quantity=Sum('quantity'))['quantity']
 		invoiced_quantity = invoiced_quantity or 0.00
 		return float(invoiced_quantity)
 	
@@ -186,10 +194,12 @@ class InvoiceLineItem(models.Model):
 	
 	def save(self, *args, **kwargs):
 		# Save the instance with the calculated fields updated
-		self.clean()
+		self.quantity = self.grn_line_item.quantity_received
 		self.gross_total = self.calculate_gross_total()
 		self.net_total = self.calculate_net_total()
 		self.tax_amount = self.calculate_tax_amount()
+		self.clean()
+		# self.po_line_item = self.grn_line_item.purchase_order_line_item
 		super(InvoiceLineItem, self).save(*args, **kwargs)
 	
 	def __str__(self):

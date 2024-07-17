@@ -11,6 +11,14 @@ from django.db.models import Sum
 from django.forms.models import model_to_dict
 
 
+# Initialize REST services
+byd_rest_services = RESTServices()
+
+def get_conversion_methods():
+	methods = inspect.getmembers(converters, inspect.isfunction)
+	return [(name, name) for name, func in methods]
+
+
 # Create your models here.
 class Surcharge(models.Model):
 	code = models.IntegerField(verbose_name='Code')
@@ -36,14 +44,6 @@ class ProductSurcharge(models.Model):
 		unique_together = ('product_id', 'surcharge')
 
 
-# Initialize REST services
-byd_rest_services = RESTServices()
-
-def get_conversion_methods():
-	methods = inspect.getmembers(converters, inspect.isfunction)
-	return [(name, name) for name, func in methods]
-
-
 class Store(models.Model):
 	store_name = models.CharField(max_length=255)
 	icg_warehouse_name = models.CharField(max_length=255, null=True, blank=True)
@@ -63,7 +63,6 @@ class PurchaseOrder(models.Model):
 	metadata = models.JSONField(default=dict)
 	
 	delivery_status_code = [('1', 'Not Delivered'), ('2', 'Partially Delivered'), ('3', 'Completely Delivered')]
-	invoicing_status_code = [('1', 'Not Started'), ('2', 'In Process'), ('3', 'Finished')]
 	
 	@property
 	def delivery_status(self, ):
@@ -145,7 +144,7 @@ class PurchaseOrderLineItem(models.Model):
 	def delivered_quantity(self, ):
 		# Access related GoodsReceivedLineItem instances and calculate total received quantity
 		delivered_quantity = self.grn_line_item.aggregate(total_received=Sum('quantity_received'))['total_received']
-		return delivered_quantity or 0.00
+		return delivered_quantity or 0.0000
 	
 	@property
 	def extra_fields(self, ):
@@ -185,6 +184,33 @@ class GoodsReceivedNote(models.Model):
 	store = models.ForeignKey(Store, on_delete=models.CASCADE)
 	grn_number = models.IntegerField(blank=False, null=False, unique=True)
 	created = models.DateField(auto_now_add=True)
+	
+	invoicing_status_code = [('1', 'Not Started'), ('2', 'In Process'), ('3', 'Finished')]
+	
+	@property
+	def invoice_status(self):
+		# If all related GoodsReceivedLineItem instances have is_invoiced as True, return 'Finished'
+		if all(item.is_invoiced for item in self.line_items.all()):
+			return self.invoicing_status_code[2]
+		else:
+			return self.invoicing_status_code[1]
+		
+	@property
+	def invoice_status_code(self):
+		return self.invoice_status[0]
+	
+	@property
+	def invoice_status_text(self):
+		return self.invoice_status[1]
+	
+	@property
+	def invoiced_quantity(self):
+		total_invoiced = 0.0000
+		invoice_items = self.line_items.all()
+		for item in invoice_items:
+			total_invoiced += float(item.invoiced_quantity)
+		return total_invoiced
+		
 	
 	def save(self, *args, **kwargs):
 		grn_data = kwargs.pop('grn_data')
@@ -260,6 +286,15 @@ class GoodsReceivedLineItem(models.Model):
 	metadata = models.JSONField(default=dict, blank=True, null=True)
 	date_received = models.DateField(auto_now=True)
 	
+	@property
+	def invoiced_quantity(self):
+		invoiced_quantity = self.invoice_items.aggregate(total_quantity=Sum('quantity'))['total_quantity'] or 0.0000
+		return invoiced_quantity
+	
+	@property
+	def is_invoiced(self):
+		return self.invoiced_quantity == self.quantity_received
+	
 	def net_value(self):
 		return float(self.quantity_received) * float(self.purchase_order_line_item.unit_price)
 	
@@ -277,7 +312,7 @@ class GoodsReceivedLineItem(models.Model):
 		# of all GRN line items for this particular PO line item.
 		grns_raised_for_this = self.get_grn_for_po_line(self.purchase_order_line_item.object_id)
 		total_received = grns_raised_for_this.aggregate(total_sum=Sum('quantity_received'))['total_sum']
-		total_received = total_received or 0.00
+		total_received = total_received or 0.0000
 		# Get the quantity that is being received for this item.
 		quantity_to_receive = self.quantity_received
 		# Check that quantity to receive is greater than 0.
