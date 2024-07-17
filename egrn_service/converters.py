@@ -100,7 +100,7 @@ def nbc_products_volume_conversion(*args, **kwargs):
 		
 		[
 			{
-				"name":"number_of_packs",
+				"name":"number_of_packs_received",
 				"type":"number",
 				"properties":{
 					"placeholder":"The total number of packs received.",
