@@ -20,10 +20,14 @@ from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, Pur
 from .serializers import GoodsReceivedNoteSerializer, PurchaseOrderSerializer, GoodsReceivedLineItemSerializer
 from .tasks import send_email_async
 
+from overrides.rest_framework import CustomPagination
+
 # Initialize REST services
 byd_rest_services = RESTServices()
 # Get the user model
 User = get_user_model()
+# Pagination
+paginator = CustomPagination()
 
 
 def delete_items(po):
@@ -154,11 +158,13 @@ def create_grn(request, ):
 def get_all_grns(request, ):
 	try:
 		grns = GoodsReceivedNote.objects.all()
+		# Paginate the results
+		paginated = paginator.paginate_queryset(grns, request,)
 		# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
-		grn_serializer = GoodsReceivedNoteSerializer(grns, many=True)
-		goods_received_note = grn_serializer.data
-		
-		return APIResponse("GRNs Retrieved", status.HTTP_200_OK, data=goods_received_note)
+		grn_serializer = GoodsReceivedNoteSerializer(paginated, many=True, context={'request':request})
+		# Return the paginated response with the serialized GoodsReceivedNote instances
+		paginated_data = paginator.get_paginated_response(grn_serializer.data).data
+		return APIResponse("GRNs Retrieved", status.HTTP_200_OK, data=paginated_data)
 	except Exception as e:
 		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 	
@@ -175,9 +181,13 @@ def get_vendors_grns(request, ):
 		# If the request params contain po_id, filter by po_id
 		grns = grns.filter(purchase_order__po_id=po_id) if po_id else grns
 		if grns:
+			# Paginate the results
+			paginated = paginator.paginate_queryset(grns, request,)
 			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
-			serialized_grns = GoodsReceivedNoteSerializer(grns, many=True).data
-			return APIResponse("GRNs Retrieved", status.HTTP_200_OK, data=serialized_grns)
+			grn_serializer = GoodsReceivedNoteSerializer(paginated, many=True, context={'request':request})
+			# Return the paginated response with the serialized GoodsReceivedNote instances
+			paginated_data = paginator.get_paginated_response(grn_serializer.data).data
+			return APIResponse("GRNs Retrieved", status.HTTP_200_OK, data=paginated_data)
 		return APIResponse(f"No GRN found.", status=status.HTTP_404_NOT_FOUND)
 	except Exception as e:
 		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)

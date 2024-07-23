@@ -43,12 +43,6 @@ class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	delivery_outstanding_quantity = serializers.SerializerMethodField()
 	delivered_quantity = serializers.FloatField()
 	delivery_completed = serializers.SerializerMethodField()
-	# Invoiced status code, text, outstanding quantity, invoiced quantity, invoicing completed
-	# invoice_status_code = serializers.CharField()
-	# invoice_status_text = serializers.CharField()
-	# invoice_outstanding_quantity = serializers.FloatField()
-	# invoiced_quantity = serializers.FloatField()
-	# invoicing_completed = serializers.SerializerMethodField()
 	
 	def get_delivery_outstanding_quantity(self, obj):
 		# Calculate and return outstanding quantity
@@ -119,5 +113,6 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	
 	class Meta:
 		model = GoodsReceivedNote
-		fields = ['grn_number', 'created', 'total_value_received', 'invoiced_quantity', 'invoice_status_code', 'invoice_status_text', 'store', 'purchase_order', 'grn_line_items']
+		fields = ['grn_number', 'created', 'total_value_received', 'invoiced_quantity', 'invoice_status_code',
+		          'invoice_status_text', 'store', 'purchase_order', 'grn_line_items']
 		depth = 1
