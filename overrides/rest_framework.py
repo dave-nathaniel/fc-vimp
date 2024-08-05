@@ -24,7 +24,9 @@ class CustomPagination(PageNumberPagination):
 	page_size_query_param = "size"
 	max_page_size  = 30
 
-	def paginate_queryset(self, queryset, request, view=None):
+	def paginate_queryset(self, queryset, request, view=None, order_by=None):
+		# Sort the queryset based on the 'order_by' query parameter, always show latest records first
+		queryset = queryset.order_by(order_by) if order_by else queryset
 		# Get 'limit' and 'offset' from request query parameters
 		limit = request.query_params.get('limit')
 		offset = request.query_params.get('offset')

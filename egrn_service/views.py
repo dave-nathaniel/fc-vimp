@@ -157,9 +157,10 @@ def create_grn(request, ):
 @authentication_classes([CombinedAuthentication])
 def get_all_grns(request, ):
 	try:
-		grns = GoodsReceivedNote.objects.all()
+		# Get all GRNs sorted by creation date in descending order
+		grns = GoodsReceivedNote.objects.all()#.order_by('-created')
 		# Paginate the results
-		paginated = paginator.paginate_queryset(grns, request,)
+		paginated = paginator.paginate_queryset(grns, request, order_by='-created')
 		# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
 		grn_serializer = GoodsReceivedNoteSerializer(paginated, many=True, context={'request':request})
 		# Return the paginated response with the serialized GoodsReceivedNote instances
@@ -182,7 +183,7 @@ def get_vendors_grns(request, ):
 		grns = grns.filter(purchase_order__po_id=po_id) if po_id else grns
 		if grns:
 			# Paginate the results
-			paginated = paginator.paginate_queryset(grns, request,)
+			paginated = paginator.paginate_queryset(grns, request, order_by='-created')
 			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
 			grn_serializer = GoodsReceivedNoteSerializer(paginated, many=True, context={'request':request})
 			# Return the paginated response with the serialized GoodsReceivedNote instances
