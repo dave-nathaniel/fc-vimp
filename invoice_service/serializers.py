@@ -34,6 +34,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
 	gross_total = serializers.SerializerMethodField()
 	total_tax_amount = serializers.SerializerMethodField()
 	net_total = serializers.SerializerMethodField()
+	approval_complete = serializers.BooleanField(read_only=True, source='is_completely_signed')
+	pending_approval_from = serializers.CharField(read_only=True, source='current_pending_signatory')
 	
 	def create(self, validated_data):
 		invoice = Invoice.objects.create(**validated_data)
@@ -59,11 +61,11 @@ class InvoiceSerializer(serializers.ModelSerializer):
 		
 		serialized['purchase_order'] = purchase_order
 		serialized['grn'] = grn
-		
+		print(instance.is_completely_signed)
 		return serialized
 	
 	class Meta:
 		model = Invoice
-		fields = ['id', 'external_document_id', 'description', 'date_created', 'due_date', 'payment_terms',
+		fields = ['id', 'external_document_id', 'approval_complete', 'pending_approval_from','description', 'date_created', 'due_date', 'payment_terms',
 				  'payment_reason', 'gross_total', 'total_tax_amount', 'net_total', 'invoice_line_items', 'grn', 'purchase_order']
 		read_only_fields = ['id', 'gross_total', 'total_tax_amount', 'net_total']
