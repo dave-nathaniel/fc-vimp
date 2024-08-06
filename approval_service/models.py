@@ -5,6 +5,9 @@ from django.contrib.auth import get_user_model
 from abc import ABC, ABCMeta, abstractmethod
 import hashlib
 from dataclasses import dataclass
+from django.core.exceptions import PermissionDenied
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 
 user = get_user_model()
 
@@ -18,16 +21,27 @@ class AbstractModelMeta(ABCMeta, type(models.Model)):
 class Signable(models.Model, metaclass=AbstractModelMeta):
 	'''
 		A signable object is an object that can be signed by an authorized user.
+		For the most part, objects of class can only be created but not modified, modifications will cause the hash
+		digest to be invalid.
 	'''
 	# Define the digest field to store the hash value
 	digest = models.CharField(max_length=64, blank=True, null=True)
 	# Define the signatories from the workflow.
 	signatories = models.JSONField(blank=False, null=False, default=dict)
+	# Current pending signatory for signing the signable object.
+	current_pending_signatory = models.CharField(max_length=150, blank=True, null=True)
 	
 	@property
 	def is_valid(self):
 		# Property that states whether the hash of the object is valid
 		return self.verified
+	
+	@property
+	def is_completely_signed(self):
+		'''
+			Property that states whether the signable object is completely signed by all its signatories.
+		'''
+		return len(self.get_signatures()) == len(self.signatories)
 	
 	class Meta:
 		abstract = True
@@ -64,12 +78,6 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 		# Re-verify the hash before initializing the model instance
 		self.verify_hash() if self.digest else None
 	
-	def save(self, *args, **kwargs):
-		# This model can only be created, not modified
-		if self.pk:
-			raise Exception("Signable models can not be modified")
-		super().save(*args, **kwargs)
-	
 	def calculate_digest(self, ):
 		identity_data = self.identity_data
 		# Hash the identity data using SHA-256 (you can use any hash algorithm)
@@ -80,7 +88,7 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 	def update_digest(self, ) -> bool:
 		try:
 			self.digest = self.calculate_digest()
-			super().save(update_fields=['signatories', 'digest'])
+			super().save(update_fields=['signatories', 'current_pending_signatory', 'digest'])
 		except Exception as e:
 			raise e
 		# Return True if the hash was updated successfully
@@ -91,27 +99,95 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 		self.set_identity()
 		# Recalculate the hash and check if the recalculated hash matches the stored hash, set the value of the verified property
 		self.verified = self.digest == self.calculate_digest()
-		
-	def sign(self, request: object) -> bool:
+	
+	def get_signatures(self):
+		"""
+			Method to get all the signatures for the signable object.
+			This method uses Django's ContentType and Signature models to retrieve the signatures.
+		"""
+		content_type = ContentType.objects.get_for_model(self)
+		signatures = Signature.objects.filter(signable_type=content_type, signable_id=self.id)
+		return signatures
+	
+	def get_current_pending_signatory(self):
+		"""
+			Method to get the current pending signatory for the signable object.
+			This method uses the workflow and the signatories to determine the current pending signatory.
+		"""
 		signatories = self.signatories
+		# The number of signatures made
+		number_of_signatures_made = len(self.get_signatures()) or 0
+		# Check if there are any pending signatories
+		if not signatories:
+			return None
+		# The number of signatures made can be passed an index to the list of signatories to get the current pending signatory
+		return signatories[number_of_signatures_made] if number_of_signatures_made < len(signatories) else None
+	
+	def reset_current_pending_signatory(self, ) -> bool:
+		"""
+			Method to reset the current pending signatory for the signable object.
+			This method clears the current_pending_signatory field.
+		"""
+		self.current_pending_signatory = self.get_current_pending_signatory()
+		super().save(update_fields=['current_pending_signatory'])
+	
+	def save(self, *args, **kwargs):
+		# This model can only be created, not modified
+		if self.pk:
+			raise Exception("Signable models can not be modified")
+		super().save(*args, **kwargs)
+	
+	##########################################################################################
+	# methods to sign and verify the signable object.
+	##########################################################################################
+	
+	def sign(self, request: object) -> bool:
+		"""
+			Method to sign the signable object.
+			This method checks if the user has the necessary permissions to sign the object, and then creates a new signature.
+		"""
+		# Check that the user attempting to sign is the (has the role) current pending signatory
+		required_permission = f"{self._meta.app_label}.{self.get_current_pending_signatory()}"
+		if not request.user.has_perm(required_permission):
+			raise PermissionDenied("You do not have permission to sign this object.")
 		
-		print(signatories)
-
-
+		try:
+			# Get the content type of the signable object
+			content_type = ContentType.objects.get_for_model(self)
+			# Create a new signature object and populate its fields
+			new_signature = Signature()
+			# Fields of the signature class
+			new_signature.signer = request.user
+			new_signature.signature = request.headers.get('Authorization').split(' ')[1] # TODO: Make the signature cryptographically reference the digest of the signable object
+			new_signature.accepted = request.data.get('approved')
+			new_signature.comment = request.data.get('comment')
+			new_signature.signable_type = content_type
+			new_signature.signable_id = self.id
+			new_signature.metadata = {
+				"acting_as": self.current_pending_signatory
+			}
+			# Save the new signature object to the database and update the signable object accordingly
+			new_signature.save()
+			# Update the current pending signatory of the signable
+			self.current_pending_signatory = self.get_current_pending_signatory()
+			# Use the super class to effect the update because we placed restrictions on the "save"
+			# method of this class to prevent modifications to the signable object.
+			super().save(update_fields=['current_pending_signatory'])
+		except Exception as e:
+			raise Exception("Unable to sign the object: ", str(e))
+		# If no exceptions were raised, the signature was successfully created and saved
+		return True
+	
+	
 class Signature(models.Model):
 	"""
 		This model is used to store the signatures of a signable object.
 	"""
-	# VERDICT_CHOICES = (
-	# 	(1, 'Accepted'),
-    #   (-1, 'Rejected'),
-    #   (0, 'Review'),
-	# )
 	# Define the signer field to store the user who signed the signable object
 	signer = models.ForeignKey(user, on_delete=models.CASCADE, related_name='signatures')
 	# Define the digest field to store the signature hash
-	signature = models.CharField(max_length=255, blank=False, null=False)
-	# Define a field to show the descision of the signer regarding the signable object
+	signature = models.TextField(blank=False, null=False)
+	# Define a field to show the decision of the signer regarding the signable object
 	accepted = models.BooleanField(default=False, blank=False, null=False)
 	# Compulsory comment from the signer regarding their acceptance status
 	comment = models.TextField(blank=False, null=False)
@@ -123,6 +199,32 @@ class Signature(models.Model):
 	signable = GenericForeignKey("signable_type", "signable_id")
 	# A metadata field to store other data about the signature
 	metadata = models.JSONField(default=dict)
+	# Define a predecessor field to store reference to the previous signature
+	predecessor = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='successors')
+	
+	def validate_signature(self, ) -> bool:
+		# check_token_valid = AdfsBaseBackend().validate_access_token(jwt_token)
+		pass
+		
+	def save(self, *args, **kwargs):
+		if self.pk:
+			raise Exception("Signable models can not be modified")
+		# Get the last signature on this signable object
+		self.predecessor = Signature.objects.filter(
+			signable_type=self.signable_type,
+			signable_id=self.signable_id
+		).order_by('date_signed').last()
+		# Save the current signature
+		super().save(*args, **kwargs)
+	
+	def __str__(self):
+		actor = self.metadata.get('acting_as', '').upper()
+		return f"{actor}: {self.signer.username} on {self.signable} [{'ACCEPTED' if self.accepted else 'REJECTED'}]"
+	
+@receiver(post_delete, sender=Signature)
+def delete_signature_hook(sender, instance, using, **kwargs):
+	# Reset the current pending signatory of the signable object
+	instance.signable.reset_current_pending_signatory()
 
 
 class Keystore(models.Model):
@@ -133,6 +235,7 @@ class Keystore(models.Model):
 	public_key = models.CharField(max_length=255, blank=False, null=False)
 	created_at = models.DateTimeField(auto_now_add=True)
 	active = models.BooleanField(default=True)
+
 
 @dataclass
 class Workflow(ABC):

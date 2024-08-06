@@ -134,6 +134,7 @@ class Invoice(Signable):
 		# The workflow object. This is a custom workflow that is defined for the invoice model
 		workflow = InvoiceWorkflow(self)
 		self.signatories = list(workflow.get_signatories())
+		self.current_pending_signatory = self.signatories[0] if self.signatories else None
 	
 	def seal_class(self, ):
 		# Set the signatories based on the workflow

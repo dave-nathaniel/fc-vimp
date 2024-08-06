@@ -5,8 +5,12 @@ from rest_framework.views import APIView
 
 from egrn_service.models import PurchaseOrderLineItem, PurchaseOrder, GoodsReceivedNote, GoodsReceivedLineItem
 from overrides.rest_framework import APIResponse
+from overrides.rest_framework import CustomPagination
 from .models import Invoice
 from .serializers import InvoiceSerializer, InvoiceLineItemSerializer
+
+# Pagination
+paginator = CustomPagination()
 
 class VendorInvoiceView(APIView):
 	"""
@@ -18,8 +22,11 @@ class VendorInvoiceView(APIView):
 	def get(self, request):
 		# Get all invoices for the authenticated vendor
 		invoices = Invoice.objects.filter(purchase_order__vendor=request.user.vendor_profile)
-		serializer = InvoiceSerializer(invoices, many=True)
-		return APIResponse("Invoices Retrieved", status.HTTP_200_OK, data=serializer.data)
+		paginated = paginator.paginate_queryset(invoices, request, order_by='-date_created')
+		invoices_serializer = InvoiceSerializer(paginated, many=True, context={'request':request})
+		# Return the paginated response with the serialized GoodsReceivedNote instances
+		paginated_data = paginator.get_paginated_response(invoices_serializer.data).data
+		return APIResponse("Invoices Retrieved", status.HTTP_200_OK, data=paginated_data)
 	
 	def post(self, request):
 		'''
