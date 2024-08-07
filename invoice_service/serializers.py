@@ -61,7 +61,6 @@ class InvoiceSerializer(serializers.ModelSerializer):
 		
 		serialized['purchase_order'] = purchase_order
 		serialized['grn'] = grn
-		print(instance.is_completely_signed)
 		return serialized
 	
 	class Meta:
