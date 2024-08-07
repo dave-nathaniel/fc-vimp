@@ -22,6 +22,6 @@ def get_store_from_middleware(*args, **kwargs):
 		if response.status_code == 200:
 			return response.json()['data']
 	except Exception as e:
-		logging(f"Error: {e}")
+		logging.error(f"Error: {e}")
 	
 	return None
