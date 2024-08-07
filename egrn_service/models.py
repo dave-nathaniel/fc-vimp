@@ -1,6 +1,7 @@
 import logging
 import inspect
 from . import converters
+from .services import get_store_from_middleware
 from django.db import models
 from django.db.utils import IntegrityError
 from core_service.models import VendorProfile
@@ -9,7 +10,6 @@ from byd_service.util import to_python_time
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db.models import Sum
 from django.forms.models import model_to_dict
-
 
 # Initialize REST services
 byd_rest_services = RESTServices()
@@ -45,10 +45,31 @@ class ProductSurcharge(models.Model):
 
 
 class Store(models.Model):
+	'''
+	    Stores information about a store.
+	'''
 	store_name = models.CharField(max_length=255)
+	store_email = models.EmailField(blank=True, null=True)
 	icg_warehouse_name = models.CharField(max_length=255, null=True, blank=True)
 	icg_warehouse_code = models.CharField(max_length=20, unique=True)
 	byd_cost_center_code = models.CharField(max_length=20, unique=True)
+	# Record the full data incase any other key is added in the future
+	metadata = models.JSONField(default=dict, blank=True, null=True)
+	
+	def create_store(self, store_data):
+		'''
+			Creates a new store record from the given data.
+		'''
+		self.store_name = store_data.get('store_name', '')
+		self.store_email = store_data.get('store_email', '')
+		self.icg_warehouse_name = store_data.get('icg_warehouse_name', '')
+		self.icg_warehouse_code = store_data.get('icg_warehouse_code', '')
+		self.byd_cost_center_code = store_data.get('byd_cost_center_code', '')
+		self.metadata = store_data
+		# Save
+		self.save()
+		# Return the created store
+		return self
 	
 	def __str__(self):
 		return f"{self.store_name.upper()} | {self.icg_warehouse_name.upper()}"
@@ -78,6 +99,7 @@ class PurchaseOrder(models.Model):
 			status = self.delivery_status_code[1]
 			
 		return status
+  
 	
 	def create_purchase_order(self, po):
 		# Get the vendor's profile (if they've completed their onboarding), or create a profile that will be attached
@@ -122,6 +144,7 @@ class PurchaseOrder(models.Model):
 
 class PurchaseOrderLineItem(models.Model):
 	purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='line_items')
+	delivery_store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='store_orders', blank=True, null=True)
 	object_id = models.CharField(max_length=32, blank=False, null=False, unique=True)
 	product_id = models.CharField(max_length=32, blank=False, null=False)
 	product_name = models.CharField(max_length=100)
@@ -164,11 +187,26 @@ class PurchaseOrderLineItem(models.Model):
 		
 		return round(tax_percentage, 1)
 	
+	def __get_delivery_store_details__(self, ):
+		'''
+			Retrieve the delivery store details from the metadata['DeliveryStoreDetails'] key.
+		'''
+
+		store = Store
+		delivery_store_id = self.metadata['ItemShipToLocation']['LocationID']
+		try:
+			delivery_store = store.objects.get(byd_cost_center_code=delivery_store_id)
+		except ObjectDoesNotExist:
+			store_data = get_store_from_middleware(byd_cost_center_code=delivery_store_id)
+			delivery_store = store().create_store(store_data[0])
+		return delivery_store
+	
 	def save(self, ):
 		try:
 			# Get the surcharge with the tax rate
 			surcharge = Surcharge.objects.filter(rate=self.__get_tax_rate__())
 			self.tax_rates = [model_to_dict(i) for i in surcharge]
+			self.delivery_store = self.__get_delivery_store_details__()
 		except ObjectDoesNotExist:
 			# If the surcharge percent is not found, create a new surcharge with the tax rate
 			pass
@@ -307,6 +345,13 @@ class GoodsReceivedLineItem(models.Model):
 		tax_amount = self.net_value() * (tax_rates / 100)
 		return round(tax_amount, 3)
 	
+	def calculate_weighted_average_cost(self):
+		'''
+			This should be calculated for every purchase using the formula:
+			((Opening quantity * carrying value)+(purchase quantity * unit price))/(opening quantity + purchase quantity)
+		'''
+		...
+	
 	def clean(self):
 		# Get the sum of the quantity received for this item by adding up the quantity received
 		# of all GRN line items for this particular PO line item.
@@ -413,3 +458,4 @@ class ProductConversion(models.Model):
 	
 	def __str__(self):
 		return f"{self.conversion.name} for '{self.product_id}'"
+	
