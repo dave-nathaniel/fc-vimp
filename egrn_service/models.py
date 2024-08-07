@@ -46,7 +46,7 @@ class ProductSurcharge(models.Model):
 
 class Store(models.Model):
 	'''
-	    Stores information about a store.
+		Stores information about a store.
 	'''
 	store_name = models.CharField(max_length=255)
 	store_email = models.EmailField(blank=True, null=True)
@@ -55,6 +55,14 @@ class Store(models.Model):
 	byd_cost_center_code = models.CharField(max_length=20, unique=True)
 	# Record the full data incase any other key is added in the future
 	metadata = models.JSONField(default=dict, blank=True, null=True)
+	
+	@property
+	def default_store(self):
+		'''
+            Returns the default store record which is alwayws the first record in the database.
+        '''
+		first_store = Store.objects.first()
+		return first_store
 	
 	def create_store(self, store_data):
 		'''
@@ -119,8 +127,12 @@ class PurchaseOrder(models.Model):
 		self.metadata = po
 		self.save()
 		
-		for line_item in po_items:
-			self.__create_line_items__(line_item)
+		try:
+			for line_item in po_items:
+				self.__create_line_items__(line_item)
+		except Exception as e:
+			self.delete()
+			raise Exception(f"Error creating line items for purchase order: {e}")
 		
 		return self
 	
@@ -191,14 +203,15 @@ class PurchaseOrderLineItem(models.Model):
 		'''
 			Retrieve the delivery store details from the metadata['DeliveryStoreDetails'] key.
 		'''
-
+	
 		store = Store
 		delivery_store_id = self.metadata['ItemShipToLocation']['LocationID']
 		try:
 			delivery_store = store.objects.get(byd_cost_center_code=delivery_store_id)
 		except ObjectDoesNotExist:
 			store_data = get_store_from_middleware(byd_cost_center_code=delivery_store_id)
-			delivery_store = store().create_store(store_data[0])
+			# If the store is not found, create a new store or use the default store
+			delivery_store = store().create_store(store_data[0]) if store_data else store().default_store
 		return delivery_store
 	
 	def save(self, ):
