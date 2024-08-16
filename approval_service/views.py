@@ -7,7 +7,7 @@ from overrides.rest_framework import APIResponse
 from .models import Keystore
 from invoice_service.models import Invoice
 from invoice_service.serializers import InvoiceSerializer
-from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
 
 
 def get_signable_class(target_class: str) -> object:
@@ -70,12 +70,14 @@ def sign_signable_view(request, target_class, object_id):
 		try:
 			signable = signable_class.objects.get(id=object_id)
 		except ObjectDoesNotExist:
-			return APIResponse(f"No {target_class} found with ID {request.data['signable_id']}.", status=status.HTTP_404_NOT_FOUND)
+			return APIResponse(f"No {target_class} found with ID {object_id}.", status=status.HTTP_404_NOT_FOUND)
 		try:
 			# Sign the signable object and return a success message.
 			signable.sign(request)
 		except PermissionError:
-			return APIResponse(f"You do not have permission to sign this {signable_class} object.", status=status.HTTP_403_FORBIDDEN)
+			return APIResponse(f"You do not have permission to sign this {target_class} object.", status=status.HTTP_403_FORBIDDEN)
+		except ValidationError as ve:
+			return APIResponse(f"Unable to sign this {target_class} object: {ve}", status=status.HTTP_400_BAD_REQUEST)
 		except Exception as e:
 			return APIResponse(f"Internal Error: {e}", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 		
@@ -86,10 +88,10 @@ def sign_signable_view(request, target_class, object_id):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 @authentication_classes([AdfsAccessTokenAuthentication])
-def get_signable_view(request, target_class):
+def get_signable_view(request, target_class, status_filter="all"):
 	'''
-	    Returns a paginated list of signable objects for the authenticated user.
-	    This method gets all the signable objects that are to be signed by the current role of the authenticated user.
+		Returns a paginated list of signable objects for the authenticated user.
+		Depending on the status_filter, it returns "all", "completed" or "pending" (for the authenticated user) signable objects.
 	'''
 	# Get the signable class being signed in this request.
 	target = get_signable_class(target_class)
@@ -97,18 +99,23 @@ def get_signable_view(request, target_class):
 	if target:
 		# Get the Django model and app label for the signable class.
 		signable_class, signable_app_label, signable_serializer = target.get("class"), target.get("app_label"), target.get("serializer")
-		# Filter the users permissions for permissions relevant to the signable object.
-		relevant_permissions = [p[1] for p in filter(
-			lambda x: x[0] == signable_app_label,
-			[x.split('.') for x in request.user.get_all_permissions()]
-		)]
-		# Get the signable objects that is pending signature from the role of the authenticated user.
-		pending_signables = signable_class.objects.filter(current_pending_signatory__in=relevant_permissions)
-		serialized_pending_signables = signable_serializer(pending_signables, many=True).data
+		# Get all signable objects.
+		signables = signable_class.objects.all()
+		if status_filter == "pending":
+			# Filter the users permissions for permissions relevant to the signable object.
+			relevant_permissions = [p[1] for p in filter(
+				lambda x: x[0] == signable_app_label,
+				[x.split('.') for x in request.user.get_all_permissions()]
+			)]
+			# Filter for signable objects that are pending signature from the role of the authenticated user.
+			signables = signables.filter(current_pending_signatory__in=relevant_permissions)
+			
+		if status_filter == "completed":
+			# Filter the signable objects by the ones that have been completed.
+			signables = [s for s in signables if s.is_completely_signed]
+	
+		serialized_pending_signables = signable_serializer(signables, many=True).data
 		return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=serialized_pending_signables)
 	# Return a 404 if the signable class does not exist
 	return APIResponse(f"A signable object of type {target_class} was not found.", status=status.HTTP_404_NOT_FOUND)
-	
-	
-	
 	
