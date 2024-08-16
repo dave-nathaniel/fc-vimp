@@ -5,9 +5,10 @@ from django.contrib.auth import get_user_model
 from abc import ABC, ABCMeta, abstractmethod
 import hashlib
 from dataclasses import dataclass
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
+
 
 user = get_user_model()
 
@@ -42,6 +43,16 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 			Property that states whether the signable object is completely signed by all its signatories.
 		'''
 		return len(self.get_signatures()) == len(self.signatories)
+	
+	@property
+	def is_rejected(self):
+		'''
+			Property that states whether the signable object has been rejected by any of its signatories.
+		'''
+		last_signature = self.get_last_signature()
+		if last_signature:
+			return last_signature.accepted is False
+		return False
 	
 	class Meta:
 		abstract = True
@@ -123,6 +134,15 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 		# The number of signatures made can be passed an index to the list of signatories to get the current pending signatory
 		return signatories[number_of_signatures_made] if number_of_signatures_made < len(signatories) else None
 	
+	def get_last_signature(self):
+		"""
+			Method to get the last signature for the signable object.
+			This method uses Django's ContentType and Signature models to retrieve the last signature.
+		"""
+		content_type = ContentType.objects.get_for_model(self)
+		signature = Signature.objects.filter(signable_type=content_type, signable_id=self.id).last()
+		return signature
+	
 	def reset_current_pending_signatory(self, ) -> bool:
 		"""
 			Method to reset the current pending signatory for the signable object.
@@ -131,21 +151,20 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 		self.current_pending_signatory = self.get_current_pending_signatory()
 		super().save(update_fields=['current_pending_signatory'])
 	
-	def save(self, *args, **kwargs):
-		# This model can only be created, not modified
-		if self.pk:
-			raise Exception("Signable models can not be modified")
-		super().save(*args, **kwargs)
-	
-	##########################################################################################
-	# methods to sign and verify the signable object.
-	##########################################################################################
-	
 	def sign(self, request: object) -> bool:
 		"""
 			Method to sign the signable object.
-			This method checks if the user has the necessary permissions to sign the object, and then creates a new signature.
+			Before recording a signature, this method checks:
+				- That this object has not been rejected
+				- That the object has not been completely signed yet
+				- If the user has the necessary permissions to sign the object, and then creates a new signature.
 		"""
+		# Check that this object has not been rejected
+		if self.is_rejected:
+			raise ValidationError("This object has been rejected.")
+		# Check that this object has not been completely signed yet
+		if self.is_completely_signed:
+			raise ValidationError("This object has been completely signed.")
 		# Check that the user attempting to sign is the (has the role) current pending signatory
 		required_permission = f"{self._meta.app_label}.{self.get_current_pending_signatory()}"
 		if not request.user.has_perm(required_permission):
@@ -177,6 +196,12 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 			raise Exception("Unable to sign the object: ", str(e))
 		# If no exceptions were raised, the signature was successfully created and saved
 		return True
+	
+	def save(self, *args, **kwargs):
+		# This model can only be created, not modified
+		if self.pk:
+			raise Exception("Signable models can not be modified")
+		super().save(*args, **kwargs)
 	
 	
 class Signature(models.Model):
@@ -224,7 +249,12 @@ class Signature(models.Model):
 @receiver(post_delete, sender=Signature)
 def delete_signature_hook(sender, instance, using, **kwargs):
 	# Reset the current pending signatory of the signable object
-	instance.signable.reset_current_pending_signatory()
+	try:
+		instance.signable.reset_current_pending_signatory()
+	except Exception as e:
+		return False
+	
+	return True
 
 
 class Keystore(models.Model):
