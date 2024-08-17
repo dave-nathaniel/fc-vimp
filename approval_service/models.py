@@ -117,7 +117,7 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 			This method uses Django's ContentType and Signature models to retrieve the signatures.
 		"""
 		content_type = ContentType.objects.get_for_model(self)
-		signatures = Signature.objects.filter(signable_type=content_type, signable_id=self.id)
+		signatures = Signature.objects.filter(signable_type=content_type, signable_id=self.id).order_by("-date_signed")
 		return signatures
 	
 	def get_current_pending_signatory(self):
@@ -226,6 +226,10 @@ class Signature(models.Model):
 	metadata = models.JSONField(default=dict)
 	# Define a predecessor field to store reference to the previous signature
 	predecessor = models.ForeignKey('self', on_delete=models.CASCADE, null=True, blank=True, related_name='successors')
+	
+	@property
+	def role(self) -> str:
+		return self.metadata.get('acting_as', '')
 	
 	def validate_signature(self, ) -> bool:
 		# check_token_valid = AdfsBaseBackend().validate_access_token(jwt_token)
