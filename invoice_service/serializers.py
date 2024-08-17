@@ -1,6 +1,7 @@
 from rest_framework import serializers
 from .models import Invoice, InvoiceLineItem
 from egrn_service.serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer, PurchaseOrderSerializer, PurchaseOrderLineItemSerializer
+from approval_service.serializers import SignatureSerializer
 
 
 class InvoiceLineItemSerializer(serializers.ModelSerializer):
@@ -50,10 +51,18 @@ class InvoiceSerializer(serializers.ModelSerializer):
 		return obj.net_total
 	
 	def get_workflow(self, obj):
+		# Get and serialize the signatures
+		signatures = SignatureSerializer(obj.get_signatures(), many=True).data
+		# We don't want to expose sensitive information about the signatories
+		for signature in signatures:
+			signature.pop('signer')
+			signature.pop('predecessor')
+		# Return details about the workflow and signatures
 		return {
 			"completed": obj.is_completely_signed,
 			"pending_approval_from": obj.current_pending_signatory,
-			"approved": obj.is_rejected is False if obj.is_completely_signed else False
+			"approved": obj.is_rejected is False if obj.is_completely_signed else False,
+			"signatures": signatures,
 		}
 	
 	def to_representation(self, instance):

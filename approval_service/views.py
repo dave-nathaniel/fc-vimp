@@ -1,14 +1,17 @@
+from django.contrib.contenttypes.models import ContentType
 from django_auth_adfs.rest_framework import AdfsAccessTokenAuthentication
 from rest_framework import status
 from rest_framework.decorators import permission_classes, authentication_classes, api_view
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
-from overrides.rest_framework import APIResponse
-from .models import Keystore
-from invoice_service.models import Invoice
 from invoice_service.serializers import InvoiceSerializer
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from .models import Keystore, Signature
+from .serializers import SignatureSerializer
+from invoice_service.models import Invoice
+from overrides.rest_framework import APIResponse, CustomPagination
 
+paginator = CustomPagination()
 
 def get_signable_class(target_class: str) -> object:
 	# Map signable classes to their corresponding Django models and app labels.
@@ -117,5 +120,38 @@ def get_signable_view(request, target_class, status_filter="all"):
 		serialized_pending_signables = signable_serializer(signables, many=True).data
 		return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=serialized_pending_signables)
 	# Return a 404 if the signable class does not exist
-	return APIResponse(f"A signable object of type {target_class} was not found.", status=status.HTTP_404_NOT_FOUND)
-	
+	return APIResponse(f"No signable object of type {target_class}.", status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+@authentication_classes([AdfsAccessTokenAuthentication])
+def track_signable_view(request, target_class, object_id):
+	'''
+		Returns a list of all signatures for a specific signable object.
+	'''
+	# Get the signable class being signed in this request.
+	target = get_signable_class(target_class)
+	# If the signable class does not exist, return a 404
+	if target:
+		# Get the Django model and app label for the signable class.
+		signable_class = target.get("class")
+		# Get the signable object with the provided ID. If it does not exist, return an error message
+		try:
+			# Using Django's ContentType framework to get the correct content type for the signable class.'
+			content_type = ContentType.objects.get_for_model(signable_class)
+			# Get all signatures for the signable object.
+			signatures = Signature.objects.filter(signable_type=content_type, signable_id=object_id)
+			# Paginate the queryset.
+			paginated = paginator.paginate_queryset(signatures, request, order_by='-date_signed')
+			# Serialize the paginated signatures.
+			serialized_signatures = SignatureSerializer(paginated, many=True).data
+			# Return the paginated response with the serialized signatures.
+			paginated_data = paginator.get_paginated_response(serialized_signatures).data
+			return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=paginated_data)
+		except ObjectDoesNotExist:
+			return APIResponse(f"No signatures found for {target_class} {object_id}.", status=status.HTTP_404_NOT_FOUND)
+		except Exception as e:
+			return APIResponse(f"Internal Error: {e}", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+	# Return a 400 if the signable class does not exist
+	return APIResponse(f"No signable object of type {target_class}.", status=status.HTTP_400_BAD_REQUEST)
