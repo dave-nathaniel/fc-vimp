@@ -61,7 +61,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
 		return {
 			"completed": obj.is_completely_signed,
 			"pending_approval_from": obj.current_pending_signatory,
-			"approved": obj.is_rejected is False if obj.is_completely_signed else False,
+			"approved": obj.is_accepted,
 			"signatures": signatures,
 		}
 	

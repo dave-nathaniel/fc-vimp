@@ -113,10 +113,13 @@ def get_signable_view(request, target_class, status_filter="all"):
 			# Filter for signable objects that are pending signature from the role of the authenticated user.
 			signables = signables.filter(current_pending_signatory__in=relevant_permissions)
 			
-		if status_filter == "completed":
-			# Filter the signable objects by the ones that have been completed.
-			signables = [s for s in signables if s.is_completely_signed]
-	
+		# Filter the signable objects by the ones that have been completed.
+		signables = list(filter(lambda s: s.is_completely_signed, signables)) if status_filter == "completed" else signables
+		
+		# Filter the signable objects by accepted or rejected, if the approved param is provided in the request.
+		verdict_filter = bool(int(request.GET.get("approved"))) if request.GET.get("approved") else None
+		signables = list(filter(lambda s: s.is_accepted == verdict_filter, signables)) if verdict_filter else signables
+		
 		serialized_pending_signables = signable_serializer(signables, many=True).data
 		return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=serialized_pending_signables)
 	# Return a 404 if the signable class does not exist

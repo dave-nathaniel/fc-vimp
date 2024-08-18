@@ -34,6 +34,7 @@ CORS_ORIGIN_ALLOW_ALL = True
 
 AUTH_USER_MODEL = 'core_service.CustomUser'
 
+# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_USE_TLS = True
 EMAIL_HOST = os.getenv("SMTP_HOST")
