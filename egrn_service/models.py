@@ -243,8 +243,11 @@ class GoodsReceivedNote(models.Model):
 		# If all related GoodsReceivedLineItem instances have is_invoiced as True, return 'Finished'
 		if all(item.is_invoiced for item in self.line_items.all()):
 			return self.invoicing_status_code[2]
-		else:
+		# If any related GoodsReceivedLineItem instances have is_invoiced as True, return 'In Process'
+		if any(item.is_invoiced for item in self.line_items.all()):
 			return self.invoicing_status_code[1]
+		# If no related GoodsReceivedLineItem instances have is_invoiced as True, return 'Not Started'
+		return self.invoicing_status_code[0]
 		
 	@property
 	def invoice_status_code(self):

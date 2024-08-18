@@ -54,6 +54,10 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 			return last_signature.accepted is False
 		return False
 	
+	@property
+	def is_accepted(self):
+		return self.is_rejected is False if self.is_completely_signed else False
+	
 	class Meta:
 		abstract = True
 		permissions = [

@@ -201,3 +201,7 @@ class VendorProfile(models.Model):
 		if self.user:
 			return f"{self.byd_internal_id} | {self.user.email}"
 		return f"{self.byd_internal_id}"
+
+
+class LedgerAccount(models.Model):
+	...

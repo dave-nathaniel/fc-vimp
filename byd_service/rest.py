@@ -24,7 +24,7 @@ class RESTServices:
 		self.auth = HTTPBasicAuth(self.username, self.password)
 
 	def get_vendor_by_id(self, vendor_id, id_type='email'):
-		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=1"
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=10"
 		query_url = f"{action_url}&$filter=EMail/URI eq '{vendor_id}'"
 
 		if id_type == 'phone':
@@ -43,7 +43,10 @@ class RESTServices:
 			results = response_json["d"]["results"]
 
 			if results:
-				return results[0]
+				active = list(
+					filter(lambda x: int(x['BusinessPartner']['LifeCycleStatusCode'])==2, results)
+				)
+				return active[0] if active else False
 
 		return False
 
