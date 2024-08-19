@@ -99,7 +99,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	purchase_order = serializers.SerializerMethodField()
 	grn_line_items = GoodsReceivedLineItemSerializer(many=True, read_only=True, source='line_items')
-	total_value_received = serializers.SerializerMethodField()
+	total_value_received = serializers.FloatField(source='total_net_value_received')
 	
 	def get_purchase_order(self, obj):
 		po_dict = PurchaseOrderSerializer(obj.purchase_order, many=False).data
@@ -107,9 +107,6 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 		po_dict.pop('metadata')
 		po_dict.pop('Item')
 		return po_dict
-	
-	def get_total_value_received(self, obj):
-		return sum([item.net_value_received for item in obj.line_items.all()])
 	
 	class Meta:
 		model = GoodsReceivedNote
