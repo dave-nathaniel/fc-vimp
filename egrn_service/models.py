@@ -10,6 +10,7 @@ from byd_service.util import to_python_time
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db.models import Sum
 from django.forms.models import model_to_dict
+from icg_service.inventory import StockManagement
 
 # Initialize REST services
 byd_rest_services = RESTServices()
@@ -59,8 +60,8 @@ class Store(models.Model):
 	@property
 	def default_store(self):
 		'''
-            Returns the default store record which is alwayws the first record in the database.
-        '''
+			Returns the default store record which is alwayws the first record in the database.
+		'''
 		first_store = Store.objects.first()
 		return first_store
 	
@@ -234,9 +235,22 @@ class GoodsReceivedNote(models.Model):
 	purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='purchase_order')
 	store = models.ForeignKey(Store, on_delete=models.CASCADE)
 	grn_number = models.IntegerField(blank=False, null=False, unique=True)
+	posted_to_icg = models.BooleanField(default=False)
 	created = models.DateField(auto_now_add=True)
 	
 	invoicing_status_code = [('1', 'Not Started'), ('2', 'In Process'), ('3', 'Finished')]
+	
+	@property
+	def total_net_value_received(self,):
+		return sum([item.net_value_received for item in self.line_items.all()])
+	
+	@property
+	def total_gross_value_received(self,):
+		return sum([item.gross_value_received for item in self.line_items.all()])
+	
+	@property
+	def total_tax_value_received(self,):
+		return self.total_gross_value_received - self.total_net_value_received
 	
 	@property
 	def invoice_status(self):
@@ -264,7 +278,44 @@ class GoodsReceivedNote(models.Model):
 		for item in invoice_items:
 			total_invoiced += float(item.invoiced_quantity)
 		return total_invoiced
+	
+	def post_to_icg(self, ):
+		'''
+			Create a Purchase Order for the received good on ICG system for the purpose of updating the
+			inventory with the received goods.
+			TODO:
+				- Confirm the purpose of the "costTotal" key.
+				- Confirm the purpose of the "clientId" key.
+		'''
+		order_details = {
+			"externalDocNo": str(self.grn_number),
+			"grossTotal": str(float(self.total_gross_value_received)),
+			"taxesTotal": str(float(self.total_tax_value_received)),
+			"netTotal": str(float(self.total_net_value_received)),
+			"costTotal": str(float(self.total_net_value_received)),
+			"clientId": "999901",
+			"warehouse": str(self.store.icg_warehouse_code),
+			"orderDate": self.created.strftime('%Y-%m-%d'),
+		}
+		order_items = [
+			(lambda index, order_item: {
+				"externalDocNo": str(self.grn_number),
+				"itemId": str(order_item.id),
+				"barcode": str(order_item.purchase_order_line_item.metadata["ProductID"]),
+				"description": str(order_item.purchase_order_line_item.metadata["Description"]),
+				"totalQty": str(int(order_item.quantity_received)),
+				"price": str(order_item.purchase_order_line_item.metadata["NetUnitPriceAmount"]),
+				"cost": str(float(order_item.net_value_received)),
+				"discount": "0",
+				"totalPrice": str(float(order_item.net_value_received)),
+				"line_No": str(index + 1),
+				"date": order_item.date_received.strftime('%Y-%m-%d'),
+			})(i, j) for i, j in enumerate(self.line_items.all())
+		]
 		
+		stock = StockManagement()
+		# The posted_to_icg flag is set to True if the purchase order is successfully created on I
+		self.posted_to_icg = stock.create_purchase_order(order_details, order_items)
 	
 	def save(self, *args, **kwargs):
 		grn_data = kwargs.pop('grn_data')
@@ -272,8 +323,7 @@ class GoodsReceivedNote(models.Model):
 		# Set the store where this GRN is being received
 		self.store = Store.objects.all()[0]
 		try:
-			# Try to retrieve an object by a specific field
-			# If the object is found, you can work with it here
+			# Try to retrieve an object by a specific field if the object is found, you can work with it here
 			self.purchase_order = PurchaseOrder.objects.get(po_id=po_id)
 		except ObjectDoesNotExist:
 			# Create the Purchase Order
@@ -296,14 +346,16 @@ class GoodsReceivedNote(models.Model):
 			except Exception as e:
 				logging.error(e)
 				raise e
-		# If none of the line items were created (meaning there was an error with all the line items),
-		# then delete the GRN altogether and return False
+		# Delete the GRN if none of the line items were created (meaning there was an error with all the line items)
 		try:
 			self.__create_line_items__(grn_data.get("recievedGoods"))
 		except Exception as e:
 			self.delete()
 			raise e
-		# Return True if any line items were created
+		# Add the received goods to the ICG Inventory system
+		self.post_to_icg()
+		# Save the Goods Received Note
+		super().save(*args, **kwargs)
 		return self
 	
 	def __create_line_items__(self, line_items):

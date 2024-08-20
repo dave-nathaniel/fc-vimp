@@ -1,7 +1,6 @@
 import os
 import json
-from requests import get, post, Session
-from requests.auth import HTTPBasicAuth
+from requests import get
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -10,18 +9,15 @@ load_dotenv(dotenv_path)
 
 
 class RESTServices:
+	'''
+	    RESTful API for interacting with SAP's ByD system
+	'''
 	endpoint = os.getenv('SAP_URL')
-	username = os.getenv('SAP_USER')
-	password = os.getenv('SAP_PASS')
-
+	
 	def __init__(self, ):
-		self.auth = None
-		self.session = None
-
-		self.connect()
-
-	def connect(self, ):
-		self.auth = HTTPBasicAuth(self.username, self.password)
+		from .authenticate import HTTPAuth
+		
+		self.auth = HTTPAuth()
 
 	def get_vendor_by_id(self, vendor_id, id_type='email'):
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=10"
