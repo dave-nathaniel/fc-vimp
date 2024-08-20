@@ -132,8 +132,8 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 		signatories = self.signatories
 		# The number of signatures made
 		number_of_signatures_made = len(self.get_signatures()) or 0
-		# Check if there are any pending signatories
-		if not signatories:
+		# If no signatories are set or the signable object has been rejected, return None
+		if not signatories or self.is_rejected:
 			return None
 		# The number of signatures made can be passed an index to the list of signatories to get the current pending signatory
 		return signatories[number_of_signatures_made] if number_of_signatures_made < len(signatories) else None
