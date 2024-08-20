@@ -42,7 +42,7 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 		'''
 			Property that states whether the signable object is completely signed by all its signatories.
 		'''
-		return len(self.get_signatures()) == len(self.signatories)
+		return len(self.get_signatures()) == len(self.signatories) or self.is_rejected
 	
 	@property
 	def is_rejected(self):
