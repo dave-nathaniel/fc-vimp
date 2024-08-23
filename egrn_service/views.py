@@ -1,10 +1,8 @@
 # Import necessary modules and classes
 import os, sys
 import logging
-import asyncio
 from datetime import datetime
 from django.db.models import Avg
-from django.template.loader import render_to_string
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes
 from django_auth_adfs.rest_framework import AdfsAccessTokenAuthentication
@@ -14,11 +12,9 @@ from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
-from copy import deepcopy
 
-from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem
+from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder
 from .serializers import GoodsReceivedNoteSerializer, PurchaseOrderSerializer, GoodsReceivedLineItemSerializer
-from .tasks import send_email_async
 
 
 # Initialize REST services
@@ -86,6 +82,7 @@ def search_vendor(request, ):
 		logging.error(e)
 		return APIResponse("Internal Error.", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
 @api_view(['GET'])
 @authentication_classes([CombinedAuthentication])
 def get_purchase_order(request, po_id):
@@ -111,6 +108,7 @@ def get_purchase_order(request, po_id):
 		logging.error(f"An error occurred creating a Purchase Order: {e}")
 		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+	
 @api_view(['POST'])
 @authentication_classes([AdfsAccessTokenAuthentication,])
 def create_grn(request, ):
@@ -131,26 +129,15 @@ def create_grn(request, ):
 	# Make the PO_ID key consistent as the identifier
 	request_data["po_id"] = request_data[identifier]
 	try:
-		# Try to create the GRN
-		new_grn = GoodsReceivedNote()
-		grn_saved = new_grn.save(grn_data=request_data)
-		if grn_saved:
-			# If the GRN was created successfully, return the created GRN
-			created_grn = GoodsReceivedNote.objects.get(id=grn_saved.id)
-			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
-			goods_received_note = GoodsReceivedNoteSerializer(created_grn).data
-			template_data = deepcopy(goods_received_note)
-			# Modify some fields for more straightforward rendering
-			template_data['purchase_order']['BuyerParty']['BuyerPartyName'] = template_data['purchase_order']['BuyerParty']['BuyerPartyName'][0]
-			template_data['purchase_order']['Supplier']['SupplierName'] = template_data['purchase_order']['Supplier']['SupplierName'][0]
-			template_data['purchase_order']['Supplier']['SupplierPostalAddress'] = template_data['purchase_order']['Supplier']['SupplierPostalAddress'][0]
-			# Render the HTML content of the template and send the email asynchronously
-			html_content = render_to_string('grn_receipt_template.html', {'data': template_data})
-			send_email_async(html_content)
-			return APIResponse("GRN Created.", status.HTTP_201_CREATED, data=goods_received_note)
+		# Create the GRN
+		created_grn = GoodsReceivedNote().save(grn_data=request_data)
+		# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
+		goods_received_note = GoodsReceivedNoteSerializer(created_grn).data
+		return APIResponse("GRN Created.", status.HTTP_201_CREATED, data=goods_received_note)
 	# Return an error if there is an exception
 	except Exception as e:
 		return APIResponse(str(e), status.HTTP_400_BAD_REQUEST)
+
 
 @api_view(['GET'])
 @authentication_classes([CombinedAuthentication])

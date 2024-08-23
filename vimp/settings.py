@@ -58,6 +58,7 @@ INSTALLED_APPS = [
 	'rest_framework_simplejwt',
 	'corsheaders',
 	'jsoneditor',
+	'django_q',
 
 	'core_service',
 	'egrn_service',
@@ -68,7 +69,14 @@ INSTALLED_APPS = [
 JSON_EDITOR_JS = 'https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/8.6.4/jsoneditor.js'
 JSON_EDITOR_CSS = 'https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/8.6.4/jsoneditor.css'
 
-
+Q_CLUSTER = {
+    'name': 'vimp_workers',
+    'orm': 'default',
+	'timeout': 120,  # seconds
+	'retry': 200,  # seconds
+	'ack_failures': False,
+	'max_attempts': 3,
+}
 
 REST_FRAMEWORK = {
 	'DEFAULT_AUTHENTICATION_CLASSES': (

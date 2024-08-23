@@ -10,7 +10,7 @@ from byd_service.util import to_python_time
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db.models import Sum
 from django.forms.models import model_to_dict
-from icg_service.inventory import StockManagement
+from django_q.tasks import async_task
 
 # Initialize REST services
 byd_rest_services = RESTServices()
@@ -279,44 +279,6 @@ class GoodsReceivedNote(models.Model):
 			total_invoiced += float(item.invoiced_quantity)
 		return total_invoiced
 	
-	def post_to_icg(self, ):
-		'''
-			Create a Purchase Order for the received good on ICG system for the purpose of updating the
-			inventory with the received goods.
-			TODO:
-				- Confirm the purpose of the "costTotal" key.
-				- Confirm the purpose of the "clientId" key.
-		'''
-		order_details = {
-			"externalDocNo": str(self.grn_number),
-			"grossTotal": str(float(self.total_gross_value_received)),
-			"taxesTotal": str(float(self.total_tax_value_received)),
-			"netTotal": str(float(self.total_net_value_received)),
-			"costTotal": str(float(self.total_net_value_received)),
-			"clientId": "999901",
-			"warehouse": str(self.store.icg_warehouse_code),
-			"orderDate": self.created.strftime('%Y-%m-%d'),
-		}
-		order_items = [
-			(lambda index, order_item: {
-				"externalDocNo": str(self.grn_number),
-				"itemId": str(order_item.id),
-				"barcode": str(order_item.purchase_order_line_item.metadata["ProductID"]),
-				"description": str(order_item.purchase_order_line_item.metadata["Description"]),
-				"totalQty": str(int(order_item.quantity_received)),
-				"price": str(order_item.purchase_order_line_item.metadata["NetUnitPriceAmount"]),
-				"cost": str(float(order_item.net_value_received)),
-				"discount": "0",
-				"totalPrice": str(float(order_item.net_value_received)),
-				"line_No": str(index + 1),
-				"date": order_item.date_received.strftime('%Y-%m-%d'),
-			})(i, j) for i, j in enumerate(self.line_items.all())
-		]
-		
-		stock = StockManagement()
-		# The posted_to_icg flag is set to True if the purchase order is successfully created on I
-		self.posted_to_icg = stock.create_purchase_order(order_details, order_items)
-	
 	def save(self, *args, **kwargs):
 		grn_data = kwargs.pop('grn_data')
 		po_id = grn_data['po_id']
@@ -352,10 +314,14 @@ class GoodsReceivedNote(models.Model):
 		except Exception as e:
 			self.delete()
 			raise e
-		# Add the received goods to the ICG Inventory system
-		self.post_to_icg()
-		# Save the Goods Received Note
-		super().save(*args, **kwargs)
+		# Perform asynchronous tasks after the GRN and it's corresponding line items have been created
+		async_task('egrn_service.tasks.post_to_icg', self, q_options={
+			'task_name': f'Post-GRN-{self.grn_number}-To-ICG-Inventory',
+		})
+		async_task('egrn_service.tasks.send_grn_to_email', self, q_options={
+			'task_name': f'Email-GRN-{self.grn_number}-To-Vendor',
+		})
+		# Return the created Goods Received Note
 		return self
 	
 	def __create_line_items__(self, line_items):
