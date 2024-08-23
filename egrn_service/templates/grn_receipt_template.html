@@ -136,7 +136,7 @@
                                                 <td colspan="4"></td>
                                             </tr>
                                             {% localize on %}
-                                            {% for item in data.line_items %}
+                                            {% for item in data.grn_line_items %}
                                             <tr style="height:40px;" class="padded-row">
                                                 <td style="" class="item-cell">
                                                     <span class="title" dir="auto" style="font-weight:600;">
@@ -150,7 +150,7 @@
                                                     <span>{{ item.quantity_received|floatformat:2 }} {{ item.purchase_order_line_item.unit_of_measurement }}s</span>
                                                 </td>
                                                 <td class="price-cell" align="right" style="">
-                                                    <span style="font-weight:600;white-space:nowrap;">₦ {{ item.value_received|floatformat:2 }}</span>
+                                                    <span style="font-weight:600;white-space:nowrap;">₦ {{ item.net_value_received|floatformat:2 }}</span>
                                                 </td>
                                             </tr>
                                             <tr class="divider-row">
