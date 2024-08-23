@@ -20,6 +20,7 @@ def get_signable_class(target_class: str) -> object:
 			"class": Invoice,
 			"app_label": "invoice_service",
 			"serializer": InvoiceSerializer,
+			"order_by": "-date_created"
 		}
 	}
 	# If the signable class exists, return the corresponding Django model and app label
@@ -119,9 +120,13 @@ def get_signable_view(request, target_class, status_filter="all"):
 		# Filter the signable objects by accepted or rejected, if the approved param is provided in the request.
 		verdict_filter = bool(int(request.GET.get("approved"))) if request.GET.get("approved") else None
 		signables = list(filter(lambda s: s.is_accepted == verdict_filter, signables)) if verdict_filter else signables
-		
-		serialized_pending_signables = signable_serializer(signables, many=True).data
-		return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=serialized_pending_signables)
+		# Paginate the queryset.
+		paginated = paginator.paginate_queryset(signables, request, order_by=target.get("order_by"))
+		# Serialize the paginated signables.
+		serialized_pending_signables = signable_serializer(paginated, many=True).data
+		# Return the paginated response with the serialized signables.
+		paginated_data = paginator.get_paginated_response(serialized_pending_signables).data
+		return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=paginated_data)
 	# Return a 404 if the signable class does not exist
 	return APIResponse(f"No signable object of type {target_class}.", status=status.HTTP_400_BAD_REQUEST)
 
