@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import Invoice, InvoiceLineItem
+from core_service.serializers import VendorProfileSerializer
 from egrn_service.serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer, PurchaseOrderSerializer, PurchaseOrderLineItemSerializer
 from approval_service.serializers import SignatureSerializer
 
@@ -36,6 +37,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
 	total_tax_amount = serializers.SerializerMethodField()
 	net_total = serializers.SerializerMethodField()
 	workflow = serializers.SerializerMethodField()
+	vendor = VendorProfileSerializer(read_only=True, source='grn.purchase_order.vendor')
 	
 	def create(self, validated_data):
 		invoice = Invoice.objects.create(**validated_data)
@@ -81,5 +83,5 @@ class InvoiceSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = Invoice
 		fields = ['id', 'external_document_id','description', 'date_created', 'due_date', 'payment_terms',
-				  'payment_reason', 'gross_total', 'total_tax_amount', 'net_total', 'invoice_line_items', 'workflow', 'grn', 'purchase_order']
+				  'payment_reason', 'gross_total', 'total_tax_amount', 'net_total', 'invoice_line_items', 'workflow', 'grn', 'purchase_order', 'vendor']
 		read_only_fields = ['id', 'gross_total', 'total_tax_amount', 'net_total']

@@ -3,7 +3,6 @@ import logging
 from rest_framework import serializers
 from core_service.models import VendorProfile
 from django.contrib.auth import get_user_model
-from django.contrib.auth.hashers import make_password
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 from django.core.exceptions import ObjectDoesNotExist
 
@@ -33,6 +32,11 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 		
 		return user_data
 	
+	def to_representation(self, instance):
+		# Include user information in the response
+		data = super().to_representation(instance)
+		return self.get_user_data(instance)
+	
 	@classmethod
 	def get_token(cls, user):
 		token = super().get_token(user)
@@ -53,12 +57,18 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 
 class VendorProfileSerializer(serializers.ModelSerializer):
-	user = CustomTokenObtainPairSerializer(read_only=True)
-	class Meta:
-		model = VendorProfile
-		exclude = ['id']
-		read_only_fields = ['byd_metadata', 'byd_internal_id', 'user', 'created_on']
-	
 	def create(self, validated_data):
 		vendor_profile = VendorProfile.objects.create(validated_data)
 		return vendor_profile
+	
+	def to_representation(self, instance):
+		data = super().to_representation(instance)
+		vendor = CustomTokenObtainPairSerializer(instance.user).data
+		vendor.update(data)
+		vendor.pop('byd_metadata')
+		return vendor
+		
+	class Meta:
+		model = VendorProfile
+		exclude = ['id', 'user']
+		read_only_fields = ['byd_metadata', 'byd_internal_id', 'user', 'created_on']
