@@ -104,7 +104,7 @@ def get_signable_view(request, target_class, status_filter="all"):
 		# Get the Django model and app label for the signable class.
 		signable_class, signable_app_label, signable_serializer = target.get("class"), target.get("app_label"), target.get("serializer")
 		# Get all signable objects.
-		signables = signable_class.objects.all()
+		signables = signable_class.objects.all().order_by(target.get("order_by"))
 		if status_filter == "pending":
 			# Filter the users permissions for permissions relevant to the signable object.
 			relevant_permissions = [p[1] for p in filter(
@@ -121,7 +121,7 @@ def get_signable_view(request, target_class, status_filter="all"):
 		verdict_filter = bool(int(request.GET.get("approved"))) if request.GET.get("approved") else None
 		signables = list(filter(lambda s: s.is_accepted == verdict_filter, signables)) if verdict_filter else signables
 		# Paginate the queryset.
-		paginated = paginator.paginate_queryset(signables, request, order_by=target.get("order_by"))
+		paginated = paginator.paginate_queryset(signables, request)
 		# Serialize the paginated signables.
 		serialized_pending_signables = signable_serializer(paginated, many=True).data
 		# Return the paginated response with the serialized signables.
