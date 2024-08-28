@@ -117,9 +117,23 @@ def get_signable_view(request, target_class, status_filter="all"):
 			signables = list(filter(lambda s: s.current_pending_signatory in relevant_permissions, signables)) if status_filter == "pending" else signables
 			# Filter the signable objects by the ones that have been completed.
 			signables = list(filter(lambda s: s.is_completely_signed, signables)) if status_filter == "completed" else signables
-			# Filter the signable objects by accepted or rejected, if the approved param is provided in the request.
+			# Filter the signable objects for objects that have been accepted or rejected for the particular role, if the approved param is provided in the request.
 			verdict_filter = bool(int(request.GET.get("approved"))) if request.GET.get("approved") else None
-			signables = list(filter(lambda s: s.is_accepted == verdict_filter, signables)) if verdict_filter else signables
+			if verdict_filter is not None:
+				# Get signables where roles of the authenticated user has signed
+				signed_by_user_role = [obj for obj in signables if any(
+					role in (
+						(lambda x: map(lambda i: i.role, x))(obj.get_signatures())
+					) for role in relevant_permissions
+				)]
+				signables = []
+				for signable in signed_by_user_role:
+					# Get all the signatures of this user's role on each of the signables signed by this user
+					signatures = [item for item in signable.get_signatures()]
+					# Filter the signatures for the particular verdict (True for accepted, False for rejected).
+					filtered_signatures = list(filter(lambda i: i.accepted == verdict_filter, [item for item in signatures]))
+					# Add the signable to the signables list.
+					signables.append(signable) if signable.id in [item.signable_id for item in filtered_signatures] else None
 			# Paginate the queryset.
 			paginated = paginator.paginate_queryset(signables, request)
 			# Serialize the paginated signables.
