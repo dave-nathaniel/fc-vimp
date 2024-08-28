@@ -61,8 +61,9 @@ class InvoiceSerializer(serializers.ModelSerializer):
 			signature.pop('predecessor')
 		# Return details about the workflow and signatures
 		return {
-			"completed": obj.is_completely_signed,
+			"signatories": obj.signatories,
 			"pending_approval_from": obj.current_pending_signatory,
+			"completed": obj.is_completely_signed,
 			"approved": obj.is_accepted,
 			"signatures": signatures,
 		}
