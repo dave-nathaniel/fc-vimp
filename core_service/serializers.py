@@ -65,7 +65,7 @@ class VendorProfileSerializer(serializers.ModelSerializer):
 		data = super().to_representation(instance)
 		vendor = CustomTokenObtainPairSerializer(instance.user).data
 		vendor.update(data)
-		vendor.pop('byd_metadata')
+		# vendor.pop('byd_metadata')
 		return vendor
 		
 	class Meta:
