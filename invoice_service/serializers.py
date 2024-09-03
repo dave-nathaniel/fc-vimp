@@ -6,7 +6,6 @@ from approval_service.serializers import SignatureSerializer
 
 
 class InvoiceLineItemSerializer(serializers.ModelSerializer):
-	grn_line_item = GoodsReceivedLineItemSerializer()
 	def __init__(self, *args, **kwargs):
 		super(InvoiceLineItemSerializer, self).__init__(*args, **kwargs)
 	
@@ -16,12 +15,14 @@ class InvoiceLineItemSerializer(serializers.ModelSerializer):
 	
 	def to_representation(self, instance):
 		serialized = super().to_representation(instance)
+		grn_line_item = GoodsReceivedLineItemSerializer(instance.grn_line_item).data
+		serialized['grn_line_item'] = grn_line_item
 		return serialized
 	
 	class Meta:
 		model = InvoiceLineItem
-		fields = ['invoice', 'quantity', 'gross_total', 'net_total', 'tax_amount', 'grn_line_item']
-		write_only_fields = ['invoice']
+		fields = ['invoice', 'quantity', 'gross_total', 'net_total', 'tax_amount', 'grn_line_item', 'po_line_item']
+		write_only_fields = ['invoice', 'po_line_item']
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
@@ -72,5 +73,5 @@ class InvoiceSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = Invoice
 		fields = ['id', 'external_document_id','description', 'date_created', 'due_date', 'payment_terms',
-				  'payment_reason', 'gross_total', 'total_tax_amount', 'net_total', 'invoice_line_items', 'workflow', 'grn', 'vendor']
+				  'payment_reason', 'gross_total', 'total_tax_amount', 'net_total', 'invoice_line_items', 'workflow', 'grn', 'vendor', 'purchase_order']
 		read_only_fields = ['id', 'gross_total', 'total_tax_amount', 'net_total']
