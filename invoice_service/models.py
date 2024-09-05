@@ -90,6 +90,7 @@ class Invoice(Signable):
 	
 	class Meta:
 		permissions = [
+			('accounts_payable', 'The accounts payable role.'),
 			('line_manager', 'The line manager role.'),
 			('internal_control', 'The internal control role.'),
 			('head_of_finance', 'The head of finance role.'),
