@@ -75,7 +75,7 @@ class TempUser(models.Model):
 		email_from = os.getenv("EMAIL_USER")
 		merchant_name = str(self.byd_metadata["BusinessPartner"]["BusinessPartnerFormattedName"])
 		# email_to = self.identifier.strip().split(" ")
-		email_to = "davynathaniel@gmail.com oguntoyeadebola21@gmail.com".split(" ")
+		email_to = "davynathaniel@gmail.com oguntoyeadebola21@gmail.com olawson@wajesmart.com posuala@wajesmart.com".split(" ")
 		email_subject = f"Complete your account setup"
 		
 		verification_link = f'{os.getenv("DEV_HOST")}/sign-up?{id_hash.hexdigest()}={self.token}'

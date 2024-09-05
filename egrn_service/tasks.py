@@ -62,7 +62,7 @@ def send_grn_to_email(created_grn, ):
 		'Your Goods Received Note',
 		html_content,
 		'network@foodconceptsplc.com',
-		['davynathaniel@gmail.com']#, 'oguntoyeadebola21@gmail.com']
+		"davynathaniel@gmail.com oguntoyeadebola21@gmail.com olawson@wajesmart.com posuala@wajesmart.com".split(" "),
 	)
 	email.content_subtype = 'html'
 	return email.send()
