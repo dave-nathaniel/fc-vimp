@@ -128,10 +128,11 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 			if verdict_filter is not None:
 				signables = []
 				for signable in signed_by_user_role:
-					# Get all the signatures of this user's role on each of the signables signed by this user
-					signatures = [item for item in signable.get_signatures()]
-					# Filter the signatures for the particular verdict (True for accepted, False for rejected).
-					filtered_signatures = list(filter(lambda i: i.accepted == verdict_filter, [item for item in signatures]))
+					# Filter the signatures for the particular verdict (True for accepted, False for rejected) AND for the particular user's role
+					filtered_signatures = filter(
+						lambda i: (i.accepted == verdict_filter) and (i.role in relevant_permissions),
+						signable.get_signatures()
+					)
 					# Add the signable to the signables list.
 					signables.append(signable) if signable.id in [item.signable_id for item in filtered_signatures] else None
 			# Paginate the queryset.
