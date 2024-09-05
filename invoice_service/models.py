@@ -13,19 +13,19 @@ class InvoiceWorkflow(Workflow):
 	sign_rules = {
 		# Internal Control reviews and approves all Invoices.
 		"level_1": {
-			"roles": ("line_manager", "internal_control"),
+			"roles": ("accounts_payable", "line_manager", "internal_control"),
 			"comment": "Line Manager reviews and approves Invoice less than or equal to N3Million.",
 		},
 		"level_2": {
-			"roles": ("internal_control", "head_of_finance", "snr_manager_finance"),
+			"roles": ("accounts_payable", "line_manager", "internal_control", "head_of_finance", "snr_manager_finance"),
 			"comment": "Head of Finance /Snr Manager Finance approves Invoice from N3Million Naira to N10 Million.",
 		},
 		"level_3": {
-			"roles": ("internal_control", "dmd_ss"),
+			"roles": ("accounts_payable", "line_manager", "internal_control", "dmd_ss"),
 			"comment": "DMD SS approves invoices from N10Million to 100Million",
 		},
 		"level_4": {
-			"roles": ("internal_control", "md"),
+			"roles": ("accounts_payable", "line_manager", "internal_control", "md"),
 			"comment": "MD approves PO/DPs from N100Million",
 		},
 	}
