@@ -1,8 +1,6 @@
 # Import necessary modules and classes
 import os, sys
 import logging
-from datetime import datetime
-from django.db.models import Avg
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes
 from django_auth_adfs.rest_framework import AdfsAccessTokenAuthentication
@@ -13,8 +11,8 @@ from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
 
-from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder
-from .serializers import GoodsReceivedNoteSerializer, PurchaseOrderSerializer, GoodsReceivedLineItemSerializer
+from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem, ProductConfiguration
+from .serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer, PurchaseOrderSerializer
 
 
 # Initialize REST services
@@ -200,57 +198,79 @@ def get_grn(request, grn_number):
 @authentication_classes([CombinedAuthentication,])
 def weighted_average(request):
 	'''
-		Get the weighted average of a product for a given date range
+		Get the weighted average cost for all products or for a specific product, with a history of purchases.
 	'''
-	def get_weighted_average(product_id, start_date, end_date):
-		# Get the received line items for the given product ID and date range
-		line_items = GoodsReceivedLineItem.objects.filter(
-			purchase_order_line_item__product_id=product_id,
-			date_received__range=[start_date, end_date]
-		)
-		# If no line items are found, return False
-		if not line_items.exists():
-			return False
-		# Calculate the average price
-		avg_price = line_items.aggregate(average_price=Avg('purchase_order_line_item__unit_price'))['average_price']
-		# Serialize the GoodsReceivedLineItem instances
-		Goods = GoodsReceivedLineItemSerializer(line_items, many=True).data
-		# Return the weighted average result
-		return {
-			"product_id": product_id,
-			"product_name": line_items[0].purchase_order_line_item.product_name,
-			"average_price": avg_price,
-			"start_date": start_date,
-			"end_date": end_date,
-			"items": Goods
+	def calculate_wac(product_line_items, cumulative_quantity, cumulative_cost):
+		# Dictionary to store results grouped by product_id
+		product_data = {
+			"product_id": product_line_items[0].purchase_order_line_item.product_id,
+			"product_name": product_line_items[0].purchase_order_line_item.product_name,
+			"starting_quantity": cumulative_quantity,
+			"starting_cost": cumulative_cost / cumulative_quantity if cumulative_quantity > 0 else 0,
+			"cumulative_quantity": cumulative_quantity,
+			"cumulative_cost": cumulative_cost,
+			"wac": 0,
+			"history": [],
 		}
+
+		for line_item in product_line_items:
+			purchase_quantity = line_item.purchase_order_line_item.quantity
+			purchase_cost = purchase_quantity * line_item.purchase_order_line_item.unit_price
+			
+			cumulative_quantity = product_data["cumulative_quantity"]
+			cumulative_cost = product_data["cumulative_cost"]
+
+			# Update cumulative values with new purchase
+			cumulative_quantity += purchase_quantity
+			cumulative_cost += purchase_cost
+
+			# Calculate new WAC for the product
+			new_wac = cumulative_cost / cumulative_quantity
+
+			# Update product's current data
+			product_data.update({
+				"cumulative_quantity": cumulative_quantity,
+				"cumulative_cost": cumulative_cost,
+				"wac": round(new_wac, 2),
+			})
+
+			# Add history entry
+			product_data["history"].append({
+				"date": line_item.date_received,
+				"store": line_item.purchase_order_line_item.delivery_store.store_name,
+				"purchase_quantity": purchase_quantity,
+				"purchase_price_per_unit": purchase_cost / purchase_quantity,
+				"purchase_cost": purchase_cost,
+				"cumulative_quantity": cumulative_quantity,
+				"cumulative_cost": cumulative_cost,
+				"wac": round(new_wac, 2),
+				"grn": GoodsReceivedLineItemSerializer(line_item).data,
+			})
+
+		# Convert defaultdict to a regular dict before returning
+		return product_data
 	
-	product_id = request.query_params.get('product_id')
-	# Get the start date or use the first date of the year as default
-	start_date = request.query_params.get('start_date') or datetime.now().replace(day=1, month=1).date()
-	# Get the end date or use todays date as default
-	end_date = request.query_params.get('end_date') or datetime.now().date()
-	# If the start date is after the end date, return an error
-	if start_date > end_date:
-		return APIResponse("Invalid date range.", status=status.HTTP_400_BAD_REQUEST)
+	products_wac = []
 	
 	try:
-		if product_id:
-			# If a product ID is provided, get the weighted average for that product ID
-			result = get_weighted_average(product_id, start_date, end_date)
-			if result:
-				# Return the weighted average result if it exists
-				return APIResponse("Success", data=result, status=status.HTTP_200_OK)
+		if request.query_params.get('product_id'):
+			products = map(lambda x: x.strip(), request.query_params.get('product_id').split(','))
 		else:
-			# If a product ID is not provided, get a unique list of product IDs
-			product_ids = GoodsReceivedLineItem.objects.values_list('purchase_order_line_item__product_id', flat=True).distinct()
-			# Get the weighted average for each product ID
-			results = [get_weighted_average(product_id, start_date, end_date) for product_id in product_ids]
-			if results:
-				# If any weighted average results exist, return them as a list of dictionaries
-				return APIResponse("Success", data=results, status=status.HTTP_200_OK)
-		# If no weighted average results exist, return an error
-		return APIResponse("No data found.", status=status.HTTP_404_NOT_FOUND)
+			products = GoodsReceivedLineItem.objects.order_by('purchase_order_line_item__product_id').values_list('purchase_order_line_item__product_id', flat=True).distinct()
+			
+		for product_id in products:
+			product_config = ProductConfiguration.objects.filter(product_id=product_id).first()
+			cumulative_quantity, cumulative_cost = 0, 0
+			if hasattr(product_config, 'metadata') and product_config.metadata:
+				cumulative_quantity = product_config.metadata.get('inital_quantity', 0)
+				cumulative_cost = product_config.metadata.get('initial_cost', 0) * cumulative_quantity
 	
+			orders_for_product = GoodsReceivedLineItem.objects.filter(purchase_order_line_item__product_id=product_id).order_by('date_received')
+			products_wac.append(calculate_wac(orders_for_product, cumulative_quantity, cumulative_cost)) if orders_for_product else None
+			
+		# # Paginate the results
+		paginated = paginator.paginate_queryset(products_wac, request)
+		paginated_data = paginator.get_paginated_response(paginated).data
+		return APIResponse("Weighted Averages Calculated", status.HTTP_200_OK, data=paginated_data)
 	except Exception as e:
-		return APIResponse(str(e), status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
