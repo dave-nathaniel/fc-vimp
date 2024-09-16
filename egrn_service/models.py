@@ -186,9 +186,11 @@ class PurchaseOrderLineItem(models.Model):
 	def extra_fields(self, ):
 		# If the product ID is defined in the ProductConversion model, return the conversion fields
 		try:
-			product_conversion = ProductConversion.objects.get(product_id=self.metadata["ProductID"])
+			product_conversion = ProductConfiguration.objects.get(product_id=self.metadata["ProductID"])
 			return product_conversion.conversion.conversion_field
 		except ObjectDoesNotExist:
+			return []
+		except AttributeError:
 			return []
 	
 	def __get_tax_rate__(self,):
@@ -414,7 +416,7 @@ class GoodsReceivedLineItem(models.Model):
 		product_id = self.purchase_order_line_item.metadata.get('ProductID')
 		try:
 			# Get conversion methods defined for this product
-			conversion_method = ProductConversion.objects.get(product_id=product_id).conversion.conversion_method
+			conversion_method = ProductConfiguration.objects.get(product_id=product_id).conversion.conversion_method
 		except ObjectDoesNotExist:
 			return False
 		# Get the conversion method name from the instance
@@ -482,14 +484,20 @@ class Conversion(models.Model):
 		return f"{self.name}"
 	
 
-class ProductConversion(models.Model):
+class ProductConfiguration(models.Model):
 	'''
 		Associates a product with a conversion.
 	'''
 	product_id = models.CharField(max_length=32, blank=False, null=False, unique=True) # The ByD Product ID
-	conversion = models.ForeignKey(Conversion, on_delete=models.CASCADE, related_name='product_conversion')
+	conversion = models.ForeignKey(Conversion, blank=True, null=True, on_delete=models.CASCADE, related_name='product_conversion')
+	metadata = models.JSONField(default=dict, blank=True, null=True) # Additional metadata for the product.
 	created_on = models.DateTimeField(auto_now_add=True)
 	
+	@property
+	def product_name(self):
+		product_order_instance = PurchaseOrderLineItem.objects.filter(product_id=self.product_id).first()
+		return product_order_instance.product_name if product_order_instance else self.product_id
+	
 	def __str__(self):
-		return f"{self.conversion.name} for '{self.product_id}'"
+		return f"'{self.product_id} ({self.product_name})'"
 	
