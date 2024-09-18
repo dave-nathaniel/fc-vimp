@@ -3,11 +3,13 @@ from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
-from egrn_service.models import PurchaseOrderLineItem, PurchaseOrder, GoodsReceivedNote, GoodsReceivedLineItem
+from egrn_service.models import GoodsReceivedNote, GoodsReceivedLineItem
 from overrides.rest_framework import APIResponse
 from overrides.rest_framework import CustomPagination
 from .models import Invoice
 from .serializers import InvoiceSerializer, InvoiceLineItemSerializer
+
+from django_q.tasks import async_task
 
 # Pagination
 paginator = CustomPagination()
@@ -111,7 +113,13 @@ class VendorInvoiceView(APIView):
 		
 		# If any of the invoices were created, return the created invoices
 		if created:
+			for item in created:
+				item = dict(item)
+				async_task('vimp.tasks.notify_approval_required', item, q_options={
+					'task_name': f'Notify-Next-Signatory-For-Invoice-{item.get("id")}',
+				})
 			return APIResponse("Invoices Created", status.HTTP_201_CREATED, data=created)
 		
 		# If none of the invoices were created, return the errors
 		return APIResponse("Failed to create invoices", status.HTTP_400_BAD_REQUEST, data=failed)
+		

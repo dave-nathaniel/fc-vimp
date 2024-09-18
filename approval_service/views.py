@@ -10,6 +10,7 @@ from .models import Keystore, Signature
 from .serializers import SignatureSerializer
 from invoice_service.models import Invoice
 from overrides.rest_framework import APIResponse, CustomPagination
+from django_q.tasks import async_task
 
 paginator = CustomPagination()
 
@@ -66,7 +67,7 @@ def sign_signable_view(request, target_class, object_id):
 	# If the signable class does not exist, return a 404
 	if target:
 		# Get the Django model and app label for the signable class.
-		signable_class, signable_app_label = target.get("class"), target.get("app_label")
+		signable_class, signable_app_label, signable_serializer = target.get("class"), target.get("app_label"), target.get("serializer")
 		# Check if the authenticated user has permission to sign the signable object. If not, return a 403 error.
 		if not request.user.has_perm(f"{signable_app_label}.can_sign_signable"):
 			return APIResponse(f"You do not have permission to sign this {signable_class} object.", status=status.HTTP_403_FORBIDDEN)
@@ -78,6 +79,11 @@ def sign_signable_view(request, target_class, object_id):
 		try:
 			# Sign the signable object and return a success message.
 			signable.sign(request)
+			# Serialize the signable and asynchronously send an email notification to the next signatory.
+			serialized = signable_serializer(signable).data
+			async_task('vimp.tasks.notify_approval_required', serialized, q_options={
+				'task_name': f'Notify-Next-Signatory-For-Invoice-{serialized.get("id")}',
+			})
 		except PermissionError:
 			return APIResponse(f"You do not have permission to sign this {target_class} object.", status=status.HTTP_403_FORBIDDEN)
 		except ValidationError as ve:

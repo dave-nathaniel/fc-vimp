@@ -317,10 +317,10 @@ class GoodsReceivedNote(models.Model):
 			self.delete()
 			raise e
 		# Perform asynchronous tasks after the GRN and it's corresponding line items have been created
-		async_task('egrn_service.tasks.post_to_icg', self, q_options={
+		async_task('vimp.tasks.post_to_icg', self, q_options={
 			'task_name': f'Post-GRN-{self.grn_number}-To-ICG-Inventory',
 		})
-		async_task('egrn_service.tasks.send_grn_to_email', self, q_options={
+		async_task('vimp.tasks.send_grn_to_email', self, q_options={
 			'task_name': f'Email-GRN-{self.grn_number}-To-Vendor',
 		})
 		# Return the created Goods Received Note
