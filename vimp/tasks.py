@@ -51,7 +51,8 @@ def post_to_icg(instance, ):
 	stock = StockManagement()
 	# The posted_to_icg flag is set to True if the purchase order is successfully created on ICG
 	instance.posted_to_icg = stock.create_purchase_order(order_details, order_items)
-	return super(GoodsReceivedNote, instance).save() if instance.posted_to_icg else False
+	super(GoodsReceivedNote, instance).save() if instance.posted_to_icg else False
+	return order_details, order_items, instance.posted_to_icg
 
 
 def send_grn_to_email(created_grn, ):
