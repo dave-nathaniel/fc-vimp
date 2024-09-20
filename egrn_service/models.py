@@ -1,7 +1,7 @@
 import logging
 import inspect
 from . import converters
-from .services import get_store_from_middleware
+from .services import Middleware
 from django.db import models
 from django.db.utils import IntegrityError
 from core_service.models import VendorProfile
@@ -212,7 +212,8 @@ class PurchaseOrderLineItem(models.Model):
 		try:
 			delivery_store = store.objects.get(byd_cost_center_code=delivery_store_id)
 		except ObjectDoesNotExist:
-			store_data = get_store_from_middleware(byd_cost_center_code=delivery_store_id)
+			middleware = Middleware()
+			store_data = middleware.get_store(byd_cost_center_code=delivery_store_id)
 			# If the store is not found, create a new store or use the default store
 			delivery_store = store().create_store(store_data[0]) if store_data else store().default_store
 		return delivery_store

@@ -11,10 +11,11 @@ def create_default_store(sender, **kwargs):
 		Creates a default store record.
 	'''
 	from egrn_service.models import Store
-	from .services import get_store_from_middleware
+	from .services import Middleware
 	
 	if not Store.objects.exists():
-		default_store_data = get_store_from_middleware(byd_cost_center_code=os.getenv('HQ_STORE_COST_CENTER_CODE'))
+		middleware = Middleware()
+		default_store_data = middleware.get_store(byd_cost_center_code=os.getenv('HQ_STORE_COST_CENTER_CODE'))
 		Store().create_store(default_store_data[0])
 
 
