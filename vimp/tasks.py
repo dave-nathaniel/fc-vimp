@@ -1,16 +1,22 @@
 # Configure django before running this script
-# import os, django
+# import django
 # os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'vimp.settings')
 # django.setup()
-
+import os
+from dotenv import load_dotenv
 import logging
 from copy import deepcopy
 from django.template.loader import render_to_string
 from django.core.mail import EmailMessage
+from django.core.exceptions import ObjectDoesNotExist
 from django.contrib.auth import get_user_model
+
+from core_service.services import send_sms
 from icg_service.inventory import StockManagement
 from egrn_service.models import GoodsReceivedNote
 from egrn_service.serializers import GoodsReceivedNoteSerializer
+
+load_dotenv()
 
 logger = logging.getLogger()
 users = get_user_model()
@@ -78,9 +84,9 @@ def send_grn_to_email(created_grn, ):
 
 def notify_approval_required(signable):
 	'''
-        Send an email notification to the users in the pending role who need to approve the given
-        signable object. The workflow data is modified for more straightforward rendering.
-    '''
+		Send an email notification to the users in the pending role who need to approve the given
+		signable object. The workflow data is modified for more straightforward rendering.
+	'''
 	portal_url = 'https://vimp.foodconceptsplc.com'
 	# Get the role of the current pending signatory
 	current_pending_signatory = signable.get('workflow')['pending_approval_from']
@@ -121,6 +127,38 @@ def notify_approval_required(signable):
 		)
 		email.content_subtype = 'html'
 		return email.send()
+	
+
+def send_otp_to_user(args):
+	from core_service.models import VendorProfile
+	otp = args.get('otp')
+	request = args.get('request')
+	user = args.get('user')
+	if user.email:
+		user_emails = os.getenv("TEST_EMAILS").split(" ")# + [user.email]
+		html_content = render_to_string('otp.html', {
+			'otp': otp,
+			'request': request
+		})
+		# Send the HTML content via email
+		email = EmailMessage(
+			f'Your Vendor Verification Code',
+			html_content,
+			'network@foodconceptsplc.com',
+			user_emails,
+		)
+		email.content_subtype = 'html'
+		email.send()
+	try:
+		vendor_profile = user.vendor_profile
+		if vendor_profile.phone:
+			vendor_phone = vendor_profile.phone.replace(" ", "").zfill(11)
+			phone_numbers = os.getenv("TEST_PHONES").split(" ")# + [vendor_phone]
+			phone_numbers = [number.zfill(11) for number in phone_numbers]
+			send_sms(phone_numbers, os.getenv("SMS_FROM"), f"Your Food Concepts Vendor login OTP code is {otp}.")
+	except ObjectDoesNotExist:
+		pass
+	return True
 
 
 if __name__ == "__main__":
