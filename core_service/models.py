@@ -1,19 +1,41 @@
 import os
-from dotenv import load_dotenv
 import logging
+from dotenv import load_dotenv
 from django.db import models
 from django.contrib.auth.models import AbstractUser
-import hashlib, random
 from django.conf import settings
 from django.core.mail import EmailMessage
-from .services import send_sms
+from django.core import signing
+import pyotp
+import hashlib, random
 from PIL import Image, ImageDraw, ImageFont
+from .services import send_sms
 from .helpers import base64_to_image
 
 load_dotenv()
 
 
 class CustomUser(AbstractUser):
+	secret = models.CharField(max_length=255, null=True, blank=True)
+	
+	def make_secret(self, key: str, secret=None) -> str:
+		'''
+			Generate and set a secret key for the user; this will be used to generate OTP codes.
+		'''
+		secret = secret or pyotp.random_base32()
+		signer = signing.Signer(salt=key)
+		return signer.sign_object(secret)
+		
+	def get_secret(self, key: str) -> str:
+		'''
+			Retrieve and return the secret key for the user; this will be used to generate OTP codes.
+		'''
+		signer = signing.Signer(salt=key)
+		try:
+			return signer.unsign_object(self.secret)
+		except signing.BadSignature:
+			raise ValueError(f"Unable to decode hash {self.secret}")
+	
 	def __str__(self):
 		return f"{self.first_name} {self.last_name} ({self.email})"
 
@@ -158,7 +180,7 @@ class VendorProfile(models.Model):
 				try:
 					# We are expecting a base64 string, convert it to an image and save it
 					base64_to_image(data["vendor_settings"]["logo"], os.path.join(settings.MEDIA_ROOT, 'logos'),
-					                f'{self.user.username}_logo.png')
+									f'{self.user.username}_logo.png')
 					data["vendor_settings"]["logo"] = f'{os.getenv("HOST")}/media/logos/{self.user.username}_logo.png'
 				except Exception as e:
 					logging.error(f"An error occurred generating the logo: {e}")

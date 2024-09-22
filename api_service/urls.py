@@ -2,13 +2,14 @@ from django.urls import path, include
 from .views import *
 from invoice_service.views import *
 from approval_service.views import *
-from core_service.views import CustomTokenObtainPairView, PermissionTestsView
+from core_service.views import login_user, verify_otp
 from egrn_service.views import get_vendors_grns
 
 urlpatterns = [
 	# Profile endpoints
 	path('vendor/onboard/<str:action>', NewUserView.as_view(), name='onboarding'),
-	path('vendor/authenticate', CustomTokenObtainPairView.as_view(), name='token_obtain_pair'),
+	path('vendor/authenticate', login_user, name='get_otp'),
+	path('vendor/verify-otp', verify_otp, name='verify_otp'),
 	path('vendor/profile', VendorProfileView.as_view(), name='vendor_profile'),
 	# Purchase Order endpoints
 	path('vendor/purchaseorders', get_vendors_orders, name="get_purchase_orders"),
@@ -19,7 +20,6 @@ urlpatterns = [
 	path('vendor/invoices', VendorInvoiceView.as_view(), name='vendor_invoice'),
 	# Misc endpoints
 	path('surcharges', get_surcharges, name='get_surcharges'),
-	path('rights', PermissionTestsView.as_view(), name='get_user_rights'),
 	
 	# Approval endpoints
 	path('approvals/createkey', KeystoreAPIView.as_view(), name='manage_keystore'),
