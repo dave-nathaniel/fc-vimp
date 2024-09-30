@@ -214,7 +214,7 @@ def weighted_average(request):
 		}
 
 		for line_item in product_line_items:
-			purchase_quantity = line_item.purchase_order_line_item.quantity
+			purchase_quantity = line_item.quantity_received
 			purchase_cost = purchase_quantity * line_item.purchase_order_line_item.unit_price
 			
 			cumulative_quantity = product_data["cumulative_quantity"]
