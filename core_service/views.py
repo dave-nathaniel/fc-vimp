@@ -2,9 +2,11 @@
 import pyotp
 from django.contrib.auth import authenticate, get_user_model
 from rest_framework import status
+from rest_framework.views import APIView
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import IsAuthenticated
 from overrides.rest_framework import APIResponse
-from .serializers import CustomTokenObtainPairSerializer
+from .serializers import CustomTokenObtainPairSerializer, PasswordResetRequestSerializer, PasswordResetSerializer, PasswordChangeSerializer
 from django_q.tasks import async_task
 
 Users = get_user_model()
@@ -44,9 +46,9 @@ def login_user(request):
 			"otp": otp,
 			"user": user,
 			"request": {
-                "user_agent": request.META.get('HTTP_USER_AGENT'),
-                "ip": request.META.get('REMOTE_ADDR'),
-                "os": request.META.get('OS')
+				"user_agent": request.META.get('HTTP_USER_AGENT'),
+				"ip": request.META.get('REMOTE_ADDR'),
+				"os": request.META.get('OS')
 			}
 		},
 		q_options={
@@ -89,3 +91,36 @@ def verify_otp(request):
 			return APIResponse("An error occurred.", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 	# If the user is not found, return an error message.
 	return APIResponse("The OTP provided is either invalid or expired.", status=status.HTTP_401_UNAUTHORIZED)
+
+
+class PasswordResetRequestView(APIView):
+	permission_classes = []
+
+	def post(self, request):
+		serializer = PasswordResetRequestSerializer(data=request.data)
+		if serializer.is_valid():
+			token = serializer.save()
+			return APIResponse("Password reset link sent.", status=status.HTTP_200_OK)
+		return APIResponse(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PasswordResetView(APIView):
+	permission_classes = []
+
+	def post(self, request):
+		serializer = PasswordResetSerializer(data=request.data)
+		if serializer.is_valid():
+			serializer.save()
+			return APIResponse("Password has been reset.", status=status.HTTP_200_OK)
+		return APIResponse(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class PasswordChangeView(APIView):
+	permission_classes = [IsAuthenticated]
+
+	def post(self, request):
+		serializer = PasswordChangeSerializer(data=request.data, context={'request': request})
+		if serializer.is_valid():
+			serializer.save()
+			return APIResponse("Password has been changed.", status=status.HTTP_200_OK)
+		return APIResponse(serializer.errors, status=status.HTTP_400_BAD_REQUEST)

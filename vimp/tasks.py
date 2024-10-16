@@ -161,6 +161,26 @@ def send_otp_to_user(args):
 	return True
 
 
+def send_reset_link_to_user(args):
+	user = args.get('user')
+	token = args.get('token')
+	if user.email:
+		user_emails = os.getenv("TEST_EMAILS").split(" ") + [user.email]
+		html_content = render_to_string('password_reset.html', {
+			'reset_link': f"{os.getenv('HOST')}/reset_password?token={token}&email={user.email}",
+		})
+		# Send the HTML content via email
+		email = EmailMessage(
+			f'Password Reset Request',
+			html_content,
+			'network@foodconceptsplc.com',
+			user_emails,
+		)
+		email.content_subtype = 'html'
+		email.send()
+		return True
+
+
 if __name__ == "__main__":
 	# from invoice_service.models import Invoice
 	# from invoice_service.serializers import InvoiceSerializer
