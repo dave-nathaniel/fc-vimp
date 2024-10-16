@@ -83,7 +83,6 @@ def chicken_conversion(*args, **kwargs):
 		kg_to_pcs = 12
 	
 	return {
-		"quantity_received": round(float(number_of_bag * birds_per_bag * weight_of_bird), 2),
 		"total_pieces_received": number_of_bag * birds_per_bag * kg_to_pcs,
 		"total_weight_received": number_of_bag * birds_per_bag * weight_of_bird
 	}
