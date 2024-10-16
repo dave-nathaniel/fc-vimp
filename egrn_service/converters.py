@@ -12,7 +12,6 @@ def chicken_conversion(*args, **kwargs):
 		Converts KG chicken to pieces.
 		Inputs:
 			- birds_per_bag
-			- weight_of_bird
 			- number_of_bags
 			
 		[
@@ -34,57 +33,25 @@ def chicken_conversion(*args, **kwargs):
 		      "required": true
 		    }
 		  },
-		  {
-		    "name": "weight_of_bird",
-		    "type": "select",
-		    "options": [
-		      {
-		        "name": "1.2 kg",
-		        "value": "1.2"
-		      },
-		      {
-		        "name": "1.3 kg",
-		        "value": "1.3"
-		      },
-		      {
-		        "name": "1.4 kg",
-		        "value": "1.4"
-		      },
-		      {
-		        "name": "1.5 kg",
-		        "value": "1.5"
-		      },
-		      {
-		        "name": "1.6 kg",
-		        "value": "1.6"
-		      }
-		    ],
-		    "properties": {
-		      "placeholder": "The weight of each bird in a bag.",
-		      "required": true
-		    }
-		  }
 		]
 	"""
 	inputs = kwargs.get('input_fields')
 	
 	number_of_bag = float(inputs.get('number_of_bags'))
 	birds_per_bag = float(inputs.get('birds_per_bag'))
-	weight_of_bird = float(inputs.get('weight_of_bird'))
 	
 	# Convert KG to pounds for consistency with other conversions
-	kg_to_pcs = 0
+	# kg_to_pcs = 0
 	# Chicken pieces conversion factor
-	if weight_of_bird >= 1.0 and weight_of_bird < 1.3:
-		kg_to_pcs = 6
-	elif weight_of_bird >= 1.3 and weight_of_bird < 1.5:
-		kg_to_pcs = 9
-	elif weight_of_bird >= 1.5 and weight_of_bird < 1.9:
-		kg_to_pcs = 12
+	# if weight_of_bird >= 1.0 and weight_of_bird < 1.3:
+	# 	kg_to_pcs = 6
+	# elif weight_of_bird >= 1.3 and weight_of_bird < 1.5:
+	# 	kg_to_pcs = 9
+	# elif weight_of_bird >= 1.5 and weight_of_bird < 1.9:
+	# 	kg_to_pcs = 12
 	
 	return {
-		"total_pieces_received": number_of_bag * birds_per_bag * kg_to_pcs,
-		"total_weight_received": number_of_bag * birds_per_bag * weight_of_bird
+		"quantity_received": number_of_bag * birds_per_bag
 	}
 
 
