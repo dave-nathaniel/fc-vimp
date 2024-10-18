@@ -55,6 +55,55 @@ def chicken_conversion(*args, **kwargs):
 	}
 
 
+def cut9_conversion(*args, **kwargs):
+	"""
+		Number of bags x No of Packets per bag x Pieces per packet
+		Inputs:
+			- number_of_bags
+			- packets_per_bag
+			- pieces_per_packet
+			
+		[
+		  {
+		    "name": "number_of_bags",
+		    "type": "number",
+		    "properties": {
+		      "placeholder": "The number bags supplied.",
+		      "min": 1,
+		      "required": true
+		    }
+		  },
+		  {
+		    "name": "packets_per_bag",
+		    "type": "number",
+		    "properties": {
+		      "placeholder": "The number of packets in a bag.",
+		      "min": 1,
+		      "required": true
+		    }
+		  },
+		  {
+            "name": "pieces_per_packet",
+            "type": "number",
+            "properties": {
+              "placeholder": "The number of pieces in a packet.",,
+		      "min": 1,
+		      "required": true
+            }
+          }
+		]
+	"""
+	inputs = kwargs.get('input_fields')
+	
+	number_of_bag = float(inputs.get('number_of_bags'))
+	packets_per_bag = float(inputs.get('packets_per_bag'))
+	pieces_per_packet = float(inputs.get('pieces_per_packet'))
+	
+	return {
+		"quantity_received": number_of_bag * packets_per_bag * pieces_per_packet
+	}
+
+
 def nbc_products_volume_conversion(*args, **kwargs):
 	'''
 		Volume of NBC product received e.g 35cl, 50CL, 1Litre.
