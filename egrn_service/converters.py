@@ -11,15 +11,15 @@ def chicken_conversion(*args, **kwargs):
 	"""
 		Converts KG chicken to pieces.
 		Inputs:
-			- birds_per_bag
+			- packets_per_bag
 			- number_of_bags
 			
 		[
 		  {
-		    "name": "birds_per_bag",
+		    "name": "packets_per_bag",
 		    "type": "number",
 		    "properties": {
-		      "placeholder": "The number of birds in a bag.",
+		      "placeholder": "The number of packets in a bag.",
 		      "min": 1,
 		      "required": true
 		    }
@@ -38,7 +38,7 @@ def chicken_conversion(*args, **kwargs):
 	inputs = kwargs.get('input_fields')
 	
 	number_of_bag = float(inputs.get('number_of_bags'))
-	birds_per_bag = float(inputs.get('birds_per_bag'))
+	packets_per_bag = float(inputs.get('packets_per_bag'))
 	
 	# Convert KG to pounds for consistency with other conversions
 	# kg_to_pcs = 0
@@ -51,7 +51,7 @@ def chicken_conversion(*args, **kwargs):
 	# 	kg_to_pcs = 12
 	
 	return {
-		"quantity_received": number_of_bag * birds_per_bag
+		"quantity_received": number_of_bag * packets_per_bag
 	}
 
 
