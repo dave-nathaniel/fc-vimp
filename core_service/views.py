@@ -9,8 +9,10 @@ from overrides.rest_framework import APIResponse
 from .serializers import CustomTokenObtainPairSerializer, PasswordResetRequestSerializer, PasswordResetSerializer, PasswordChangeSerializer
 from django_q.tasks import async_task
 
+
 Users = get_user_model()
 
+format_serializer_errors = lambda e: "; ".join([f"{key.title()} Error: {''.join([v.title() for v in values])}" for key, values in e.errors.items()])
 
 def generate_token_for_user(user):
 	# Get the token data
@@ -101,7 +103,7 @@ class PasswordResetRequestView(APIView):
 		if serializer.is_valid():
 			token = serializer.save()
 			return APIResponse("Password reset link sent.", status=status.HTTP_200_OK)
-		return APIResponse(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+		return APIResponse(format_serializer_errors(serializer), status=status.HTTP_400_BAD_REQUEST)
 
 
 class PasswordResetView(APIView):
@@ -112,7 +114,7 @@ class PasswordResetView(APIView):
 		if serializer.is_valid():
 			serializer.save()
 			return APIResponse("Password has been reset.", status=status.HTTP_200_OK)
-		return APIResponse(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+		return APIResponse(format_serializer_errors(serializer), status=status.HTTP_400_BAD_REQUEST)
 
 
 class PasswordChangeView(APIView):
@@ -123,4 +125,4 @@ class PasswordChangeView(APIView):
 		if serializer.is_valid():
 			serializer.save()
 			return APIResponse("Password has been changed.", status=status.HTTP_200_OK)
-		return APIResponse(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+		return APIResponse(format_serializer_errors(serializer), status=status.HTTP_400_BAD_REQUEST)
