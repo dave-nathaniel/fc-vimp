@@ -103,6 +103,8 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 		Returns a paginated list of signable objects for the authenticated user.
 		Depending on the status_filter, it returns "all", "completed" or "pending" signable objects (for the authenticated user).
 	'''
+	
+	# def serialize_
 	# Get the signable class being signed in this request.
 	target = get_signable_class(target_class)
 	# If the signable class does not exist, return a 404
@@ -116,38 +118,43 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 		)]
 		try:
 			# Get all signable objects.
-			signables = signable_class.objects.all().order_by(target.get("order_by"))
-			# This user's signables based on the Signatories.
-			signables = [obj for obj in signables if any(item in obj.signatories for item in relevant_permissions)]
-			# Get signables where roles of the authenticated user has signed
-			signed_by_user_role = [obj for obj in signables if any(
-				role in (
-					(lambda x: map(lambda i: i.role, x))(obj.get_signatures())
-				) for role in relevant_permissions
-			)]
-			# Filter for signable objects that are pending signature from the role of the authenticated user.
-			signables = list(filter(lambda s: s.current_pending_signatory in relevant_permissions, signables)) if status_filter == "pending" else signables
-			# Filter the signable objects by the ones that have been completed.
-			signables = list(filter(lambda s: s.is_completely_signed, signed_by_user_role)) if status_filter == "completed" else signables
-			# Filter the signable objects for objects that have been accepted or rejected for the particular role, if the approved param is provided in the request.
+			all_signables = signable_class.objects.all().order_by(target.get("order_by"))
+			# Get signables where the authenticated user has signed
+			users_signables = [
+				obj for obj in all_signables
+				if any(signature.signer.email == request.user.email for signature in obj.get_signatures())
+			]
+			# Filter all signable objects that are pending signature from the role of the authenticated user.
+			if status_filter == "pending":
+				users_signables = list(filter(lambda s: s.current_pending_signatory in relevant_permissions, all_signables))
+			# Filter the user's signable objects by the ones that have been completed.
+			if status_filter == "completed":
+				users_signables = list(filter(lambda s: s.is_completely_signed, users_signables))
+			#
+			# This filter doesn't make logical sense to implement
+			# if status_filter == "all":
+			# 	users_signables = [obj for obj in all_signables if any(item in obj.signatories for item in relevant_permissions)]
+			#
+			# Filter the user's signable objects for objects that have been accepted or rejected if the approved param is provided in the request.
 			verdict_filter = bool(int(request.GET.get("approved"))) if request.GET.get("approved") else None
 			if verdict_filter is not None:
-				signables = []
-				for signable in signed_by_user_role:
-					# Filter the signatures for the particular verdict (True for accepted, False for rejected) AND for the particular user's role
-					filtered_signatures = filter(
-						lambda i: (i.accepted == verdict_filter) and (i.role in relevant_permissions),
-						signable.get_signatures()
-					)
-					# Add the signable to the signables list.
-					signables.append(signable) if signable.id in [item.signable_id for item in filtered_signatures] else None
+				# Create a set of signable IDs that match the verdict filter
+				filtered_signable_ids = {
+					signature.signable_id
+					for signable in users_signables
+					for signature in signable.get_signatures()
+					if signature.accepted == verdict_filter
+				}
+				# Filter users_signables to include only those with IDs in the filtered_signable_ids set
+				users_signables = [s for s in users_signables if s.id in filtered_signable_ids]
 			# Paginate the queryset.
-			paginated = paginator.paginate_queryset(signables, request)
+			paginated = paginator.paginate_queryset(users_signables, request)
 			# Serialize the paginated signables.
 			serialized_signables = signable_serializer(paginated, many=True).data
 			# Return the paginated response with the serialized signables.
 			paginated_data = paginator.get_paginated_response(serialized_signables).data
 		except Exception as e:
+			# raise e
 			return APIResponse(f"Internal Error: {e}", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 		# Return the paginated response with the serialized signables.
 		return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=paginated_data)
@@ -169,11 +176,6 @@ def get_signable_view(request, target_class, status_filter="all"):
 	if target:
 		# Get the Django model and app label for the signable class.
 		signable_class, signable_app_label, signable_serializer = target.get("class"), target.get("app_label"), target.get("serializer")
-		# Filter the users permissions for permissions relevant to the signable object.
-		relevant_permissions = [p[1] for p in filter(
-			lambda x: x[0] == signable_app_label,
-			[x.split('.') for x in request.user.get_all_permissions()]
-		)]
 		try:
 			# Get all signable objects.
 			signables = signable_class.objects.all().order_by(target.get("order_by"))
