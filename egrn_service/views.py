@@ -1,6 +1,8 @@
 # Import necessary modules and classes
 import os, sys
 import logging
+
+from django.forms import model_to_dict
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes
 from django_auth_adfs.rest_framework import AdfsAccessTokenAuthentication
@@ -11,7 +13,7 @@ from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
 
-from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem, ProductConfiguration
+from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem, ProductConfiguration, Store
 from .serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer, PurchaseOrderSerializer
 
 
@@ -85,6 +87,7 @@ def search_vendor(request, ):
 @authentication_classes([CombinedAuthentication])
 def get_purchase_order(request, po_id):
 	try:
+		user_stores = Store.objects.filter(store_email=request.user.email)
 		try:
 			# Fetch purchase orders from the database
 			orders = PurchaseOrder.objects.get(po_id=po_id)
@@ -99,8 +102,18 @@ def get_purchase_order(request, po_id):
 				# If the order does not exist in ByD, return an error
 				return APIResponse(f"Order with ID {po_id} not found.", status.HTTP_404_NOT_FOUND)
 		# Serialize the PurchaseOrder object
-		serializer = PurchaseOrderSerializer(orders)
-		return APIResponse("Purchase Orders Retrieved", status.HTTP_200_OK, data=serializer.data)
+		serializer = PurchaseOrderSerializer(orders).data
+		serializer["Item"] = list(
+			filter(lambda x: x['delivery_store'] in [s.id for s in user_stores], serializer["Item"])
+		)
+		if len(serializer["Item"]) > 0:
+			serializer["stores"] = [model_to_dict(store) for store in filter(
+				lambda x: x.id in [s for s in map(lambda x: x["delivery_store"], serializer["Item"])],
+				user_stores
+			)]
+			return APIResponse("Purchase Orders Retrieved", status.HTTP_200_OK, data=serializer)
+		else:
+			return APIResponse(f"No orders found in {po_id} for your stores: {', '.join([s.store_name for s in user_stores])}.", status.HTTP_404_NOT_FOUND)
 	except Exception as e:
 		# Handle any other errors
 		logging.error(f"An error occurred creating a Purchase Order: {e}")
@@ -127,6 +140,15 @@ def create_grn(request, ):
 	# Make the PO_ID key consistent as the identifier
 	request_data["po_id"] = request_data[identifier]
 	try:
+		# Filter for only the PO Line items that the user has permission to receive
+		permitted_to_receive_items = (PurchaseOrderLineItem.objects.filter(object_id__in=map(lambda x: x['itemObjectID'], request_data["recievedGoods"]))
+		                    .filter(delivery_store__store_email=request.user.email))
+		# If there are no items that the user has permission to receive, return an error
+		if not permitted_to_receive_items:
+			return APIResponse("User does not have permission to receive these items.", status.HTTP_403_FORBIDDEN)
+		# Filter the request data to only include the items that the user has permission to receive
+		request_data["recievedGoods"] = list(filter(lambda x: x['itemObjectID'] in [i.object_id for i in permitted_to_receive_items], request_data["recievedGoods"]))
+		
 		# Create the GRN
 		created_grn = GoodsReceivedNote().save(grn_data=request_data)
 		# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
