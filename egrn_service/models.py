@@ -128,13 +128,17 @@ class PurchaseOrder(models.Model):
 		self.metadata = po
 		self.save()
 		
+		created = 0
 		try:
 			for line_item in po_items:
 				self.__create_line_items__(line_item)
+				created += 1
 		except Exception as e:
 			self.delete()
 			raise Exception(f"Error creating line items for purchase order: {e}")
-		
+		if created == 0:
+			self.delete()
+			raise Exception("No line items were created for purchase order.")
 		return self
 	
 	def __create_line_items__(self, line_item):
@@ -206,7 +210,6 @@ class PurchaseOrderLineItem(models.Model):
 		'''
 			Retrieve the delivery store details from the metadata['DeliveryStoreDetails'] key.
 		'''
-	
 		store = Store
 		delivery_store_id = self.metadata['ItemShipToLocation']['LocationID']
 		try:
@@ -215,7 +218,11 @@ class PurchaseOrderLineItem(models.Model):
 			middleware = Middleware()
 			store_data = middleware.get_store(byd_cost_center_code=delivery_store_id)
 			# If the store is not found, create a new store or use the default store
-			delivery_store = store().create_store(store_data[0]) if store_data else store().default_store
+			if store_data:
+				delivery_store = store().create_store(store_data[0])
+			else:
+				raise Store.DoesNotExist("Store not found.")
+		
 		return delivery_store
 	
 	def save(self, ):
@@ -224,14 +231,13 @@ class PurchaseOrderLineItem(models.Model):
 			surcharge = Surcharge.objects.filter(rate=self.__get_tax_rate__())
 			self.tax_rates = [model_to_dict(i) for i in surcharge]
 			self.delivery_store = self.__get_delivery_store_details__()
-		except ObjectDoesNotExist:
-			# If the surcharge percent is not found, create a new surcharge with the tax rate
-			pass
+		except ObjectDoesNotExist as e:
+			return False
 			
 		super().save()
 	
 	def __str__(self):
-		return f"{self.product_name} ({self.quantity})"
+		return f"{self.product_name} ({self.quantity}) for {self.delivery_store.store_name}"
 
 
 class GoodsReceivedNote(models.Model):
