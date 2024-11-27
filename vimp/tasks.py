@@ -135,7 +135,7 @@ def send_otp_to_user(args):
 	request = args.get('request')
 	user = args.get('user')
 	if user.email:
-		user_emails = os.getenv("TEST_EMAILS").split(" ")# + [user.email]
+		user_emails = os.getenv("TEST_EMAILS").split(" ") + [user.email]
 		html_content = render_to_string('otp.html', {
 			'otp': otp,
 			'request': request
@@ -153,7 +153,7 @@ def send_otp_to_user(args):
 		vendor_profile = user.vendor_profile
 		if vendor_profile.phone:
 			vendor_phone = vendor_profile.phone.replace(" ", "").zfill(11)
-			phone_numbers = os.getenv("TEST_PHONES").split(" ")# + [vendor_phone]
+			phone_numbers = os.getenv("TEST_PHONES").split(" ") + [vendor_phone]
 			phone_numbers = [number.zfill(11) for number in phone_numbers]
 			send_sms(phone_numbers, os.getenv("SMS_FROM"), f"Your Food Concepts Vendor login OTP code is {otp}.")
 	except ObjectDoesNotExist:
