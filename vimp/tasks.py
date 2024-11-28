@@ -186,8 +186,8 @@ def send_vendor_setup_email(args):
 	sender_name = os.getenv("MESSAGE_FROM")
 	email_from = os.getenv("EMAIL_USER")
 	merchant_name = str(instance.byd_metadata["BusinessPartner"]["BusinessPartnerFormattedName"])
-	# email_to = instance.identifier.strip().split(" ")
-	email_to = "davynathaniel@gmail.com".split(" ")
+	email_to = instance.identifier.strip().split(" ")
+	# email_to = "davynathaniel@gmail.com".split(" ")
 	email_subject = f"Complete your account setup"
 	
 	verification_link = f'{os.getenv("DEV_HOST")}/sign-up?{id_hash}={instance.token}'
