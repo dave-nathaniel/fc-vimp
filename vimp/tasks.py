@@ -167,7 +167,7 @@ def send_reset_link_to_user(args):
 	if user.email:
 		user_emails = os.getenv("TEST_EMAILS").split(" ") + [user.email]
 		html_content = render_to_string('password_reset.html', {
-			'reset_link': f"{os.getenv('HOST')}/reset_password?token={token}&email={user.email}",
+			'reset_link': f"{os.getenv('DEV_HOST')}/reset_password?token={token}&email={user.email}",
 		})
 		# Send the HTML content via email
 		email = EmailMessage(
@@ -179,6 +179,39 @@ def send_reset_link_to_user(args):
 		email.content_subtype = 'html'
 		email.send()
 		return True
+
+
+def send_vendor_setup_email(args):
+	instance, id_hash = args.get('instance'), args.get('id_hash')
+	sender_name = os.getenv("MESSAGE_FROM")
+	email_from = os.getenv("EMAIL_USER")
+	merchant_name = str(instance.byd_metadata["BusinessPartner"]["BusinessPartnerFormattedName"])
+	email_to = instance.identifier.strip().split(" ")
+	# email_to = "davynathaniel@gmail.com".split(" ")
+	email_subject = f"Complete your account setup"
+	
+	verification_link = f'{os.getenv("DEV_HOST")}/sign-up?{id_hash}={instance.token}'
+	
+	content = render_to_string('verification_setup.html', {
+		"MERCHANT_NAME": merchant_name,
+		"LINK": verification_link,
+	})
+	
+	email = EmailMessage(
+		subject=email_subject,
+		body=content,
+		from_email=f"{sender_name} <{email_from}>",
+		to=email_to
+	)
+	
+	email.content_subtype = 'html'
+	
+	try:
+		email.send()
+		return True
+	except Exception as e:
+		logging.error(f"An error occurred sending an email: {e}")
+		return False
 
 
 if __name__ == "__main__":
