@@ -11,6 +11,8 @@ import hashlib, random
 from PIL import Image, ImageDraw, ImageFont
 from .services import send_sms
 from .helpers import base64_to_image
+from django_q.tasks import async_task
+
 
 load_dotenv()
 
@@ -93,48 +95,10 @@ class TempUser(models.Model):
 		return t.hexdigest()
 	
 	def __send_auth_email__(self, id_hash):
-		sender_name = os.getenv("MESSAGE_FROM")
-		email_from = os.getenv("EMAIL_USER")
-		merchant_name = str(self.byd_metadata["BusinessPartner"]["BusinessPartnerFormattedName"])
-		email_to = self.identifier.strip().split(" ")
-		# email_to = "davynathaniel@gmail.com oguntoyeadebola21@gmail.com olawson@wajesmart.com posuala@wajesmart.com".split(" ")
-		email_subject = f"Complete your account setup"
-		
-		verification_link = f'{os.getenv("DEV_HOST")}/sign-up?{id_hash.hexdigest()}={self.token}'
-		
-		template_file = os.getenv("VERIFICATION_EMAIL_TEMPLATE")
-		try:
-			with open(template_file, 'r', encoding='utf-8') as template:
-				content = template.read()
-		except FileNotFoundError as e:
-			logging.error(f"Template file not found in {template_file}")
-			return False
-		except Exception as e:
-			logging.error(f"Template file exception {e}")
-			return False
-		
-		# Insert the message into the template
-		content = content.replace("{{MERCHANT_NAME}}", merchant_name)
-		content = content.replace("{{LINK}}", verification_link)
-		email_body = content
-		
-		email = EmailMessage(
-			subject=email_subject,
-			body=email_body,
-			from_email=f"{sender_name} <{email_from}>",
-			to=email_to
-		)
-		
-		email.content_subtype = 'html'
-		
-		logging.debug(f"{sender_name} <{email_from}>")
-		
-		try:
-			email.send()
-			return True
-		except Exception as e:
-			logging.error(f"An error occurred sending an email: {e}")
-			raise e
+		async_task('vimp.tasks.send_vendor_setup_email', {
+			"instance": self,
+			"id_hash": id_hash.hexdigest(),
+		})
 	
 	def __send_auth_sms__(self, id_hash):
 		sender_name = os.getenv("SMS_FROM")
