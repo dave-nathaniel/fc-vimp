@@ -104,13 +104,13 @@ def get_purchase_order(request, po_id):
 		# Serialize the PurchaseOrder object
 		serializer = PurchaseOrderSerializer(orders).data
 		serializer["Item"] = list(
-			filter(lambda x: x['delivery_store'] in [s.id for s in user_stores], serializer["Item"])
+			filter(lambda x: x.get('delivery_store').get('id') in [s.id for s in user_stores], serializer["Item"])
 		)
 		if len(serializer["Item"]) > 0:
-			serializer["stores"] = [model_to_dict(store) for store in filter(
+			serializer["stores"] = filter(
 				lambda x: x.id in [s for s in map(lambda x: x["delivery_store"], serializer["Item"])],
 				user_stores
-			)]
+			)
 			return APIResponse("Purchase Orders Retrieved", status.HTTP_200_OK, data=serializer)
 		else:
 			return APIResponse(f"No orders found in {po_id} for your stores: {', '.join([s.store_name for s in user_stores])}.", status.HTTP_404_NOT_FOUND)
@@ -163,15 +163,20 @@ def create_grn(request, ):
 @authentication_classes([CombinedAuthentication])
 def get_all_grns(request, ):
 	try:
+		user_stores = Store.objects.filter(store_email=request.user.email)
 		# Get all GRNs sorted by creation date in descending order
-		grns = GoodsReceivedNote.objects.all()#.order_by('-created')
-		# Paginate the results
-		paginated = paginator.paginate_queryset(grns, request, order_by='-id')
-		# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
-		grn_serializer = GoodsReceivedNoteSerializer(paginated, many=True, context={'request':request})
-		# Return the paginated response with the serialized GoodsReceivedNote instances
-		paginated_data = paginator.get_paginated_response(grn_serializer.data).data
-		return APIResponse("GRNs Retrieved", status.HTTP_200_OK, data=paginated_data)
+		grns = GoodsReceivedNote.objects.filter(
+			line_items__purchase_order_line_item__delivery_store__in=user_stores
+		)
+		if grns:
+			# Paginate the results
+			paginated = paginator.paginate_queryset(grns, request, order_by='-id')
+			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
+			grn_serializer = GoodsReceivedNoteSerializer(paginated, many=True, context={'request':request})
+			# Return the paginated response with the serialized GoodsReceivedNote instances
+			paginated_data = paginator.get_paginated_response(grn_serializer.data).data
+			return APIResponse("GRNs Retrieved", status.HTTP_200_OK, data=paginated_data)
+		return APIResponse(f"No GRNs found for your stores: {', '.join([s.store_name for s in user_stores])}", status.HTTP_404_NOT_FOUND)
 	except Exception as e:
 		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
 	

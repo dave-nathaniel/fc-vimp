@@ -237,17 +237,20 @@ class PurchaseOrderLineItem(models.Model):
 		super().save()
 	
 	def __str__(self):
-		return f"{self.product_name} ({self.quantity}) for {self.delivery_store.store_name}"
+		return f"PO-{self.purchase_order.po_id}: {self.product_name} ({self.quantity}) for {self.delivery_store.store_name}"
 
 
 class GoodsReceivedNote(models.Model):
 	purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='purchase_order')
-	store = models.ForeignKey(Store, on_delete=models.CASCADE)
 	grn_number = models.IntegerField(blank=False, null=False, unique=True)
 	posted_to_icg = models.BooleanField(default=False)
 	created = models.DateField(auto_now_add=True)
 	
 	invoicing_status_code = [('1', 'Not Started'), ('2', 'In Process'), ('3', 'Finished')]
+	
+	@property
+	def stores(self):
+		return set(store.delivery_store for store in self.line_items.all())
 	
 	@property
 	def total_net_value_received(self,):
@@ -291,8 +294,6 @@ class GoodsReceivedNote(models.Model):
 	def save(self, *args, **kwargs):
 		grn_data = kwargs.pop('grn_data')
 		po_id = grn_data['po_id']
-		# Set the store where this GRN is being received
-		self.store = Store.objects.all()[0]
 		try:
 			# Try to retrieve an object by a specific field if the object is found, you can work with it here
 			self.purchase_order = PurchaseOrder.objects.get(po_id=po_id)
@@ -366,6 +367,10 @@ class GoodsReceivedLineItem(models.Model):
 	gross_value_received = models.DecimalField(max_digits=15, decimal_places=3)
 	metadata = models.JSONField(default=dict, blank=True, null=True)
 	date_received = models.DateField(auto_now=True)
+	
+	@property
+	def delivery_store(self):
+		return self.purchase_order_line_item.delivery_store
 	
 	@property
 	def invoiced_quantity(self):
