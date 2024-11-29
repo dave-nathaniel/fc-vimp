@@ -1,12 +1,24 @@
 from datetime import datetime
 from rest_framework import serializers
-from .models import Surcharge, GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem
+from .models import Surcharge, Store, GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem
 from django.forms.models import model_to_dict
 
 
 class SurchargeSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = Surcharge
+		fields = '__all__'
+
+
+class StoreSerializer(serializers.ModelSerializer):
+	
+	def to_representation(self, instance):
+		data = super().to_representation(instance)
+		data.pop('metadata')
+		return data
+	
+	class Meta:
+		model = Store
 		fields = '__all__'
 
 
@@ -31,7 +43,7 @@ class GoodsReceivedLineItemSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = GoodsReceivedLineItem
 		fields = ['id', 'grn_number', 'quantity_received', 'gross_value_received', 'net_value_received','invoiced_quantity', 'is_invoiced', 'tax_value', 'metadata', 'date_received',
-		          'purchase_order_line_item']
+				  'purchase_order_line_item']
 
 
 class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
@@ -43,6 +55,7 @@ class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	delivery_outstanding_quantity = serializers.SerializerMethodField()
 	delivered_quantity = serializers.FloatField()
 	delivery_completed = serializers.SerializerMethodField()
+	delivery_store = StoreSerializer(read_only=True)
 	
 	def get_delivery_outstanding_quantity(self, obj):
 		# Calculate and return outstanding quantity
@@ -61,8 +74,8 @@ class PurchaseOrderLineItemSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = PurchaseOrderLineItem
 		fields = ['object_id', 'delivery_store', 'product_name', 'unit_price', 'quantity', 'tax_rates', 'unit_of_measurement',
-		          'delivery_status_code','delivery_status_text', 'delivered_quantity', 'delivery_outstanding_quantity',
-		          'delivery_completed', 'extra_fields', 'metadata', 'grn_line_items']
+				  'delivery_status_code','delivery_status_text', 'delivered_quantity', 'delivery_outstanding_quantity',
+				  'delivery_completed', 'extra_fields', 'metadata', 'grn_line_items']
 		read_only_fields = ['delivery_store']
 
 
@@ -94,13 +107,14 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = PurchaseOrder
 		fields = ['po_id', 'object_id', 'vendor', 'total_net_amount', 'date', 'delivery_status_code',
-		          'delivery_status_text', 'delivery_completed', 'Item', 'metadata']
+				  'delivery_status_text', 'delivery_completed', 'Item', 'metadata']
 
 
 class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	purchase_order = serializers.SerializerMethodField()
 	grn_line_items = GoodsReceivedLineItemSerializer(many=True, read_only=True, source='line_items')
 	total_value_received = serializers.FloatField(source='total_net_value_received')
+	stores = StoreSerializer(many=True, read_only=True)
 	
 	def get_purchase_order(self, obj):
 		po_dict = PurchaseOrderSerializer(obj.purchase_order, many=False).data
@@ -112,5 +126,5 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 	class Meta:
 		model = GoodsReceivedNote
 		fields = ['grn_number', 'created', 'total_value_received', 'invoiced_quantity', 'invoice_status_code',
-		          'invoice_status_text', 'store', 'purchase_order', 'grn_line_items']
+				  'invoice_status_text', 'stores', 'purchase_order', 'grn_line_items']
 		depth = 1
