@@ -17,15 +17,19 @@ class InvoiceWorkflow(Workflow):
 			"comment": "Line Manager reviews and approves Invoice less than or equal to N3Million.",
 		},
 		"level_2": {
-			"roles": ("accounts_payable", "line_manager", "internal_control", "head_of_finance", "snr_manager_finance"),
-			"comment": "Head of Finance /Snr Manager Finance approves Invoice from N3Million Naira to N10 Million.",
+			"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance"),
+			"comment": "Head of Finance /Snr Manager Finance approves Invoice from N3Million Naira to N5 Million.",
 		},
 		"level_3": {
-			"roles": ("accounts_payable", "line_manager", "internal_control", "dmd_ss"),
-			"comment": "DMD SS approves invoices from N10Million to 100Million",
+			"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance", "head_of_finance"),
+			"comment": "Head of Finance /Snr Manager Finance approves Invoice from N5Million Naira to N10 Million.",
 		},
 		"level_4": {
-			"roles": ("accounts_payable", "line_manager", "internal_control", "md"),
+			"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance", "head_of_finance", "dmd_ss"),
+			"comment": "DMD SS approves invoices from N10Million to 100Million",
+		},
+		"level_5": {
+			"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance", "head_of_finance", "dmd_ss", "md"),
 			"comment": "MD approves PO/DPs from N100Million",
 		},
 	}
@@ -38,12 +42,14 @@ class InvoiceWorkflow(Workflow):
 		invoice = self.signable
 		if invoice.gross_total <= 3000000:
 			return self.sign_rules["level_1"]["roles"]
-		elif (invoice.gross_total > 3000000) and (invoice.gross_total <= 10000000):
+		elif (invoice.gross_total > 3000000) and (invoice.gross_total <= 5000000):
 			return self.sign_rules["level_2"]["roles"]
-		elif (invoice.gross_total > 10000000) and (invoice.gross_total <= 100000000):
+		elif (invoice.gross_total > 5000000) and (invoice.gross_total <= 10000000):
 			return self.sign_rules["level_3"]["roles"]
-		elif invoice.gross_total > 100000000:
+		elif (invoice.gross_total > 10000000) and (invoice.gross_total <= 100000000):
 			return self.sign_rules["level_4"]["roles"]
+		elif invoice.gross_total > 100000000:
+			return self.sign_rules["level_5"]["roles"]
 		else:
 			return tuple()
 
