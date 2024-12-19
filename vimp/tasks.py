@@ -1,8 +1,9 @@
-# Configure django before running this script
+import os
+# Uncomment the next 3 lines to configure django for running this script as an independent module.
 # import django
 # os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'vimp.settings')
 # django.setup()
-import os
+
 from dotenv import load_dotenv
 import logging
 from copy import deepcopy
@@ -25,40 +26,67 @@ def post_to_icg(instance, ):
 	'''
 		Create a Purchase Order for the received good on ICG system for the purpose of updating the
 		inventory with the received goods.
+		Although it should not be, we anticipate a situation where one GRN serves multiple stores.
 		TODO:
 			- Confirm the purpose of the "costTotal" key.
 			- Confirm the purpose of the "clientId" key.
 	'''
-	order_details = {
-		"externalDocNo": str(instance.grn_number),
-		"grossTotal": str(float(instance.total_gross_value_received)),
-		"taxesTotal": str(float(instance.total_tax_value_received)),
-		"netTotal": str(float(instance.total_net_value_received)),
-		"costTotal": str(float(instance.total_net_value_received)),
-		"clientId": "999901",
-		"warehouse": str(instance.store.icg_warehouse_code),
-		"orderDate": instance.created.strftime('%Y-%m-%d'),
-	}
-	order_items = [
-		(lambda index, order_item: {
-			"externalDocNo": str(instance.grn_number),
-			"itemId": str(order_item.id),
-			"barcode": str(order_item.purchase_order_line_item.metadata["ProductID"]),
-			"description": str(order_item.purchase_order_line_item.metadata["Description"]),
-			"totalQty": str(int(order_item.quantity_received)),
-			"price": str(order_item.purchase_order_line_item.metadata["NetUnitPriceAmount"]),
-			"cost": str(float(order_item.net_value_received)),
-			"discount": "0",
-			"totalPrice": str(float(order_item.net_value_received)),
-			"line_No": str(index + 1),
-			"date": order_item.date_received.strftime('%Y-%m-%d'),
-		})(i, j) for i, j in enumerate(instance.line_items.all())
-	]
-	stock = StockManagement()
-	# The posted_to_icg flag is set to True if the purchase order is successfully created on ICG
-	instance.posted_to_icg = stock.create_purchase_order(order_details, order_items)
-	super(GoodsReceivedNote, instance).save() if instance.posted_to_icg else False
-	return order_details, order_items, instance.posted_to_icg
+	# If multiple stores are involved, modify the GRN number by appending an alphabet at the end.
+	# This is because ICG will throw an error if there are multiple posting with the same 'externalDocNo'.
+	def get_ref_mod(store_count):
+		# If there is only one store, there is no need to append an alphabet.
+		if store_count < 2:
+			return lambda x: ''
+		return lambda x: str(chr(x + 65))
+	# Get the function to get the reference modification for the current store.
+	ref_mod = get_ref_mod(len(instance.stores))
+	# Dictionary to hold the posting status of each store.
+	posted_status = {}
+	
+	# Iterate over the stores involved in the GRN.
+	for index, store in enumerate(instance.stores):
+		# Get only the line items that belong to this store.
+		items_for_store = instance.line_items.filter(purchase_order_line_item__delivery_store=store)
+		# Modify the GRN number by appending an alphabet, if necessary.
+		externalDocNo = f'{str(instance.grn_number)}{ref_mod(index)}'
+		# Recalculate the grossTotal, netTotal, and taxesTotal for this store.
+		grossTotal = float(sum([item.gross_value_received for item in items_for_store]))
+		netTotal = float(sum([item.net_value_received for item in items_for_store]))
+		taxesTotal = float(grossTotal - netTotal)
+		order_details = {
+			"externalDocNo": externalDocNo,
+			"grossTotal": str(grossTotal),
+			"taxesTotal": str(taxesTotal),
+			"netTotal": str(netTotal),
+			"costTotal": str(netTotal),
+			"clientId": "999901",
+			"warehouse": str(store.icg_warehouse_code),
+			"orderDate": instance.created.strftime('%Y-%m-%d'),
+		}
+		order_items = [
+			(lambda index, order_item: {
+				"externalDocNo": externalDocNo,
+				"itemId": str(order_item.id),
+				"barcode": str(order_item.purchase_order_line_item.metadata["ProductID"]),
+				"description": str(order_item.purchase_order_line_item.metadata["Description"]),
+				"totalQty": str(int(order_item.quantity_received)),
+				"price": str(order_item.purchase_order_line_item.metadata["NetUnitPriceAmount"]),
+				"cost": str(float(order_item.net_value_received)),
+				"discount": "0",
+				"totalPrice": str(float(order_item.net_value_received)),
+				"line_No": str(index + 1),
+				"date": order_item.date_received.strftime('%Y-%m-%d'),
+			})(i, j) for i, j in enumerate(items_for_store)
+		]
+		# The posted_to_icg flag is set to True if the purchase order is successfully created on ICG
+		stock = StockManagement()
+		is_posted = stock.create_purchase_order(order_details, order_items)
+		# Save the posting status of the items for the current store.
+		items_for_store.update(posted_to_icg=is_posted)
+		# Append the posting status to our reporting dictionary.
+		posted_status[store.store_name] = is_posted
+	# return the dictionary of posting statuses and a boolean indicating whether all items were posted successfully.
+	return posted_status, all(posted_status.values())
 
 
 def send_grn_to_email(created_grn, ):
@@ -215,8 +243,6 @@ def send_vendor_setup_email(args):
 
 
 if __name__ == "__main__":
-	# from invoice_service.models import Invoice
-	# from invoice_service.serializers import InvoiceSerializer
-	# invoice = Invoice.objects.get(id=263)
-	# notify_approval_required(InvoiceSerializer(invoice).data)
+	# egrn = GoodsReceivedNote.objects.get(id=1315)
+	# print(post_to_icg(egrn))
 	...

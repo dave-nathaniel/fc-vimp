@@ -243,7 +243,6 @@ class PurchaseOrderLineItem(models.Model):
 class GoodsReceivedNote(models.Model):
 	purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='purchase_order')
 	grn_number = models.IntegerField(blank=False, null=False, unique=True)
-	posted_to_icg = models.BooleanField(default=False)
 	created = models.DateField(auto_now_add=True)
 	
 	invoicing_status_code = [('1', 'Not Started'), ('2', 'In Process'), ('3', 'Finished')]
@@ -367,6 +366,7 @@ class GoodsReceivedLineItem(models.Model):
 	gross_value_received = models.DecimalField(max_digits=15, decimal_places=3)
 	metadata = models.JSONField(default=dict, blank=True, null=True)
 	date_received = models.DateField(auto_now=True)
+	posted_to_icg = models.BooleanField(default=False)
 	
 	@property
 	def delivery_store(self):
