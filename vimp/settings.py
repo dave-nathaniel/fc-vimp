@@ -64,6 +64,7 @@ INSTALLED_APPS = [
 	'egrn_service',
 	'invoice_service',
 	'approval_service',
+	'app_settings',
 ]
 
 JSON_EDITOR_JS = 'https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/8.6.4/jsoneditor.js'

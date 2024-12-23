@@ -243,7 +243,6 @@ class PurchaseOrderLineItem(models.Model):
 class GoodsReceivedNote(models.Model):
 	purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='purchase_order')
 	grn_number = models.IntegerField(blank=False, null=False, unique=True)
-	posted_to_icg = models.BooleanField(default=False)
 	created = models.DateField(auto_now_add=True)
 	
 	invoicing_status_code = [('1', 'Not Started'), ('2', 'In Process'), ('3', 'Finished')]
@@ -328,6 +327,12 @@ class GoodsReceivedNote(models.Model):
 		async_task('vimp.tasks.post_to_icg', self, q_options={
 			'task_name': f'Post-GRN-{self.grn_number}-To-ICG-Inventory',
 		})
+		async_task('vimp.tasks.post_to_gl', {
+			'grn': self,
+            'action': 'receipt', # This must be one of either 'receipt' or 'invoice_approval'.
+		}, q_options={
+			'task_name': f'Post-GRN-{self.grn_number}-To-GL',
+		})
 		async_task('vimp.tasks.send_grn_to_email', self, q_options={
 			'task_name': f'Email-GRN-{self.grn_number}-To-Vendor',
 		})
@@ -367,6 +372,7 @@ class GoodsReceivedLineItem(models.Model):
 	gross_value_received = models.DecimalField(max_digits=15, decimal_places=3)
 	metadata = models.JSONField(default=dict, blank=True, null=True)
 	date_received = models.DateField(auto_now=True)
+	posted_to_icg = models.BooleanField(default=False)
 	
 	@property
 	def delivery_store(self):
@@ -480,7 +486,7 @@ class GoodsReceivedLineItem(models.Model):
 		return line_items
 	
 	def __str__(self):
-		return f"GRN Entry for '{self.purchase_order_line_item.product_name}'"
+		return f"e-GRN #{self.grn.grn_number}: '{self.purchase_order_line_item.product_name}'"
 
 
 class Conversion(models.Model):
