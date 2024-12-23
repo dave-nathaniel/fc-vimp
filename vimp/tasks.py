@@ -4,9 +4,8 @@ import os
 # os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'vimp.settings')
 # django.setup()
 
-from dotenv import load_dotenv
 import logging
-from copy import deepcopy
+from dotenv import load_dotenv
 from django.template.loader import render_to_string
 from django.core.mail import EmailMessage
 from django.core.exceptions import ObjectDoesNotExist
@@ -15,7 +14,11 @@ from django.contrib.auth import get_user_model
 from core_service.services import send_sms
 from icg_service.inventory import StockManagement
 from egrn_service.models import GoodsReceivedNote
-from egrn_service.serializers import GoodsReceivedNoteSerializer
+from egrn_service.serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer
+
+from pprint import pprint
+from copy import deepcopy
+
 
 load_dotenv()
 
@@ -109,6 +112,52 @@ def send_grn_to_email(created_grn, ):
 	email.content_subtype = 'html'
 	return email.send()
 
+
+def post_to_gl(args):
+	import app_settings.models as app_settings
+	from byd_service import gl_posting
+	# Get the data from the provided arguments
+	grn = args.get('grn') # GoodsReceivedNote instance
+	action = args.get('action') # The action that triggered the GL posting (either 'receipt' or 'invoice_approval')
+	# List to hold the posting status of each line item to GL.
+	posting_status = []
+	# The line items to post to GL
+	line_items = GoodsReceivedLineItemSerializer(grn.line_items, many=True).data
+	# Iterate over the line items and perform the GL entry based on the retrieved GL entry definition.
+	for line_item in line_items:
+		# Get the product metadata and product category from the line item.
+		product_metadata = line_item.get('purchase_order_line_item', {}).get('metadata')
+		product_category = product_metadata.get('ProductCategoryInternalID')
+		# Get the GL entry definition based on the product category and the action.
+		gl_entry_definition = (app_settings.ProductCategoryGLEntry.objects
+							   .filter(product_category_id=product_category)
+							   .filter(action=action).first())
+		# Definitions for debit and credit states.
+		definitions = {
+			"D": gl_entry_definition.debit_states.all(),
+			"C": gl_entry_definition.credit_states.all(),
+		}
+		# Format the GL entries based on the retrieved GL entry definitions.
+		entries = []
+		for indicator in definitions.keys():
+			# Append the GL entries to the entries list based on the debit or credit states.
+			entries = entries + [
+				gl_posting.format_entry(
+					indicator,
+					product_metadata.get('ItemShipToLocation', {}).get('LocationID'),
+					item.gl_account.account_code,
+					float(line_item.get(item.transaction_value_field, 0))
+				) for item in definitions[indicator]
+			]
+		# Format date in YYYY-MM-DD format
+		date_received = line_item.get('date_received', '')
+		# Post the GL entries and append the posting status to the list.
+		posting_status.append(
+			gl_posting.post_to_byd(date_received, entries)
+		)
+	# Return a boolean indicating whether all line items were posted successfully to GL.
+	return all(posting_status)
+	
 
 def notify_approval_required(signable):
 	'''
@@ -243,6 +292,9 @@ def send_vendor_setup_email(args):
 
 
 if __name__ == "__main__":
-	# egrn = GoodsReceivedNote.objects.get(id=1315)
-	# print(post_to_icg(egrn))
+	# egrn = GoodsReceivedNote.objects.get(id=1294)
+	# post_to_gl({
+	# 	'grn': egrn,
+	# 	'action': 'receipt',
+	# })
 	...
