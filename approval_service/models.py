@@ -56,6 +56,9 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 	
 	@property
 	def is_accepted(self):
+		'''
+			If it has not been rejected by any signatory, and all signatories have accepted, return True.
+        '''
 		return self.is_rejected is False if self.is_completely_signed else False
 	
 	class Meta:
@@ -88,6 +91,30 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 		"""
 		pass
 	
+	@abstractmethod
+	def on_workflow_start(self) -> bool:
+		"""
+			Method to be implemented by child classes.
+			This method gets called when the approval workflow starts.
+		"""
+		pass
+	
+	@abstractmethod
+	def on_workflow_next(self) -> bool:
+		"""
+			Method to be implemented by child classes.
+			This method gets called when the approval workflow moves to the next step.
+		"""
+		pass
+	
+	@abstractmethod
+	def on_workflow_end(self) -> bool:
+		"""
+			Method to be implemented by child classes.
+			This method gets called when the approval workflow ends.
+		"""
+		pass
+	
 	def __init__(self, *args, **kwargs):
 		super().__init__(*args, **kwargs)
 		# Re-verify the hash before initializing the model instance
@@ -101,9 +128,21 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 		return hashed_string
 	
 	def update_digest(self, ) -> bool:
+		"""
+			This method calculates a new digest for the signable object, updates the digest field,
+			saves the changes to the database, and triggers the workflow start process.
+			
+			Returns:
+				bool: True if the digest was successfully updated, False otherwise.
+			
+			Raises:
+				Exception: If any error occurs during the update process.
+		"""
 		try:
 			self.digest = self.calculate_digest()
 			super().save(update_fields=['signatories', 'current_pending_signatory', 'digest'])
+			# Trigger the on_workflow_start method if the approval workflow starts
+			self.on_workflow_start()
 		except Exception as e:
 			raise e
 		# Return True if the hash was updated successfully
@@ -181,7 +220,8 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 			new_signature = Signature()
 			# Fields of the signature class
 			new_signature.signer = request.user
-			new_signature.signature = request.headers.get('Authorization').split(' ')[1] # TODO: Make the signature cryptographically reference the digest of the signable object
+			# TODO: Make the signature cryptographically reference the digest of the signable object
+			new_signature.signature = request.headers.get('Authorization').split(' ')[1]
 			new_signature.accepted = request.data.get('approved')
 			new_signature.comment = request.data.get('comment')
 			new_signature.signable_type = content_type
@@ -198,7 +238,10 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 			super().save(update_fields=['current_pending_signatory'])
 		except Exception as e:
 			raise Exception("Unable to sign the object: ", str(e))
-		# If no exceptions were raised, the signature was successfully created and saved
+		
+		# Trigger the on_workflow_next method if the approval workflow continues, else trigger the on_workflow_end method
+		self.on_workflow_end() if self.is_completely_signed else self.on_workflow_next()
+		# If No exceptions were raised so the signature was successfully created and saved, return True
 		return True
 	
 	def save(self, *args, **kwargs):

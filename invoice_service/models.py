@@ -4,6 +4,8 @@ from django.db.models import Sum
 from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem, GoodsReceivedLineItem, GoodsReceivedNote
 from approval_service.models import Signable, Workflow
 
+from django_q.tasks import async_task
+
 
 # Create your models here.
 class InvoiceWorkflow(Workflow):
@@ -56,10 +58,10 @@ class InvoiceWorkflow(Workflow):
 
 class Invoice(Signable):
 	purchase_order = models.ForeignKey(
-        PurchaseOrder,
-        on_delete=models.CASCADE,
-        related_name="invoices",
-    )
+		PurchaseOrder,
+		on_delete=models.CASCADE,
+		related_name="invoices",
+	)
 	grn = models.ForeignKey(
 		GoodsReceivedNote,
 		on_delete=models.CASCADE,
@@ -114,6 +116,35 @@ class Invoice(Signable):
 		return [[(lambda x, y: getattr(x, y))(line_item, field.name) for field in line_item_fields] for line_item in
 				self.invoice_line_items.all()]
 	
+	def on_workflow_start(self) -> bool:
+		from .serializers import InvoiceSerializer
+		# Asynchronously send an email notification to the first signatory.
+		serialized = InvoiceSerializer(self).data
+		async_task('vimp.tasks.notify_approval_required', serialized, q_options={
+			'task_name': f'Notify-Next-Signatory-For-Invoice-{self.id}',
+		})
+		return True
+	
+	def on_workflow_next(self) -> bool:
+		from .serializers import InvoiceSerializer
+		# Asynchronously send an email notification to the next signatory.
+		serialized = InvoiceSerializer(self).data
+		async_task('vimp.tasks.notify_approval_required', serialized, q_options={
+			'task_name': f'Notify-Next-Signatory-For-Invoice-{serialized.get("id")}',
+		})
+		return True
+	
+	def on_workflow_end(self) -> bool:
+		# Complete the ledger posting process for the GRN if the invoice is accepted.
+		if self.is_accepted:
+			async_task('vimp.tasks.post_to_gl', {
+				'grn': self.grn,
+	            'action': 'invoice_approval', # This must be one of either 'receipt' or 'invoice_approval'.
+			}, q_options={
+				'task_name': f'Approved-Invoice-GL-Entry-For-GRN-{self.grn.grn_number}',
+			})
+		return True
+	
 	def set_identity(self):
 		invoice_values = {
 			'id': self.id,
@@ -161,7 +192,7 @@ class InvoiceLineItem(models.Model):
 	invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="invoice_line_items")
 	po_line_item = models.ForeignKey(PurchaseOrderLineItem, on_delete=models.CASCADE)
 	grn_line_item = models.ForeignKey(GoodsReceivedLineItem, on_delete=models.CASCADE, null=True,
-	                                  blank=True, related_name="invoice_items")
+									  blank=True, related_name="invoice_items")
 	quantity = models.DecimalField(max_digits=15, decimal_places=3, null=False, blank=False, default=0.00)
 	net_total = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
 	gross_total = models.DecimalField(max_digits=15, decimal_places=2, null=True, blank=True)
