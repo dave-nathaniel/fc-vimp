@@ -9,8 +9,6 @@ from overrides.rest_framework import CustomPagination
 from .models import Invoice
 from .serializers import InvoiceSerializer, InvoiceLineItemSerializer
 
-from django_q.tasks import async_task
-
 # Pagination
 paginator = CustomPagination()
 
@@ -88,11 +86,8 @@ class VendorInvoiceView(APIView):
 					line_item_serializer = InvoiceLineItemSerializer(data=line_item)
 					
 					if line_item_serializer.is_valid():
+						# Save the created line item
 						line_item_serializer.save()
-						# Seal the created invoice (i.e. generates a unique fingerprint of the invoice)
-						invoice.seal_class()
-						# Serialize and return the created invoice
-						created.append(InvoiceSerializer(invoice).data)
 					else:
 						# Rollback the created invoice and record and error for this entry if line item creation fails
 						raise ValidationError(line_item_serializer.errors)
@@ -110,14 +105,14 @@ class VendorInvoiceView(APIView):
 					invoice.delete()
 					failed[grn_number] = e
 					continue
+					
+			# After creating the line items, seal the created invoice (i.e. generates a unique fingerprint of the invoice and it's associated line items)
+			invoice.seal_class()
+			# Append the created invoice to the list of created invoices
+			created.append(InvoiceSerializer(invoice).data)
 		
 		# If any of the invoices were created, return the created invoices
 		if created:
-			for item in created:
-				item = dict(item)
-				async_task('vimp.tasks.notify_approval_required', item, q_options={
-					'task_name': f'Notify-Next-Signatory-For-Invoice-{item.get("id")}',
-				})
 			return APIResponse("Invoices Created", status.HTTP_201_CREATED, data=created)
 		
 		# If none of the invoices were created, return the errors
