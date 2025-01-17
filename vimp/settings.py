@@ -64,6 +64,7 @@ INSTALLED_APPS = [
 	'egrn_service',
 	'invoice_service',
 	'approval_service',
+	'byd_service',
 	'app_settings',
 ]
 
