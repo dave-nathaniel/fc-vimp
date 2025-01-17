@@ -5,6 +5,8 @@ import os
 # django.setup()
 
 import logging
+from pprint import pprint
+from copy import deepcopy
 from dotenv import load_dotenv
 from django.template.loader import render_to_string
 from django.core.mail import EmailMessage
@@ -14,11 +16,13 @@ from django.contrib.auth import get_user_model
 from core_service.services import send_sms
 from icg_service.inventory import StockManagement
 from egrn_service.models import GoodsReceivedNote
+from invoice_service.models import Invoice
 from egrn_service.serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer
 
-from pprint import pprint
-from copy import deepcopy
-
+import byd_service.rest as byd_rest
+import byd_service.util as byd_util
+from byd_service.models import ByDPostingStatus, get_or_create_byd_posting_status
+from django.contrib.contenttypes.models import ContentType
 
 load_dotenv()
 
@@ -157,6 +161,99 @@ def post_to_gl(args):
 		)
 	# Return a boolean indicating whether all line items were posted successfully to GL.
 	return all(posting_status)
+
+
+def create_grn_on_byd(grn: GoodsReceivedNote):
+	# Initialize the REST client
+	rest_client = byd_rest.RESTServices()
+	payload = {
+		"Item": [
+			{
+				"ProductID": line_item.purchase_order_line_item.product_id,
+				"DeliveredQuantity": str(float(line_item.quantity_received)),
+				"DeliveredQuantityUnitCode": line_item.purchase_order_line_item.metadata["QuantityUnitCode"],
+				"DeliveryStartDateTime": f"{byd_util.format_datetime_to_iso8601(line_item.date_received)}Z",
+				"DeliveryEndDateTime": f"{byd_util.format_datetime_to_iso8601(line_item.date_received)}Z",
+				"ItemPurchaseOrderReference": [
+					{
+						"ID": str(line_item.purchase_order_line_item.purchase_order.po_id),
+						"ItemID": line_item.purchase_order_line_item.metadata["ID"],
+						"ItemTypeCode": line_item.purchase_order_line_item.metadata["ItemTypeCode"],
+					}
+				],
+			} for line_item in grn.line_items.all()
+		]
+	}
+	
+	status = get_or_create_byd_posting_status(grn, request_payload=payload)
+	
+	try:
+		response = rest_client.create_grn(payload)
+		status.mark_success(
+			response.get("d", {})
+			.get("results", {})
+		)
+	except Exception as e:
+		logging.error(f"Error creating GRN {grn.grn_number}: {e}")
+		# Mark as failure
+		status.mark_failure(e)
+		# Increment retry count
+		status.increment_retry()
+		return False
+	return True
+
+
+def create_invoice_on_byd(invoice: Invoice):
+	# Initialize the REST client
+	rest_client = byd_rest.RESTServices()
+	payload = {
+		"TypeCode": "004",
+		"DataOriginTypeCode": "1",
+		"ItemsGrossAmountIndicator": True,
+		"InvoiceDescription": invoice.description,
+		"InvoiceDate": byd_util.format_datetime_to_iso8601(invoice.date_created),
+		"ExternalReference": {
+			"BusinessTransactionDocumentRelationshipRoleCode": "7",
+			"ID": str(invoice.external_document_id),
+			"TypeCode": "28",
+		},
+		"SellerParty": {
+			"PartyID": invoice.purchase_order.vendor.byd_internal_id,
+		},
+		"Item": [
+			{
+				"TypeCode": "002",
+				"ProductID": str(line_item.po_line_item.product_id),
+				"ProductTypeCode": "2",
+				"Quantity": str(float(line_item.quantity)),
+				"QuantityUnitCode": line_item.po_line_item.metadata["QuantityUnitCode"],
+				"GrossUnitPriceAmount": str(float(line_item.po_line_item.unit_price)),
+				"GrossUnitPriceBaseQuantity": "1",
+				"ItemPurchaseOrderReference": {
+					"ID": str(line_item.po_line_item.purchase_order.po_id),
+					"ItemID": str(line_item.po_line_item.metadata["ID"]),
+				},
+			}
+			for line_item in invoice.invoice_line_items.all()
+		]
+	}
+	
+	status = get_or_create_byd_posting_status(invoice, request_payload=payload)
+	
+	try:
+		response = rest_client.create_supplier_invoice(payload)# Mark as success
+		status.mark_success(
+			response.get("d", {})
+			.get("results", {})
+		)
+	except Exception as e:
+		logging.error(f"Error creating Invoice {invoice.id}: {e}")
+		# Mark as failure
+		status.mark_failure(e)
+		# Increment retry count
+		status.increment_retry()
+		return False
+	return True
 	
 
 def notify_approval_required(signable):
@@ -292,9 +389,8 @@ def send_vendor_setup_email(args):
 
 
 if __name__ == "__main__":
-	# egrn = GoodsReceivedNote.objects.get(id=1294)
-	# post_to_gl({
-	# 	'grn': egrn,
-	# 	'action': 'receipt',
-	# })
+	# egrn = GoodsReceivedNote.objects.get(id=1318)
+	# create_grn_on_byd(egrn)
+	# invoice = Invoice.objects.get(id=323)
+	# create_invoice_on_byd(invoice)
 	...

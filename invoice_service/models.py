@@ -118,6 +118,9 @@ class Invoice(Signable):
 	
 	def on_workflow_start(self) -> bool:
 		from .serializers import InvoiceSerializer
+		async_task('vimp.tasks.create_invoice_on_byd', self, q_options={
+			'task_name': f'Create-Invoice-{self.id}-on-ByD',
+		})
 		# Asynchronously send an email notification to the first signatory.
 		serialized = InvoiceSerializer(self).data
 		async_task('vimp.tasks.notify_approval_required', serialized, q_options={

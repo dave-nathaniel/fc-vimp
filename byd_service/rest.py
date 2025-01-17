@@ -1,23 +1,50 @@
 import os
 import json
-from requests import get
+import logging
+from requests import get, post
 from pathlib import Path
 from dotenv import load_dotenv
+
+from .authenticate import SAPAuthentication
 
 dotenv_path = os.path.join(Path(__file__).resolve().parent.parent, '.env')
 load_dotenv(dotenv_path)
 
+logger = logging.getLogger()
 
+# Initialize the authentication class
+sap_auth = SAPAuthentication()
+
+@sap_auth.http_authentication
 class RESTServices:
 	'''
-	    RESTful API for interacting with SAP's ByD system
+		RESTful API for interacting with SAP's ByD system
 	'''
+	
 	endpoint = os.getenv('SAP_URL')
+	# Initialize a CSRF token to None initially
+	session = None
+	# Initialize headers that are required for authentication
+	auth_headers = {}
+	# Initialize the SAP token to None initially
+	auth = None
 	
 	def __init__(self, ):
-		from .authenticate import HTTPAuth
-		
-		self.auth = HTTPAuth()
+		pass
+	
+	def __get__(self, *args, **kwargs):
+		return self.session.get(*args, **kwargs, auth=self.auth)
+	
+	def __post__(self, *args, **kwargs):
+		'''
+			This method makes a POST request to the given URL with CSRF protection
+		'''
+		headers = {
+			'Accept': 'application/json',
+            'Content-Type': 'application/json'
+		}
+		headers.update(self.auth_headers)
+		return self.session.post(*args, **kwargs, headers=headers, auth=self.auth)
 
 	def get_vendor_by_id(self, vendor_id, id_type='email'):
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=10"
@@ -28,7 +55,7 @@ class RESTServices:
 			query_url = f"{action_url}&$filter=substringof('{vendor_id}',ConventionalPhone/NormalisedNumberDescription)"
 
 		# Make a request with HTTP Basic Authentication
-		response = get(query_url, auth=self.auth)
+		response = self.__get__(query_url)
 
 		if response.status_code == 200:
 			try:
@@ -50,7 +77,7 @@ class RESTServices:
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khpurchaseorder/PurchaseOrderCollection?$format=json&$expand=Supplier,Item&$filter=Supplier/PartyID eq '{internal_id}'"
 
 		# Make a request with HTTP Basic Authentication
-		response = get(action_url, auth=self.auth)
+		response = self.__get__(action_url)
 
 		if response.status_code == 200:
 			try:
@@ -81,7 +108,7 @@ class RESTServices:
 						   f"{PurchaseOrderID}'")
 
 		# Make a request with HTTP Basic Authentication
-		response = get(action_url, auth=self.auth)
+		response = self.__get__(action_url)
 
 		if response.status_code == 200:
 			try:
@@ -93,5 +120,43 @@ class RESTServices:
 
 		return False
 	
-	def create_order_receipt(self, ):
-		...
+	# GRN Creation
+	def create_grn(self, grn_data: dict) -> dict:
+		'''
+            Create a Goods and Service Acknowledgement (GRN) in SAP ByD
+        '''
+		
+		# Action URL for creating a Goods and Service Acknowledgement (GRN) in SAP ByD
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khgoodsandserviceacknowledgement/GoodsAndServiceAcknowledgementCollection"
+		
+		try:
+			# Make a request with HTTP Basic Authentication
+			response = self.__post__(action_url, json=grn_data)
+			if response.status_code == 201:
+				logging.info(f"GRN successfully created in SAP ByD.")
+				return response.json()
+			else:
+				logging.error(f"Failed to create GRN: {response.text}")
+				raise Exception(f"Error from SAP: {response.text}")
+		except Exception as e:
+			raise Exception(f"Error creating GRN: {e}")
+	
+	# Supplier Invoice Creation
+	def create_supplier_invoice(self, invoice_data: dict) -> dict:
+		'''
+            Create a Supplier Invoice in SAP ByD
+        '''
+		# Action URL for creating a Goods and Service Acknowledgement (GRN) in SAP ByD
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/SupplierInvoiceCollection"
+		
+		try:
+			# Make a request with HTTP Basic Authentication
+			response = self.__post__(action_url, json=invoice_data)
+			if response.status_code == 201:
+				logging.info(f"Invoice successfully created in SAP ByD.")
+				return response.json()
+			else:
+				logging.error(f"Failed to create Invoice: {response.text}")
+				raise Exception(f"{response.text}")
+		except Exception as e:
+			raise Exception(f"{e}")
