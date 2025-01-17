@@ -156,7 +156,7 @@ class RESTServices:
 				logging.info(f"Invoice successfully created in SAP ByD.")
 				return response.json()
 			else:
-				logging.error(f"Failed to create GRN: {response.text}")
-				raise Exception(f"Error from SAP: {response.text}")
+				logging.error(f"Failed to create Invoice: {response.text}")
+				raise Exception(f"{response.text}")
 		except Exception as e:
-			raise Exception(f"Error creating Invoice: {e}")
+			raise Exception(f"{e}")

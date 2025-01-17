@@ -21,6 +21,8 @@ from egrn_service.serializers import GoodsReceivedNoteSerializer, GoodsReceivedL
 
 import byd_service.rest as byd_rest
 import byd_service.util as byd_util
+from byd_service.models import ByDPostingStatus, get_or_create_byd_posting_status
+from django.contrib.contenttypes.models import ContentType
 
 load_dotenv()
 
@@ -182,17 +184,26 @@ def create_grn_on_byd(grn: GoodsReceivedNote):
 			} for line_item in grn.line_items.all()
 		]
 	}
+	
+	status = get_or_create_byd_posting_status(grn, request_payload=payload)
+	
 	try:
 		response = rest_client.create_grn(payload)
-		print(f"GRN {grn.grn_number} created successfully: {response}")
+		status.mark_success(
+			response.get("d", {})
+			.get("results", {})
+		)
 	except Exception as e:
 		logging.error(f"Error creating GRN {grn.grn_number}: {e}")
+		# Mark as failure
+		status.mark_failure(e)
+		# Increment retry count
+		status.increment_retry()
 		return False
 	return True
 
 
 def create_invoice_on_byd(invoice: Invoice):
-	import json
 	# Initialize the REST client
 	rest_client = byd_rest.RESTServices()
 	payload = {
@@ -226,11 +237,21 @@ def create_invoice_on_byd(invoice: Invoice):
 			for line_item in invoice.invoice_line_items.all()
 		]
 	}
+	
+	status = get_or_create_byd_posting_status(invoice, request_payload=payload)
+	
 	try:
-		response = rest_client.create_supplier_invoice(payload)
-		print(f"Invoice {invoice.id} created successfully: {response}")
+		response = rest_client.create_supplier_invoice(payload)# Mark as success
+		status.mark_success(
+			response.get("d", {})
+			.get("results", {})
+		)
 	except Exception as e:
 		logging.error(f"Error creating Invoice {invoice.id}: {e}")
+		# Mark as failure
+		status.mark_failure(e)
+		# Increment retry count
+		status.increment_retry()
 		return False
 	return True
 	
