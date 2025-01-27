@@ -1,7 +1,7 @@
 # Import necessary modules and classes
 import os, sys
 import logging
-
+from datetime import datetime
 from django.forms import model_to_dict
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes
@@ -142,7 +142,7 @@ def create_grn(request, ):
 	try:
 		# Filter for only the PO Line items that the user has permission to receive
 		permitted_to_receive_items = (PurchaseOrderLineItem.objects.filter(object_id__in=map(lambda x: x['itemObjectID'], request_data["recievedGoods"]))
-		                    .filter(delivery_store__store_email=request.user.email))
+							.filter(delivery_store__store_email=request.user.email))
 		# If there are no items that the user has permission to receive, return an error
 		if not permitted_to_receive_items:
 			return APIResponse("User does not have permission to receive these items.", status.HTTP_403_FORBIDDEN)
@@ -291,9 +291,25 @@ def weighted_average(request):
 			if hasattr(product_config, 'metadata') and product_config.metadata:
 				cumulative_quantity = product_config.metadata.get('inital_quantity', 0)
 				cumulative_cost = product_config.metadata.get('initial_cost', 0) * cumulative_quantity
-	
+			
+			# Get all orders for the current product and order by date received
 			orders_for_product = GoodsReceivedLineItem.objects.filter(purchase_order_line_item__product_id=product_id).order_by('date_received')
-			products_wac.append(calculate_wac(orders_for_product, cumulative_quantity, cumulative_cost)) if orders_for_product else None
+			# If a date was supplied in the request, filter for only orders on or before that date
+			if request.query_params.get('date'):
+				orders_for_product = orders_for_product.filter(
+					date_received__lte=datetime.strptime(
+						request.query_params.get('date'),
+						'%Y-%m-%d'
+					)
+				)
+				# If no orders were found for the given date, continue to the next product
+				if not orders_for_product:
+					continue
+			
+			# Calculate and add the WAC for the current product to the results list
+			products_wac.append(
+				calculate_wac(orders_for_product, cumulative_quantity, cumulative_cost)
+			) if orders_for_product else None
 			
 		# # Paginate the results
 		paginated = paginator.paginate_queryset(products_wac, request)
