@@ -55,6 +55,9 @@ class ByDPostingStatus(models.Model):
 
     def __str__(self):
         return f"Posting for {self.related_object} | Status: {self.get_status_display()} | On {str(self.created_at).split(' ')[0]}"
+    
+    class Meta:
+        verbose_name_plural = "Posting Reports"
 
 
 def get_or_create_byd_posting_status(instance, request_payload=None):

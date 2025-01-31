@@ -157,6 +157,9 @@ class PurchaseOrder(models.Model):
 	
 	def __str__(self):
 		return f"PO-{self.po_id}"
+	
+	class Meta:
+		verbose_name_plural = "Purchase Orders"
 
 
 class PurchaseOrderLineItem(models.Model):
@@ -238,6 +241,9 @@ class PurchaseOrderLineItem(models.Model):
 	
 	def __str__(self):
 		return f"PO-{self.purchase_order.po_id}: {self.product_name} ({self.quantity}) for {self.delivery_store.store_name}"
+	
+	class Meta:
+		verbose_name_plural = "Purchase Order Line Items"
 
 
 class GoodsReceivedNote(models.Model):
@@ -329,7 +335,7 @@ class GoodsReceivedNote(models.Model):
 		})
 		async_task('vimp.tasks.post_to_gl', {
 			'grn': self,
-            'action': 'receipt', # This must be one of either 'receipt' or 'invoice_approval'.
+			'action': 'receipt', # This must be one of either 'receipt' or 'invoice_approval'.
 		}, q_options={
 			'task_name': f'Post-GRN-{self.grn_number}-To-GL',
 		})
@@ -364,6 +370,9 @@ class GoodsReceivedNote(models.Model):
 	
 	def __str__(self):
 		return f"e-GRN #{self.grn_number}"
+	
+	class Meta:
+		verbose_name_plural = "Goods Received Notes"
 
 
 class GoodsReceivedLineItem(models.Model):
@@ -464,6 +473,13 @@ class GoodsReceivedLineItem(models.Model):
 		else:
 			logging.error(f"conversion method {method_name} not found in conversion_methods module")
 	
+	def get_grn_for_po_line(self, object_id):
+		"""
+			Returns the Goods Received Note for this line item.
+		"""
+		line_items = GoodsReceivedLineItem.objects.filter(purchase_order_line_item__object_id=object_id)
+		return line_items
+	
 	def save(self, *args, **kwargs):
 		"""
 			Saves the instance to the database.
@@ -481,15 +497,11 @@ class GoodsReceivedLineItem(models.Model):
 		
 		return super().save()
 	
-	def get_grn_for_po_line(self, object_id):
-		"""
-			Returns the Goods Received Note for this line item.
-		"""
-		line_items = GoodsReceivedLineItem.objects.filter(purchase_order_line_item__object_id=object_id)
-		return line_items
-	
 	def __str__(self):
 		return f"e-GRN #{self.grn.grn_number}: '{self.purchase_order_line_item.product_name}'"
+	
+	class Meta:
+		verbose_name_plural = "Goods Received Line Items"
 
 
 class Conversion(models.Model):
@@ -522,3 +534,5 @@ class ProductConfiguration(models.Model):
 	def __str__(self):
 		return f"'{self.product_id} ({self.product_name})'"
 	
+	class Meta:
+		verbose_name_plural = "Product Configurations"

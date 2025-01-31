@@ -142,7 +142,7 @@ class Invoice(Signable):
 		if self.is_accepted:
 			async_task('vimp.tasks.post_to_gl', {
 				'grn': self.grn,
-	            'action': 'invoice_approval', # This must be one of either 'receipt' or 'invoice_approval'.
+				'action': 'invoice_approval', # This must be one of either 'receipt' or 'invoice_approval'.
 			}, q_options={
 				'task_name': f'Approved-Invoice-GL-Entry-For-GRN-{self.grn.grn_number}',
 			})
@@ -246,3 +246,6 @@ class InvoiceLineItem(models.Model):
 	
 	def __str__(self):
 		return f"{self.po_line_item.product_name} ({self.quantity})"
+	
+	class Meta:
+		verbose_name_plural = "Invoice Line Items"

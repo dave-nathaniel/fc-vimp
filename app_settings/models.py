@@ -7,6 +7,9 @@ class GLAccount(models.Model):
 	
 	def __str__(self):
 		return f"{self.account_name} | {self.account_code}"
+	
+	class Meta:
+		verbose_name_plural = 'Ledger - Accounts'
 
 
 class GLEntryState(models.Model):
@@ -17,6 +20,9 @@ class GLEntryState(models.Model):
 	
 	def __str__(self):
 		return f'UPDATE "{self.gl_account.account_name}"'
+	
+	class Meta:
+		verbose_name_plural = 'Ledger - States'
 
 
 class ProductCategoryGLEntry(models.Model):
@@ -37,3 +43,4 @@ class ProductCategoryGLEntry(models.Model):
 		constraints = [
 			models.UniqueConstraint(fields=('product_category_id', 'action'), name='unique_product_category_action')
 		]
+		verbose_name_plural = 'Ledger - Entries for Product Categories'
