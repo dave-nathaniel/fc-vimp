@@ -189,6 +189,10 @@ class Invoice(Signable):
 	
 	def __str__(self):
 		return f"Invoice {self.id}"
+	
+	class Meta:
+		verbose_name = "3.1 Invoice"
+		verbose_name_plural = "3.1 Invoices"
 
 
 class InvoiceLineItem(models.Model):
@@ -248,4 +252,5 @@ class InvoiceLineItem(models.Model):
 		return f"{self.po_line_item.product_name} ({self.quantity})"
 	
 	class Meta:
-		verbose_name_plural = "Invoice Line Items"
+		verbose_name = "3.2 Invoice Line Item"
+		verbose_name_plural = "3.2 Invoice Line Items"

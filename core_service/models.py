@@ -49,7 +49,8 @@ class CustomUser(AbstractUser):
 		return f"{self.first_name} {self.last_name} ({self.email})"
 	
 	class Meta:
-		verbose_name_plural = 'Users'
+		verbose_name = '4.1 User'
+		verbose_name_plural = '4.1 Users'
 
 
 class TempUser(models.Model):
@@ -122,7 +123,8 @@ class TempUser(models.Model):
 		return f'{self.identifier}\'s {self.id_type}'
 	
 	class Meta:
-		verbose_name_plural = 'Temp Users'
+		verbose_name = '4.3 Temp User'
+		verbose_name_plural = '4.3 Temp Users'
 
 
 class VendorProfile(models.Model):
@@ -202,7 +204,8 @@ class VendorProfile(models.Model):
 		return f"{self.byd_internal_id}"
 	
 	class Meta:
-		verbose_name_plural = 'Vendor Profiles'
+		verbose_name = '4.2 Vendor Profile'
+		verbose_name_plural = '4.2 Vendor Profiles'
 
 
 class LedgerAccount(models.Model):

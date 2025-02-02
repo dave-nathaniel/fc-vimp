@@ -6,9 +6,9 @@ from django.conf.urls.static import static
 from django.conf import settings
 from django.shortcuts import redirect
 
-admin.site.site_header = "Food Concepts | VIMP"
-admin.site.site_title = "Food Concepts | VIMP"
-admin.site.index_title = "Food Concepts | VIMP"
+admin.site.site_header = "Food Concepts"
+admin.site.site_title = "eGRN & VIMP"
+admin.site.index_title = "Admin Console"
 
 urlpatterns = [
     path('admin/', admin.site.urls),

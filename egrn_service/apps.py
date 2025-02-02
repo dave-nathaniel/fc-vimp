@@ -22,7 +22,7 @@ def create_default_store(sender, **kwargs):
 class EgrnServiceConfig(AppConfig):
 	default_auto_field = 'django.db.models.BigAutoField'
 	name = 'egrn_service'
-	verbose_name = 'Goods Receipt Note'
+	verbose_name = '2. Goods Receipt Note'
 	
 	def ready(self):
 		create_default_store(sender=self)

@@ -58,7 +58,7 @@ class Signable(models.Model, metaclass=AbstractModelMeta):
 	def is_accepted(self):
 		'''
 			If it has not been rejected by any signatory, and all signatories have accepted, return True.
-        '''
+		'''
 		return self.is_rejected is False if self.is_completely_signed else False
 	
 	class Meta:
@@ -296,6 +296,10 @@ class Signature(models.Model):
 	def __str__(self):
 		actor = self.metadata.get('acting_as', '').upper()
 		return f"{actor}: {self.signer.username} on {self.signable} [{'ACCEPTED' if self.accepted else 'REJECTED'}]"
+	
+	class Meta:
+		verbose_name = "5.1 Signature"
+		verbose_name_plural = "5.1 Signatures"
 	
 @receiver(post_delete, sender=Signature)
 def delete_signature_hook(sender, instance, using, **kwargs):
