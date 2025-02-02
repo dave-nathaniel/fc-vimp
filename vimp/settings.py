@@ -72,9 +72,37 @@ INSTALLED_APPS = [
 JSON_EDITOR_JS = 'https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/8.6.4/jsoneditor.js'
 JSON_EDITOR_CSS = 'https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/8.6.4/jsoneditor.css'
 
+UNFOLD = {
+	"SITE_ICON": lambda request: "https://foodconceptsplc.com/wp-content/uploads/2019/10/FoodConcepts_Favicon.png",
+	"SITE_LOGO": lambda request: "https://foodconceptsplc.com/wp-content/uploads/2019/10/FoodConcepts_Logo-1.png",
+	"SITE_FAVICONS": [
+		{
+			"rel": "icon",
+			"sizes": "32x32",
+			"type": "image/svg+xml",
+			"href": lambda request: "https://foodconceptsplc.com/wp-content/uploads/2019/10/FoodConcepts_Favicon.png",
+		},
+	],
+	"COLORS": {
+		"primary": {
+			"50": "235 242 250",
+			"100": "199 217 240",
+			"200": "158 186 225",
+			"300": "117 154 210",
+			"400": "41 87 164",
+			"500": "76 123 195",
+			"600": "41 87 164",
+			"700": "33 70 131",
+			"800": "25 52 98",
+			"900": "16 35 66",
+			"950": "8 17 33",
+		},
+	},
+}
+
 Q_CLUSTER = {
-    'name': 'vimp_workers',
-    'orm': 'default',
+	'name': 'vimp_workers',
+	'orm': 'default',
 	'timeout': 120,  # seconds
 	'retry': 200,  # seconds
 	'ack_failures': False,
@@ -101,43 +129,43 @@ AUTHENTICATION_BACKENDS = (
 )
 
 AUTH_ADFS = {
-    'AUDIENCE': os.getenv('CLIENT_ID'),
-    'CLIENT_ID': os.getenv('CLIENT_ID'),
-    'CLIENT_SECRET': os.getenv('CLIENT_SECRET'),
-    'CLAIM_MAPPING': {'first_name': 'given_name',
-                      'last_name': 'family_name',
-                      'email': 'upn'},
-    'GROUPS_CLAIM': 'roles',
-    'MIRROR_GROUPS': True,
-    'USERNAME_CLAIM': 'upn',
-    'TENANT_ID': os.getenv('TENANT_ID'),
-    'RELYING_PARTY_ID': os.getenv('CLIENT_ID'),
-    'LOGIN_EXEMPT_URLS': [
-        '^api',
-	    '^admin'
-    ],
+	'AUDIENCE': os.getenv('CLIENT_ID'),
+	'CLIENT_ID': os.getenv('CLIENT_ID'),
+	'CLIENT_SECRET': os.getenv('CLIENT_SECRET'),
+	'CLAIM_MAPPING': {'first_name': 'given_name',
+					  'last_name': 'family_name',
+					  'email': 'upn'},
+	'GROUPS_CLAIM': 'roles',
+	'MIRROR_GROUPS': True,
+	'USERNAME_CLAIM': 'upn',
+	'TENANT_ID': os.getenv('TENANT_ID'),
+	'RELYING_PARTY_ID': os.getenv('CLIENT_ID'),
+	'LOGIN_EXEMPT_URLS': [
+		'^api',
+		'^admin'
+	],
 }
 
 LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'verbose': {
-            'format': '%(levelname)s %(asctime)s %(name)s %(message)s'
-        },
-    },
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
-            'formatter': 'verbose'
-        },
-    },
-    'loggers': {
-        'django_auth_adfs': {
-            'handlers': ['console'],
-            'level': 'WARNING',
-        },
-    },
+	'version': 1,
+	'disable_existing_loggers': False,
+	'formatters': {
+		'verbose': {
+			'format': '%(levelname)s %(asctime)s %(name)s %(message)s'
+		},
+	},
+	'handlers': {
+		'console': {
+			'class': 'logging.StreamHandler',
+			'formatter': 'verbose'
+		},
+	},
+	'loggers': {
+		'django_auth_adfs': {
+			'handlers': ['console'],
+			'level': 'WARNING',
+		},
+	},
 }
 
 SIMPLE_JWT = {
@@ -159,13 +187,13 @@ SIMPLE_JWT = {
 
 MIDDLEWARE = [
 	'django.middleware.security.SecurityMiddleware',
-    'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
-    'django.middleware.csrf.CsrfViewMiddleware',
-    'django.contrib.auth.middleware.AuthenticationMiddleware',
-    'django.contrib.messages.middleware.MessageMiddleware',
-    'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
+	'django.contrib.sessions.middleware.SessionMiddleware',
+	'django.middleware.common.CommonMiddleware',
+	'django.middleware.csrf.CsrfViewMiddleware',
+	'django.contrib.auth.middleware.AuthenticationMiddleware',
+	'django.contrib.messages.middleware.MessageMiddleware',
+	'django.middleware.clickjacking.XFrameOptionsMiddleware',
+	'corsheaders.middleware.CorsMiddleware',
 ]
 
 ROOT_URLCONF = 'vimp.urls'
@@ -193,14 +221,14 @@ WSGI_APPLICATION = 'vimp.wsgi.application'
 # https://docs.djangoproject.com/en/4.2/ref/settings/#databases
 
 DATABASES = {
-    'default': {
-        'ENGINE': os.getenv('DB_ENGINE'),
-        'NAME': os.getenv('DB_NAME'),
-        'USER': os.getenv('DB_USER'),
-        'PASSWORD': os.getenv('DB_PASSWORD'),
-        'HOST': os.getenv('DB_HOST'),
-        'PORT': os.getenv('DB_PORT'),
-    }
+	'default': {
+		'ENGINE': os.getenv('DB_ENGINE'),
+		'NAME': os.getenv('DB_NAME'),
+		'USER': os.getenv('DB_USER'),
+		'PASSWORD': os.getenv('DB_PASSWORD'),
+		'HOST': os.getenv('DB_HOST'),
+		'PORT': os.getenv('DB_PORT'),
+	}
 }
 
 CELERY_BROKER_URL = "memory://localhost"
