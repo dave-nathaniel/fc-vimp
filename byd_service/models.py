@@ -27,6 +27,9 @@ class ByDPostingStatus(models.Model):
     error_message = models.TextField(null=True, blank=True)
     # Additional fields for audit or tracking
     request_payload = models.JSONField(null=True, blank=True)
+    # Name of the task that triggered the posting
+    django_q_task_name = models.CharField(max_length=255, null=False, blank=False, default="vimp.tasks.create_grn_on_byd")
+    # Retry count for failed postings
     retry_count = models.PositiveIntegerField(default=0)
 
     def mark_success(self, response: dict):
@@ -61,7 +64,7 @@ class ByDPostingStatus(models.Model):
         verbose_name_plural = "6.1 Posting Reports"
 
 
-def get_or_create_byd_posting_status(instance, request_payload=None):
+def get_or_create_byd_posting_status(instance, request_payload=None, task_name=None):
     """
     Retrieve an existing ByDPostingStatus record or create a new one.
 
@@ -79,6 +82,7 @@ def get_or_create_byd_posting_status(instance, request_payload=None):
     posting_status, created = ByDPostingStatus.objects.get_or_create(
         content_type=content_type,
         object_id=obj_id,
+	    django_q_task_name=task_name,
         defaults={
             'status': 'pending',
             'request_payload': request_payload,

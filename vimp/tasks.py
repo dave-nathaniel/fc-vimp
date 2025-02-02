@@ -185,7 +185,7 @@ def create_grn_on_byd(grn: GoodsReceivedNote):
 		]
 	}
 	
-	status = get_or_create_byd_posting_status(grn, request_payload=payload)
+	status = get_or_create_byd_posting_status(grn, request_payload=payload, task_name='vimp.tasks.create_grn_on_byd')
 	
 	try:
 		response = rest_client.create_grn(payload)
@@ -238,7 +238,7 @@ def create_invoice_on_byd(invoice: Invoice):
 		]
 	}
 	
-	status = get_or_create_byd_posting_status(invoice, request_payload=payload)
+	status = get_or_create_byd_posting_status(invoice, request_payload=payload, task_name='vimp.tasks.create_invoice_on_byd')
 	
 	try:
 		response = rest_client.create_supplier_invoice(payload)# Mark as success
