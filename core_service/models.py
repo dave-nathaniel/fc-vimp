@@ -1,17 +1,18 @@
 import os
 import logging
-from dotenv import load_dotenv
-from django.db import models
-from django.contrib.auth.models import AbstractUser
-from django.conf import settings
-from django.core.mail import EmailMessage
-from django.core import signing
+
 import pyotp
 import hashlib, random
 from PIL import Image, ImageDraw, ImageFont
+from django_q.tasks import async_task
+from django.contrib.auth.hashers import make_password
+from django.db import models
+from django.contrib.auth.models import AbstractUser
+from django.conf import settings
+from django.core import signing
 from .services import send_sms
 from .helpers import base64_to_image
-from django_q.tasks import async_task
+from dotenv import load_dotenv
 
 
 load_dotenv()
@@ -38,8 +39,18 @@ class CustomUser(AbstractUser):
 		except signing.BadSignature:
 			raise ValueError(f"Unable to decode hash {self.secret}")
 	
+	def save(self, *args, **kwargs):
+		# Ensure the password is hashed before saving
+		if self.pk is None or not self.password.startswith('pbkdf2_sha256$'):
+			self.password = make_password(self.password)
+		super().save(*args, **kwargs)
+	
 	def __str__(self):
 		return f"{self.first_name} {self.last_name} ({self.email})"
+	
+	class Meta:
+		verbose_name = '4.1 User'
+		verbose_name_plural = '4.1 Users'
 
 
 class TempUser(models.Model):
@@ -110,6 +121,10 @@ class TempUser(models.Model):
 	
 	def __str__(self, ):
 		return f'{self.identifier}\'s {self.id_type}'
+	
+	class Meta:
+		verbose_name = '4.3 Temp User'
+		verbose_name_plural = '4.3 Temp Users'
 
 
 class VendorProfile(models.Model):
@@ -187,6 +202,10 @@ class VendorProfile(models.Model):
 		if self.user:
 			return f"{self.byd_internal_id} | {self.user.email}"
 		return f"{self.byd_internal_id}"
+	
+	class Meta:
+		verbose_name = '4.2 Vendor Profile'
+		verbose_name_plural = '4.2 Vendor Profiles'
 
 
 class LedgerAccount(models.Model):
