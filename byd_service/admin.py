@@ -60,7 +60,7 @@ class ByDPostingStatusAdmin(ModelAdmin):
 		
 		return format_html(
 			'<a class="bg-primary-600 border border-transparent font-medium px-3 py-2 rounded text-white" style="width: fit-content !important;" href="{}">Retry Failed</a>',
-			f"/admin/byd_service/bydpostingstatus/retry-failed-posting/"
+			f"/API/admin/byd_service/bydpostingstatus/retry-failed-posting/"
 		) if obj.status in ["failed"] and obj.retry_count < 10 else ""
 
 	retry_button.short_description = "Retry Posting"
@@ -77,7 +77,7 @@ class ByDPostingStatusAdmin(ModelAdmin):
 			logging.error(f"Error while retrying failed posting: {e}")
 			self.message_user(request, f"Error: {e}", messages.ERROR)
 
-		return redirect(request.META.get('HTTP_REFERER', '/admin/byd_service/bydpostingstatus/'))
+		return redirect(request.META.get('HTTP_REFERER', '/API/admin/byd_service/bydpostingstatus/'))
 
 	def get_urls(self):
 		"""
