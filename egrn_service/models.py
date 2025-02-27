@@ -343,12 +343,12 @@ class GoodsReceivedNote(models.Model):
 		async_task('vimp.tasks.post_to_icg', self, q_options={
 			'task_name': f'Post-GRN-{self.grn_number}-To-ICG-Inventory',
 		})
-		async_task('vimp.tasks.post_to_gl', {
-			'grn': self,
-			'action': 'receipt', # This must be one of either 'receipt' or 'invoice_approval'.
-		}, q_options={
-			'task_name': f'Post-GRN-{self.grn_number}-To-GL',
-		})
+		# async_task('vimp.tasks.post_to_gl', {
+		# 	'grn': self,
+		# 	'action': 'receipt', # This must be one of either 'receipt' or 'invoice_approval'.
+		# }, q_options={
+		# 	'task_name': f'Post-GRN-{self.grn_number}-To-GL',
+		# })
 		async_task('vimp.tasks.send_grn_to_email', self, q_options={
 			'task_name': f'Email-GRN-{self.grn_number}-To-Vendor',
 		})

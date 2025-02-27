@@ -118,9 +118,6 @@ class Invoice(Signable):
 	
 	def on_workflow_start(self) -> bool:
 		from .serializers import InvoiceSerializer
-		async_task('vimp.tasks.create_invoice_on_byd', self, q_options={
-			'task_name': f'Create-Invoice-{self.id}-on-ByD',
-		})
 		# Asynchronously send an email notification to the first signatory.
 		serialized = InvoiceSerializer(self).data
 		async_task('vimp.tasks.notify_approval_required', serialized, q_options={
@@ -140,12 +137,15 @@ class Invoice(Signable):
 	def on_workflow_end(self) -> bool:
 		# Complete the ledger posting process for the GRN if the invoice is accepted.
 		if self.is_accepted:
-			async_task('vimp.tasks.post_to_gl', {
-				'grn': self.grn,
-				'action': 'invoice_approval', # This must be one of either 'receipt' or 'invoice_approval'.
-			}, q_options={
-				'task_name': f'Approved-Invoice-GL-Entry-For-GRN-{self.grn.grn_number}',
+			async_task('vimp.tasks.create_invoice_on_byd', self, q_options={
+				'task_name': f'Create-Invoice-{self.id}-on-ByD',
 			})
+			# async_task('vimp.tasks.post_to_gl', {
+			# 	'grn': self.grn,
+			# 	'action': 'invoice_approval', # This must be one of either 'receipt' or 'invoice_approval'.
+			# }, q_options={
+			# 	'task_name': f'Approved-Invoice-GL-Entry-For-GRN-{self.grn.grn_number}',
+			# })
 		return True
 	
 	def set_identity(self):
