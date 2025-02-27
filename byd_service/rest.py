@@ -41,7 +41,7 @@ class RESTServices:
 		'''
 		headers = {
 			'Accept': 'application/json',
-            'Content-Type': 'application/json'
+			'Content-Type': 'application/json'
 		}
 		headers.update(self.auth_headers)
 		return self.session.post(*args, **kwargs, headers=headers, auth=self.auth)
@@ -123,8 +123,8 @@ class RESTServices:
 	# GRN Creation
 	def create_grn(self, grn_data: dict) -> dict:
 		'''
-            Create a Goods and Service Acknowledgement (GRN) in SAP ByD
-        '''
+			Create a Goods and Service Acknowledgement (GRN) in SAP ByD
+		'''
 		
 		# Action URL for creating a Goods and Service Acknowledgement (GRN) in SAP ByD
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khgoodsandserviceacknowledgement/GoodsAndServiceAcknowledgementCollection"
@@ -141,22 +141,72 @@ class RESTServices:
 		except Exception as e:
 			raise Exception(f"Error creating GRN: {e}")
 	
+	def post_grn(self, object_id: str) -> dict:
+		'''
+			Post a Goods and Service Acknowledgement (GRN) in SAP ByD
+		'''
+		# Action URL for creating a Goods and Service Acknowledgement (GRN) in SAP ByD
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khgoodsandserviceacknowledgement/SubmitForRelease?ObjectID='{object_id}'"
+		try:
+			# Make a request with HTTP Basic Authentication
+			response = self.__post__(action_url)
+			if response.status_code == 200:
+				logging.info(f"GRN successfully POSTED.")
+				return response.json()
+			else:
+				logging.error(f"Failed to create GRN: {response.text}")
+				raise Exception(f"Error from SAP: {response.text}")
+		except Exception as e:
+			raise Exception(f"Error creating GRN: {e}")
+	
 	# Supplier Invoice Creation
 	def create_supplier_invoice(self, invoice_data: dict) -> dict:
 		'''
-            Create a Supplier Invoice in SAP ByD
-        '''
+			Create a Supplier Invoice in SAP ByD
+		'''
 		# Action URL for creating a Goods and Service Acknowledgement (GRN) in SAP ByD
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/SupplierInvoiceCollection"
-		
+		calculate_gross = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/CalculateGrossAmount?ObjectID="
+		calculate_tax = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/CalculateTaxAmount?ObjectID="
 		try:
 			# Make a request with HTTP Basic Authentication
 			response = self.__post__(action_url, json=invoice_data)
 			if response.status_code == 201:
+				response_data = response.json()
 				logging.info(f"Invoice successfully created in SAP ByD.")
+				object_id = response_data.get("d", {}).get("results", {}).get("ObjectID")
+				# Calculate gross amount
+				gross_url = f"{calculate_gross}'{object_id}'"
+				gross_response = self.__post__(gross_url)
+				if gross_response.status_code == 200:
+					# Calculate tax amount
+					tax_url = f"{calculate_tax}'{object_id}'"
+					tax_response = self.__post__(tax_url)
+				else:
+					logging.error(f"Failed to calculate gross amount: {gross_response.text}")
+					raise Exception(f"Error from SAP: {gross_response.text}")
+					
 				return response.json()
 			else:
 				logging.error(f"Failed to create Invoice: {response.text}")
 				raise Exception(f"{response.text}")
 		except Exception as e:
 			raise Exception(f"{e}")
+			
+	def post_invoice(self, object_id: str) -> dict:
+		'''
+			Post a Goods and Service Acknowledgement (Invoice) in SAP ByD
+		'''
+		# Action URL for creating a Goods and Service Acknowledgement (Invoice) in SAP ByD
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/FinishDataEntryProcessing?ObjectID='{object_id}'"
+		try:
+			# Make a request with HTTP Basic Authentication
+			response = self.__post__(action_url)
+			if response.status_code == 200:
+				logging.info(f"Invoice successfully POSTED.")
+				return response.json()
+			else:
+				logging.error(f"Failed to create Invoice: {response.text}")
+				raise Exception(f"Error from SAP: {response.text}")
+		except Exception as e:
+			raise Exception(f"Error creating Invoice: {e}")

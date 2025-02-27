@@ -167,6 +167,7 @@ def create_grn_on_byd(grn: GoodsReceivedNote):
 	# Initialize the REST client
 	rest_client = byd_rest.RESTServices()
 	payload = {
+		"GSR_Integration_KUT": "YES",
 		"Item": [
 			{
 				"ProductID": line_item.purchase_order_line_item.product_id,
@@ -189,6 +190,13 @@ def create_grn_on_byd(grn: GoodsReceivedNote):
 	
 	try:
 		response = rest_client.create_grn(payload)
+		# Get the object ID from the response and post the GRN
+		try:
+			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+			response = rest_client.post_grn(object_id)
+		except Exception as e:
+			raise Exception(f"Error posting GRN {grn.grn_number}: {e}")
+		# Mark as success
 		status.mark_success(
 			response.get("d", {})
 			.get("results", {})
@@ -207,6 +215,7 @@ def create_invoice_on_byd(invoice: Invoice):
 	# Initialize the REST client
 	rest_client = byd_rest.RESTServices()
 	payload = {
+		"Inv_Integration_KUT": "YES",
 		"TypeCode": "004",
 		"DataOriginTypeCode": "1",
 		"ItemsGrossAmountIndicator": True,
@@ -242,6 +251,13 @@ def create_invoice_on_byd(invoice: Invoice):
 	
 	try:
 		response = rest_client.create_supplier_invoice(payload)# Mark as success
+		# Get the object ID from the response and post the GRN
+		try:
+			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+			response = rest_client.post_invoice(object_id)
+		except Exception as e:
+			raise Exception(f"Error posting Invoice: {e}")
+		# Mark as success
 		status.mark_success(
 			response.get("d", {})
 			.get("results", {})
@@ -390,7 +406,7 @@ def send_vendor_setup_email(args):
 
 if __name__ == "__main__":
 	# egrn = GoodsReceivedNote.objects.get(id=1318)
-	# create_grn_on_byd(egrn)
+	# print(create_grn_on_byd(egrn))
 	# invoice = Invoice.objects.get(id=323)
-	# create_invoice_on_byd(invoice)
-	...
+	# print(create_invoice_on_byd(invoice))
+	# ...
