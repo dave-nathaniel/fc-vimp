@@ -179,6 +179,74 @@ def get_all_grns(request, ):
 		return APIResponse(f"No GRNs found for your stores: {', '.join([s.store_name for s in user_stores])}", status.HTTP_404_NOT_FOUND)
 	except Exception as e:
 		return APIResponse(f"Internal Error: {e}", status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([CombinedAuthentication])
+def filter_grns(request, ):
+	'''
+		Get GRNs based on the given filters, if any.
+		The filters are:
+			- 'po_id': Filter GRNs by purchase order ID
+			- 'date_created': Filter GRNs by creation date
+			- 'delivery_stores': Filter GRNs by delivery store ID
+			- 'delivery_status_code': Filter GRNs by delivery status code
+			- 'invoice_status_code': Filter GRNs by invoice status code
+			- 'start_date': Filter GRNs by start date
+			- 'end_date': Filter GRNs by end date
+			- 'vendor_internal_id': Filter GRNs by vendor internal ID (from ByD)
+	'''
+	# These are filters that we can use directly on the queryset
+	django_filters = {}
+	# These are filters that we need to manually apply on the queryset after fetching the base queryset
+	custom_filters = {
+		'delivery_status_code': None,
+		'invoice_status_code': None,
+	}
+	
+	for key in request.query_params:
+		# Remove unnecessary filter keys
+		if key in custom_filters.keys():
+			custom_filters[key] = request.query_params.get(key)
+		# Convert the filter to the appropriate data type or the appropriate field name
+		if key == 'date_created':
+			django_filters['created'] = django_filters.pop(key)
+		if key == 'start_date':
+			django_filters['created__gte'] = django_filters.pop(key)
+		if key == 'end_date':
+			django_filters['created__lte'] = django_filters.pop(key)
+		if key in ['po_id']:
+			django_filters[f'purchase_order__{key}'] = django_filters.pop(key)
+		if key == 'vendor_internal_id':
+			django_filters['purchase_order__vendor__byd_internal_id'] = django_filters.pop(key)
+		if key == 'delivery_stores':
+			filter_stores = django_filters.pop(key)
+			django_filters['line_items__purchase_order_line_item__delivery_store__byd_cost_center_code__in'] = filter_stores.split(',')
+			
+	try:
+		# Apply filters to get the base queryset
+		grns = GoodsReceivedNote.objects.filter(**django_filters).order_by('-id')
+		if grns.exists():
+			# Paginate the results
+			paginated = paginator.paginate_queryset(grns, request)
+			# Serialize the paginated queryset
+			serialized_data = GoodsReceivedNoteSerializer(paginated, many=True, context={'request': request}).data
+			# Apply custom filtering after serialization (since 'delivery_status_code' comes from the serializer)
+			if custom_filters:
+				# Use only custom filters that are not None
+				custom_filters = {k: v for k, v in custom_filters.items() if v is not None}
+				if 'delivery_status_code' in custom_filters:
+					# Filter based on serialized data
+					serialized_data = [grn for grn in serialized_data if grn.get('purchase_order', {}).get('delivery_status_code') == custom_filters.get('delivery_status_code')]
+				if 'invoice_status_code' in custom_filters:
+					# Filter based on serialized data
+					serialized_data = [grn for grn in serialized_data if grn.get('invoice_status_code') == custom_filters.get('invoice_status_code')]
+			
+			# Return the filtered, paginated response
+			return paginator.get_paginated_response(serialized_data)
+		return APIResponse("No GRNs found for the specified criteria.", status=status.HTTP_404_NOT_FOUND)
+	except Exception as e:
+		return APIResponse(f"Internal Error: {e}", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 	
 
 @api_view(['GET'])
