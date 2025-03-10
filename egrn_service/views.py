@@ -210,17 +210,17 @@ def filter_grns(request, ):
 			custom_filters[key] = request.query_params.get(key)
 		# Convert the filter to the appropriate data type or the appropriate field name
 		if key == 'date_created':
-			django_filters['created'] = django_filters.pop(key)
+			django_filters['created'] = request.query_params.get(key)
 		if key == 'start_date':
-			django_filters['created__gte'] = django_filters.pop(key)
+			django_filters['created__gte'] = request.query_params.get(key)
 		if key == 'end_date':
-			django_filters['created__lte'] = django_filters.pop(key)
+			django_filters['created__lte'] = request.query_params.get(key)
 		if key in ['po_id']:
-			django_filters[f'purchase_order__{key}'] = django_filters.pop(key)
+			django_filters[f'purchase_order__{key}'] = request.query_params.get(key)
 		if key == 'vendor_internal_id':
-			django_filters['purchase_order__vendor__byd_internal_id'] = django_filters.pop(key)
+			django_filters['purchase_order__vendor__byd_internal_id'] = request.query_params.get(key)
 		if key == 'delivery_stores':
-			filter_stores = django_filters.pop(key)
+			filter_stores = request.query_params.get(key)
 			django_filters['line_items__purchase_order_line_item__delivery_store__byd_cost_center_code__in'] = filter_stores.split(',')
 			
 	try:
