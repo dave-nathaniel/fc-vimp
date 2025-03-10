@@ -17,7 +17,7 @@ def set_app_label(model_admin, app_label="app_settings"):
 		model=model_admin._meta.model_name,
 		app_label=app_label
 	)
-	# Define the default Django model permissions
+	# Define the default Django model permissions 
 	default_permissions = ['add', 'change', 'delete', 'view']
 	# Create the default Django model permissions for the new app_label and model_name
 	for perm in default_permissions:
