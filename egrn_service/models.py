@@ -352,8 +352,8 @@ class GoodsReceivedNote(models.Model):
 		async_task('vimp.tasks.send_grn_to_email', self, q_options={
 			'task_name': f'Email-GRN-{self.grn_number}-To-Vendor',
 		})
-		async_task('vimp.tasks.create_grn_on_byd', self, q_options={
-			'task_name': f'Create-GRN-{self.grn_number}-On-ByD',
+		async_task('vimp.tasks.create_inbound_delivery_notification_on_byd', self, q_options={
+			'task_name': f'Create-Inbound-Notif-{self.grn_number}-On-ByD',
 		})
 		# Return the created Goods Received Note
 		return self

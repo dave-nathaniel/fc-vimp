@@ -210,3 +210,39 @@ class RESTServices:
 				raise Exception(f"Error from SAP: {response.text}")
 		except Exception as e:
 			raise Exception(f"Error creating Invoice: {e}")
+	
+	def create_inbound_delivery_notification(self, delivery_data: dict) -> dict:
+		'''
+			Create an Inbound Delivery Notification in SAP ByD
+		'''
+		# Action URL for creating an Inbound Delivery Notification in SAP ByD
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khinbounddelivery/InboundDeliveryCollection"
+		try:
+			# Make a request with HTTP Basic Authentication
+			response = self.__post__(action_url, json=delivery_data)
+			if response.status_code == 201:
+				logging.info(f"Delivery Notification successfully created in SAP ByD.")
+				return response.json()
+			else:
+				logging.error(f"Failed to create Delivery Notification: {response.text}")
+				raise Exception(f"Error from SAP: {response.text}")
+		except Exception as e:
+			raise Exception(f"Error creating Delivery Notification: {e}")
+	
+	def post_delivery_notification(self, object_id: str) -> dict:
+		'''
+			Post an Inbound Delivery Notification in SAP ByD
+		'''
+		# Action URL for creating an Inbound Delivery Notification in SAP ByD
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khinbounddelivery/PostGoodsReceipt?ObjectID='{object_id}'"
+		try:
+			# Make a request with HTTP Basic Authentication
+			response = self.__post__(action_url)
+			if response.status_code == 200:
+				logging.info(f"Delivery Notification successfully POSTED.")
+				return response.json()
+			else:
+				logging.error(f"Failed to create Delivery Notification: {response.text}")
+				raise Exception(f"Error from SAP: {response.text}")
+		except Exception as e:
+			raise Exception(f"Error creating Delivery Notification: {e}")
