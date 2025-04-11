@@ -5,6 +5,8 @@ import os
 # django.setup()
 
 import logging
+import random
+import string
 from pprint import pprint
 from copy import deepcopy
 from dotenv import load_dotenv
@@ -272,6 +274,75 @@ def create_invoice_on_byd(invoice: Invoice):
 	return True
 	
 
+def create_inbound_delivery_notification_on_byd(grn: GoodsReceivedNote):
+	# Initialize the REST client
+	rest_client = byd_rest.RESTServices()
+	# Generate the notification ID by combining the GRN number two random alphabets
+	notification_id = f"{grn.grn_number}{''.join(random.choices(string.ascii_uppercase, k=2))}"
+	payload = {
+		"ID": notification_id,
+		"ProcessingTypeCode": "SD",
+		"Item": [
+			{
+				"ID": line_item.purchase_order_line_item.metadata["ID"],
+				"TypeCode": "14",
+				"ProductID": line_item.purchase_order_line_item.product_id,
+				"ItemDeliveryQuantity":{
+					"Quantity": str(float(line_item.quantity_received)),
+					"UnitCode": line_item.purchase_order_line_item.metadata["QuantityUnitCode"],
+				},
+				"ItemPurchaseOrderReference": {
+					"ID": str(line_item.purchase_order_line_item.purchase_order.po_id),
+					"ItemID": line_item.purchase_order_line_item.metadata["ID"],
+					"ItemTypeCode": line_item.purchase_order_line_item.metadata["ItemTypeCode"],
+					"RelationshipRoleCode": "1"
+				},
+				"ItemSellerParty": {
+					"PartyID": line_item.grn.purchase_order.vendor.byd_internal_id
+				},
+				"ItemInboundDeliveryRequestReference": {
+					"ID": notification_id,
+					"ItemID": line_item.purchase_order_line_item.metadata["ID"],
+					"ItemTypeCode": "14",
+					"TypeCode": "59",
+					"RelationshipRoleCode": "1"
+				}
+			} for line_item in grn.line_items.all()
+		],
+		"SenderParty":{
+			"PartyID": grn.purchase_order.vendor.byd_internal_id
+		},
+		"ShipToParty": {
+			# TODO: Make this configuration dynamic
+			"PartyID": "FC-0001"
+		}
+	}
+	
+	status = get_or_create_byd_posting_status(grn, request_payload=payload, task_name='vimp.tasks.create_inbound_delivery_notification_on_byd')
+	
+	try:
+		response = rest_client.create_inbound_delivery_notification(payload)
+		# Get the object ID from the response and post the GRN
+		try:
+			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+			response = rest_client.post_delivery_notification(object_id)
+		except Exception as e:
+			raise Exception(f"Error posting GRN {grn.grn_number}: {e}")
+		# Mark as success
+		status.mark_success(
+			response.get("d", {})
+			.get("results", {})
+		)
+	except Exception as e:
+		logging.error(f"Error creating GRN {grn.grn_number}: {e}")
+		# Mark as failure
+		status.mark_failure(e)
+		# Increment retry count
+		status.increment_retry()
+		return False
+	return True
+	
+
 def notify_approval_required(signable):
 	'''
 		Send an email notification to the users in the pending role who need to approve the given
@@ -406,7 +477,7 @@ def send_vendor_setup_email(args):
 
 if __name__ == "__main__":
 	# egrn = GoodsReceivedNote.objects.get(id=1318)
-	# print(create_grn_on_byd(egrn))
+	# print(create_inbound_delivery_notification_on_byd(egrn))
 	# invoice = Invoice.objects.get(id=323)
 	# print(create_invoice_on_byd(invoice))
 	...
