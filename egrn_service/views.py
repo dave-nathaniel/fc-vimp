@@ -12,6 +12,7 @@ from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import Q
 
 from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem, ProductConfiguration, Store
 from .serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer, PurchaseOrderSerializer
@@ -221,11 +222,23 @@ def filter_grns(request, ):
 			django_filters['purchase_order__vendor__byd_internal_id'] = request.query_params.get(key)
 		if key == 'delivery_stores':
 			filter_stores = request.query_params.get(key)
-			django_filters['line_items__purchase_order_line_item__delivery_store__byd_cost_center_code__in'] = filter_stores.split(',')
-			
+			# Split the store names and build a Q object for icontains lookup
+			store_names = [name.strip() for name in filter_stores.split(',') if name.strip()]
+			if store_names:
+				store_query = Q()
+				for name in store_names:
+					store_query |= Q(line_items__purchase_order_line_item__delivery_store__store_name__icontains=name)
+				# Save the Q object for later use
+				django_filters['__custom_store_name_q'] = store_query
+
 	try:
+		# Extract and remove the custom Q object if present
+		store_name_q = django_filters.pop('__custom_store_name_q', None)
 		# Apply filters to get the base queryset
-		grns = GoodsReceivedNote.objects.filter(**django_filters).order_by('-id')
+		grns = GoodsReceivedNote.objects.filter(**django_filters)
+		if store_name_q:
+			grns = grns.filter(store_name_q)
+		grns = grns.order_by('-id')
 		if grns.exists():
 			# Paginate the results
 			paginated = paginator.paginate_queryset(grns, request)
