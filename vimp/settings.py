@@ -103,10 +103,15 @@ UNFOLD = {
 Q_CLUSTER = {
 	'name': 'vimp_workers',
 	'orm': 'default',
-	'timeout': 120,  # seconds
-	'retry': 200,  # seconds
-	'ack_failures': False,
+	'timeout': 300,  # 5 minutes timeout
+	'retry': 360,   # 6 minutes retry (must be larger than timeout)
+	'ack_failures': True,  # Acknowledge failures to prevent retries on permanent failures
 	'max_attempts': 3,
+	'save_limit': 1000,  # Increase save limit for task results
+	'queue_limit': 500,  # Limit queue size to prevent memory issues
+	'catch_up': False,  # Don't catch up on missed schedules
+	'guard_cycle': 5,  # Check cluster health every 5 seconds
+	'log_level': 'INFO', # Log level for the cluster
 }
 
 REST_FRAMEWORK = {

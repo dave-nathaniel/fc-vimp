@@ -2,4 +2,6 @@
 *.pyc
 __pycache__/
 .idea/
+.vscode/
+
 keytest.html
