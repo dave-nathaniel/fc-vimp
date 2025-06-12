@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 from requests import get, post
 from pathlib import Path
 from dotenv import load_dotenv
@@ -10,7 +11,7 @@ from .authenticate import SAPAuthentication
 dotenv_path = os.path.join(Path(__file__).resolve().parent.parent, '.env')
 load_dotenv(dotenv_path)
 
-logger = logging.getLogger()
+logger = logging.getLogger(__name__)
 
 # Initialize the authentication class
 sap_auth = SAPAuthentication()
@@ -29,16 +30,54 @@ class RESTServices:
 	# Initialize the SAP token to None initially
 	auth = None
 	
-	def __init__(self, ):
-		pass
+	def __init__(self):
+		self.last_token_refresh = 0
+		self.token_refresh_interval = 300  # 5 minutes
+	
+	def refresh_csrf_token(self):
+		"""Refresh the CSRF token if it's been more than 5 minutes since the last refresh"""
+		current_time = time.time()
+		if current_time - self.last_token_refresh > self.token_refresh_interval:
+			try:
+				action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khpurchaseorder/"
+				headers = {"x-csrf-token": "fetch"}
+				response = self.session.get(action_url, auth=self.auth, headers=headers, timeout=30)
+				if response.status_code == 200:
+					self.auth_headers['x-csrf-token'] = response.headers.get('x-csrf-token', '')
+					self.last_token_refresh = current_time
+					logger.info("CSRF token refreshed successfully")
+				else:
+					logger.error(f"Failed to refresh CSRF token. Status code: {response.status_code}")
+					raise Exception(f"Failed to refresh CSRF token. Status code: {response.status_code}")
+			except Exception as e:
+				logger.error(f"Error refreshing CSRF token: {str(e)}")
+				raise
+	
+	def check_object_lock(self, object_id: str, object_type: str) -> bool:
+		"""Check if an object is locked in SAP ByD"""
+		try:
+			if object_type == 'delivery':
+				check_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khinbounddelivery/InboundDeliveryCollection('{object_id}')"
+			elif object_type == 'invoice':
+				check_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/SupplierInvoiceCollection('{object_id}')"
+			else:
+				raise ValueError(f"Unsupported object type: {object_type}")
+			
+			response = self.session.get(check_url, auth=self.auth, timeout=30)
+			return response.status_code == 423  # 423 means object is locked
+		except Exception as e:
+			logger.error(f"Error checking object lock: {str(e)}")
+			return False
 	
 	def __get__(self, *args, **kwargs):
+		self.refresh_csrf_token()
 		return self.session.get(*args, **kwargs, auth=self.auth)
 	
 	def __post__(self, *args, **kwargs):
 		'''
 			This method makes a POST request to the given URL with CSRF protection
 		'''
+		self.refresh_csrf_token()
 		headers = {
 			'Accept': 'application/json',
 			'Content-Type': 'application/json'
@@ -164,85 +203,104 @@ class RESTServices:
 		'''
 			Create a Supplier Invoice in SAP ByD
 		'''
-		# Action URL for creating a Goods and Service Acknowledgement (GRN) in SAP ByD
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/SupplierInvoiceCollection"
 		calculate_gross = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/CalculateGrossAmount?ObjectID="
 		calculate_tax = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/CalculateTaxAmount?ObjectID="
 		try:
-			# Make a request with HTTP Basic Authentication
+			self.refresh_csrf_token()
 			response = self.__post__(action_url, json=invoice_data)
 			if response.status_code == 201:
 				response_data = response.json()
-				logging.info(f"Invoice successfully created in SAP ByD.")
+				logger.info(f"Invoice successfully created in SAP ByD.")
 				object_id = response_data.get("d", {}).get("results", {}).get("ObjectID")
+				
+				# Add a small delay before calculations
+				time.sleep(2)
+				
 				# Calculate gross amount
 				gross_url = f"{calculate_gross}'{object_id}'"
 				gross_response = self.__post__(gross_url)
 				if gross_response.status_code == 200:
+					# Add a small delay before tax calculation
+					time.sleep(2)
 					# Calculate tax amount
 					tax_url = f"{calculate_tax}'{object_id}'"
 					tax_response = self.__post__(tax_url)
+					if tax_response.status_code != 200:
+						logger.error(f"Failed to calculate tax amount: {tax_response.text}")
+						raise Exception(f"Error from SAP: {tax_response.text}")
 				else:
-					logging.error(f"Failed to calculate gross amount: {gross_response.text}")
+					logger.error(f"Failed to calculate gross amount: {gross_response.text}")
 					raise Exception(f"Error from SAP: {gross_response.text}")
 					
 				return response.json()
 			else:
-				logging.error(f"Failed to create Invoice: {response.text}")
+				logger.error(f"Failed to create Invoice: {response.text}")
 				raise Exception(f"{response.text}")
 		except Exception as e:
-			raise Exception(f"{e}")
+			logger.error(f"Error creating Invoice: {str(e)}")
+			raise
 			
 	def post_invoice(self, object_id: str) -> dict:
 		'''
-			Post a Goods and Service Acknowledgement (Invoice) in SAP ByD
+			Post a Supplier Invoice in SAP ByD
 		'''
-		# Action URL for creating a Goods and Service Acknowledgement (Invoice) in SAP ByD
+		# Check if object is locked
+		if self.check_object_lock(object_id, 'invoice'):
+			logger.warning(f"Invoice {object_id} is locked. Will retry later.")
+			raise Exception("Object is locked")
+			
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/FinishDataEntryProcessing?ObjectID='{object_id}'"
 		try:
-			# Make a request with HTTP Basic Authentication
+			self.refresh_csrf_token()
 			response = self.__post__(action_url)
 			if response.status_code == 200:
-				logging.info(f"Invoice successfully POSTED.")
+				logger.info(f"Invoice successfully POSTED.")
 				return response.json()
 			else:
-				logging.error(f"Failed to create Invoice: {response.text}")
+				logger.error(f"Failed to post Invoice: {response.text}")
 				raise Exception(f"Error from SAP: {response.text}")
 		except Exception as e:
-			raise Exception(f"Error creating Invoice: {e}")
+			logger.error(f"Error posting Invoice: {str(e)}")
+			raise
 	
 	def create_inbound_delivery_notification(self, delivery_data: dict) -> dict:
 		'''
 			Create an Inbound Delivery Notification in SAP ByD
 		'''
-		# Action URL for creating an Inbound Delivery Notification in SAP ByD
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khinbounddelivery/InboundDeliveryCollection"
 		try:
-			# Make a request with HTTP Basic Authentication
+			self.refresh_csrf_token()
 			response = self.__post__(action_url, json=delivery_data)
 			if response.status_code == 201:
-				logging.info(f"Delivery Notification successfully created in SAP ByD.")
+				logger.info(f"Delivery Notification successfully created in SAP ByD.")
 				return response.json()
 			else:
-				logging.error(f"Failed to create Delivery Notification: {response.text}")
+				logger.error(f"Failed to create Delivery Notification: {response.text}")
 				raise Exception(f"Error from SAP: {response.text}")
 		except Exception as e:
-			raise Exception(f"Error creating Delivery Notification: {e}")
+			logger.error(f"Error creating Delivery Notification: {str(e)}")
+			raise
 	
 	def post_delivery_notification(self, object_id: str) -> dict:
 		'''
 			Post an Inbound Delivery Notification in SAP ByD
 		'''
-		# Action URL for creating an Inbound Delivery Notification in SAP ByD
+		# Check if object is locked
+		if self.check_object_lock(object_id, 'delivery'):
+			logger.warning(f"Delivery Notification {object_id} is locked. Will retry later.")
+			raise Exception("Object is locked")
+			
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khinbounddelivery/PostGoodsReceipt?ObjectID='{object_id}'"
 		try:
-			# Make a request with HTTP Basic Authentication
+			self.refresh_csrf_token()
 			response = self.__post__(action_url)
 			if response.status_code == 200:
-				logging.info(f"Delivery Notification successfully POSTED.")
+				logger.info(f"Delivery Notification successfully POSTED.")
 				return response.json()
 			else:
-				logging.error(f"Failed to create Delivery Notification: {response.text}")
+				logger.error(f"Failed to post Delivery Notification: {response.text}")
 				raise Exception(f"Error from SAP: {response.text}")
 		except Exception as e:
-			raise Exception(f"Error creating Delivery Notification: {e}")
+			logger.error(f"Error posting Delivery Notification: {str(e)}")
+			raise
