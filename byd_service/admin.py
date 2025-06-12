@@ -55,26 +55,51 @@ class ByDPostingStatusAdmin(ModelAdmin):
 
 	def retry_button(self, obj):
 		"""
-			Adds a 'Retry Failed Postings' button to the Django Admin interface.
+			Adds a 'Retry' button for individual failed postings.
 		"""
-		
-		return format_html(
-			'<a class="bg-primary-600 border border-transparent font-medium px-3 py-2 rounded text-white" style="width: fit-content !important;" href="{}">Retry Failed</a>',
-			f"/API/admin/byd_service/bydpostingstatus/retry-failed-posting/"
-		) if obj.status in ["failed"] and obj.retry_count < 10 else ""
+		if obj.status == "failed" and obj.retry_count < 5:
+			return format_html(
+				'<a class="bg-primary-600 border border-transparent font-medium px-3 py-2 rounded text-white" '
+				'style="width: fit-content !important;" href="{}">Retry</a>',
+				f"/API/admin/byd_service/bydpostingstatus/{obj.id}/retry-posting/"
+			)
+		return ""
 
 	retry_button.short_description = "Retry Posting"
 	retry_button.allow_tags = True
 
-	def retry_failed_posting_view(self, request):
+	def retry_all_failed_posting_view(self, request):
 		"""
-			Custom Django Admin view to trigger retrying failed Posting.
+			Custom Django Admin view to trigger retrying all failed postings.
 		"""
 		try:
-			retry_failed_posting()
-			self.message_user(request, "Retry process started successfully!", messages.SUCCESS)
+			if retry_failed_posting():
+				self.message_user(request, "Retry process started for all failed postings!", messages.SUCCESS)
+			else:
+				self.message_user(request, "No failed postings to retry.", messages.INFO)
 		except Exception as e:
-			logging.error(f"Error while retrying failed posting: {e}")
+			logging.error(f"Error while retrying all failed postings: {e}")
+			self.message_user(request, f"Error: {e}", messages.ERROR)
+
+		return redirect(request.META.get('HTTP_REFERER', '/API/admin/byd_service/bydpostingstatus/'))
+
+	def retry_single_posting_view(self, request, posting_id):
+		"""
+			Custom Django Admin view to retry a single failed posting.
+		"""
+		try:
+			posting = ByDPostingStatus.objects.get(id=posting_id)
+			if posting.status == "failed" and posting.retry_count < 5:
+				async_task(posting.django_q_task_name, posting.related_object, q_options={
+					'task_name': f'[Retry {posting.retry_count + 1}] Posting-{posting.related_object.id}-on-ByD',
+				})
+				self.message_user(request, f"Retry process started for posting {posting_id}!", messages.SUCCESS)
+			else:
+				self.message_user(request, "This posting cannot be retried.", messages.WARNING)
+		except ByDPostingStatus.DoesNotExist:
+			self.message_user(request, "Posting not found.", messages.ERROR)
+		except Exception as e:
+			logging.error(f"Error while retrying posting {posting_id}: {e}")
 			self.message_user(request, f"Error: {e}", messages.ERROR)
 
 		return redirect(request.META.get('HTTP_REFERER', '/API/admin/byd_service/bydpostingstatus/'))
@@ -85,19 +110,30 @@ class ByDPostingStatusAdmin(ModelAdmin):
 		"""
 		urls = super().get_urls()
 		custom_urls = [
-			path('retry-failed-posting/', self.admin_site.admin_view(self.retry_failed_posting_view),
-				 name='retry-failed-posting'),
+			path('retry-all-failed/', self.admin_site.admin_view(self.retry_all_failed_posting_view),
+				 name='retry-all-failed-posting'),
+			path('<int:posting_id>/retry-posting/', self.admin_site.admin_view(self.retry_single_posting_view),
+				 name='retry-single-posting'),
 		]
 		return custom_urls + urls
 
+	def changelist_view(self, request, extra_context=None):
+		"""
+			Add a custom button to the changelist view.
+		"""
+		extra_context = extra_context or {}
+		extra_context['show_retry_all_button'] = True
+		extra_context['retry_all_url'] = '/API/admin/byd_service/bydpostingstatus/retry-all-failed/'
+		return super().changelist_view(request, extra_context=extra_context)
+
 	def retry_selected_posting(self, request, queryset):
 		"""
-			Custom admin action to retry selected posting.
+			Custom admin action to retry selected postings.
 		"""
-		fails = queryset.filter(status="failed")
+		fails = queryset.filter(status="failed", retry_count__lt=5)
 
 		if not fails.exists():
-			self.message_user(request, "No failed posting selected.", messages.WARNING)
+			self.message_user(request, "No eligible failed postings selected.", messages.WARNING)
 			return
 
 		for failed in fails:
@@ -105,12 +141,12 @@ class ByDPostingStatusAdmin(ModelAdmin):
 				async_task(failed.django_q_task_name, failed.related_object, q_options={
 					'task_name': f'[Retry {failed.retry_count + 1}] {failed.related_object.id}-on-ByD',
 				})
-				self.message_user(request, "Retry process started successfully!", messages.SUCCESS)
 			except Exception as e:
-				logging.error(f"Error while retrying failed postings: {e}")
-				self.message_user(request, f"Error: {e}", messages.ERROR)
+				logging.error(f"Error while retrying posting {failed.id}: {e}")
+				self.message_user(request, f"Error retrying posting {failed.id}: {e}", messages.ERROR)
+				continue
 
-		self.message_user(request, "Selected posting retried successfully!", messages.SUCCESS)
+		self.message_user(request, f"Retry process started for {fails.count()} selected postings!", messages.SUCCESS)
 
 	retry_selected_posting.short_description = "Retry selected failed postings"
 
