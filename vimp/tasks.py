@@ -364,11 +364,14 @@ def create_invoice_on_byd(invoice: Invoice):
 			"TypeCode": "004",
 			"DataOriginTypeCode": "1",
 			"ItemsGrossAmountIndicator": True,
-			"Invoicedescription": invoice.description,
+			"InvoiceDescription": invoice.description if not invoice.description == 'Anything' else ', '.join(
+				str(line_item.po_line_item.metadata.get("Description", line_item.po_line_item.product_id))
+				for line_item in invoice.invoice_line_items.all()
+			),
 			"InvoiceDate": byd_util.format_datetime_to_iso8601(invoice.date_created),
 			"ExternalReference": {
 				"BusinessTransactionDocumentRelationshipRoleCode": "7",
-				"ID": str(invoice.external_document_id),
+				"ID": str(invoice.external_document_id) if not invoice.external_document_id == '919191' else f'{invoice.purchase_order.vendor.byd_internal_id}-{invoice.id}',
 				"TypeCode": "28",
 			},
 			"SellerParty": {
@@ -391,6 +394,8 @@ def create_invoice_on_byd(invoice: Invoice):
 				for line_item in invoice.invoice_line_items.all()
 			]
 		}
+
+		# return payload
 		
 		status = get_or_create_byd_posting_status(invoice, request_payload=payload, task_name='vimp.tasks.create_invoice_on_byd')
 		
@@ -567,6 +572,7 @@ def send_vendor_setup_email(args):
 
 
 if __name__ == "__main__":
+	# from pprint import pprint
 	# egrn = GoodsReceivedNote.objects.get(id=1318)
 	# print(create_inbound_delivery_notification_on_byd(egrn))
 	# invoice = Invoice.objects.get(id=323)
