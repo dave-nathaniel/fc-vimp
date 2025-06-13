@@ -364,14 +364,14 @@ def create_invoice_on_byd(invoice: Invoice):
 			"TypeCode": "004",
 			"DataOriginTypeCode": "1",
 			"ItemsGrossAmountIndicator": True,
-			"InvoiceDescription": invoice.description if not invoice.description == 'Anything' else ', '.join(
+			"InvoiceDescription": invoice.description if invoice.description else ', '.join(
 				str(line_item.po_line_item.metadata.get("Description", line_item.po_line_item.product_id))
 				for line_item in invoice.invoice_line_items.all()
 			),
 			"InvoiceDate": byd_util.format_datetime_to_iso8601(invoice.date_created),
 			"ExternalReference": {
 				"BusinessTransactionDocumentRelationshipRoleCode": "7",
-				"ID": str(invoice.external_document_id) if not invoice.external_document_id == '919191' else f'{invoice.purchase_order.vendor.byd_internal_id}-{invoice.id}',
+				"ID": str(invoice.external_document_id) if invoice.external_document_id else f'{invoice.purchase_order.vendor.byd_internal_id}-{invoice.id}',
 				"TypeCode": "28",
 			},
 			"SellerParty": {
