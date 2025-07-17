@@ -12,8 +12,10 @@ dotenv_path = os.path.join(Path(__file__).resolve().parent.parent, '.env')
 load_dotenv(dotenv_path)
 
 # Initialize the authentication class
-sap_auth = SAPAuthentication()
-
+sap_auth = SAPAuthentication(
+	username=os.getenv('SAP_COMM_USER'),
+	password=os.getenv('SAP_COMM_PASS')
+)
 
 class SOAPServices:
 
