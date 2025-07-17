@@ -1,23 +1,23 @@
 import os, sys
 import logging
 from time import sleep
-from pprint import pprint
 from .soap import SOAPServices
+from .util import ordinal
+from pathlib import Path
 
+# Constants
+MAX_RETRY_POSTING = 3
+soap_endpoint = 'https://my350679.sapbydesign.com/sap/bc/srt/scs/sap/manageaccountingentryin'
+wsdl_path = os.path.join(Path(__file__).resolve().parent.parent, 'manageaccountingentryin.wsdl')
+
+# Initialize the SOAP client and authenticate with SAP
 try:
 	ss = SOAPServices()
 	ss.connect()
+	# Access the services (operations) provided by the SOAP endpoint
+	soap_client = ss.client.create_service("{http://sap.com/xi/AP/FinancialAccounting/Global}binding", soap_endpoint)
 except Exception as e:
 	raise e
-
-MAX_RETRY_POSTING = 3
-
-def ordinal(number):
-	if 10 <= number % 100 <= 20:
-		suffix = 'th'
-	else:
-		suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(number % 10, 'th')
-	return str(number) + suffix
 
 
 def format_entry(debit_credit_indicator, profit_centre_id, gl_code, amount):
@@ -56,7 +56,7 @@ def post_to_byd(date, items=[]):
 	"""
 	def send_request(request):
 		try:
-			response = ss.soap_client.MaintainAsBundle(BasicMessageHeader="", AccountingEntry=request)
+			response = soap_client.MaintainAsBundle(BasicMessageHeader="", AccountingEntry=request)
 
 			if response['Log'] is not None:
 				logging.error(f"The following issues were raised by SAP ByD: ")
