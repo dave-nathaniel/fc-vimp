@@ -8,7 +8,7 @@ from pathlib import Path
 # Constants
 MAX_RETRY_POSTING = 3
 soap_endpoint = 'https://my350679.sapbydesign.com/sap/bc/srt/scs/sap/manageaccountingentryin'
-wsdl_path = os.path.join(Path(__file__).resolve().parent.parent, 'manageaccountingentryin.wsdl')
+wsdl_path = os.path.join(Path(__file__).resolve().parent, 'manageaccountingentryin.wsdl')
 
 # Initialize the SOAP client and authenticate with SAP
 try:

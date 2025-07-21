@@ -11,10 +11,6 @@ from .authenticate import SAPAuthentication
 dotenv_path = os.path.join(Path(__file__).resolve().parent.parent, '.env')
 load_dotenv(dotenv_path)
 
-# Initialize the authentication class
-sap_auth = SAPAuthentication()
-
-
 class SOAPServices:
 
 	def __init__(self, ):
@@ -27,6 +23,13 @@ class SOAPServices:
 	def connect(self, ):
 		transport = Transport(timeout=5, operation_timeout=3)
 		client = Client(self.wsdl_path, transport=transport)
+		sap_auth = self._sap_authentication()
 		client.transport.session.auth = sap_auth.http_authentication()
-
 		self.client = client
+	
+	def _sap_authentication(self, ):
+		# Return the authentication class
+		return SAPAuthentication(
+			username=os.getenv('SAP_COMM_USER'),
+			password=os.getenv('SAP_COMM_PASS')
+		)

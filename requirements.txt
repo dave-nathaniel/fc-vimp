@@ -57,3 +57,5 @@ urllib3==2.2.0
 vine==5.1.0
 wcwidth==0.2.13
 zeep==4.3.1
+pandas==2.3.1
+openpyxl==3.1.5

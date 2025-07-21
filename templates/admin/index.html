@@ -1,0 +1,60 @@
+{% extends 'admin/base.html' %}
+
+{% load i18n %}
+
+{% block breadcrumbs %}{% endblock %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block branding %}
+    <h1 id="site-name">
+        <a href="{% url 'admin:index' %}">
+            {{ site_header|default:_('Django administration') }}
+        </a>
+    </h1>
+{% endblock %}
+
+{% block content %}
+    <style>
+        .justify-evenly {
+            justify-content: space-evenly !important;
+        }
+    </style>
+    <div class="flex flex-col lg:flex-row lg:gap-8 mb-6">
+        <div class="flex-grow">
+            <div>
+                <div id="recent-actions-module" class="module bg-base-50 rounded p-3 dark:bg-base-800">
+                    <h1 class="mb-3 font-semibold text-base-900 dark:text-base-100 border-b border-gray-200 pb-2">
+                        {% translate 'Quick Actions' %}
+                    </h1>
+    
+                    <div class="flex justify-center gap-4 py-2">
+                        <a href="{% url 'admin:app_settings_storeproxy_changelist' %}" class="flex flex-col items-center px-4 py-3 hover:bg-blue-100 rounded-lg shadow transition font-medium text-sm w-40 break-words text-center justify-evenly">
+                            <span class="material-symbols-outlined text-primary-600 pb-2" style="font-size: 2rem;">
+                                store
+                            </span>
+                            Store Config
+                        </a>
+                        <a href="/inventory-tools/bulk-inventory-update/" target="_blank" rel="noopener" class="flex flex-col items-center px-4 py-3 hover:bg-blue-100 rounded-lg shadow transition font-medium text-sm w-40 break-words text-center justify-evenly">
+                            <span class="material-symbols-outlined text-orange-700 pb-2" style="font-size: 2rem;">
+                                inventory
+                            </span>
+                            Bulk Stock Update
+                        </a>
+                        <a href="{{ env.SAP_URL }}" target="_blank" rel="noopener" class="flex flex-col items-center px-4 py-3 hover:bg-blue-100 rounded-lg shadow transition font-medium text-sm w-40 break-words text-center justify-evenly">
+                            <img src="{{ env.SAP_URL }}/sap/public/ap/ui/repository/SAP_UI/HTMLOBERON5/resources/sap/b/themes/sap_belize/img/Common/branding_logo.png" alt="SAP Portal" class="pb-2" width="100" height="100">
+                            SAP Portal
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="flex flex-col lg:flex-row lg:gap-8">
+        <div class="flex-grow">
+            {% include "unfold/helpers/app_list_default.html" %}
+        </div>
+
+        {% include "unfold/helpers/history.html" %}
+    </div>
+{% endblock %}
