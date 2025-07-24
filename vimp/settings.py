@@ -67,6 +67,7 @@ INSTALLED_APPS = [
 	'approval_service',
 	'byd_service',
 	'app_settings',
+	'transfer_service',
 ]
 
 JSON_EDITOR_JS = 'https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/8.6.4/jsoneditor.js'
