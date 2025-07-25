@@ -382,24 +382,284 @@ class RESTServices:
 			logger.error(f"Error updating sales order status: {str(e)}")
 			return False
 	
-	def create_goods_issue(self, goods_issue_data: dict) -> dict:
+	def create_goods_issue_document(self, goods_issue_data: dict) -> dict:
 		'''
-			Create a goods issue in SAP ByD for store-to-store transfers
+			Create a goods issue document in SAP ByD with proper validation and structure
+			Enhanced version with comprehensive validation and error handling
 		'''
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khgoodsissue/GoodsIssueCollection"
 		
 		try:
+			# Validate required fields for goods issue document
+			required_fields = ["TypeCode", "PostingDate", "DocumentDate", "Item"]
+			for field in required_fields:
+				if field not in goods_issue_data:
+					raise ValueError(f"Required field '{field}' missing from goods issue data")
+			
+			# Validate TypeCode is valid for store-to-store transfers
+			valid_type_codes = ["01", "02", "03"]  # Common goods issue type codes
+			if goods_issue_data["TypeCode"] not in valid_type_codes:
+				raise ValueError(f"Invalid TypeCode '{goods_issue_data['TypeCode']}'. Must be one of: {valid_type_codes}")
+			
+			# Validate date format
+			import datetime
+			try:
+				datetime.datetime.strptime(goods_issue_data["PostingDate"], "%Y-%m-%d")
+				datetime.datetime.strptime(goods_issue_data["DocumentDate"], "%Y-%m-%d")
+			except ValueError as e:
+				raise ValueError(f"Invalid date format. Use YYYY-MM-DD: {e}")
+			
+			# Validate line items
+			if not goods_issue_data["Item"] or not isinstance(goods_issue_data["Item"], list):
+				raise ValueError("Goods issue must contain at least one line item")
+			
+			for i, item in enumerate(goods_issue_data["Item"]):
+				# Validate required item fields
+				required_item_fields = ["ProductID", "Quantity", "QuantityUnitCode", "SourceLogisticsAreaID"]
+				for field in required_item_fields:
+					if field not in item:
+						raise ValueError(f"Required field '{field}' missing from line item {i+1}")
+				
+				# Validate quantity is positive
+				try:
+					quantity = float(item["Quantity"])
+					if quantity <= 0:
+						raise ValueError(f"Quantity must be positive for line item {i+1}: {quantity}")
+				except (ValueError, TypeError):
+					raise ValueError(f"Invalid quantity format for line item {i+1}: {item['Quantity']}")
+				
+				# Validate ProductID is not empty
+				if not item["ProductID"].strip():
+					raise ValueError(f"ProductID cannot be empty for line item {i+1}")
+				
+				# Validate SourceLogisticsAreaID is not empty
+				if not item["SourceLogisticsAreaID"].strip():
+					raise ValueError(f"SourceLogisticsAreaID cannot be empty for line item {i+1}")
+			
+			# Add default values for optional fields
+			if "Note" not in goods_issue_data:
+				goods_issue_data["Note"] = "Store-to-store transfer goods issue"
+			
+			# Ensure proper data types
+			for item in goods_issue_data["Item"]:
+				item["Quantity"] = str(item["Quantity"])  # Ensure quantity is string
+				if "UnitPrice" in item:
+					item["UnitPrice"] = str(item["UnitPrice"])
+			
+			logger.info(f"Creating goods issue document in SAP ByD with {len(goods_issue_data['Item'])} line items")
+			
 			self.refresh_csrf_token()
 			response = self.__post__(action_url, json=goods_issue_data)
+			
 			if response.status_code == 201:
-				logger.info(f"Goods issue successfully created in SAP ByD.")
-				return response.json()
+				logger.info(f"Goods issue document successfully created in SAP ByD.")
+				response_data = response.json()
+				
+				# Validate response structure
+				if not response_data or "d" not in response_data:
+					raise Exception("Invalid response structure from SAP ByD")
+				
+				results = response_data.get("d", {}).get("results")
+				if not results or "ObjectID" not in results:
+					raise Exception("ObjectID not found in SAP ByD response")
+				
+				logger.info(f"Goods issue document created with ObjectID: {results['ObjectID']}")
+				return response_data
+				
 			else:
-				logger.error(f"Failed to create goods issue: {response.text}")
-				raise Exception(f"Error from SAP: {response.text}")
-		except Exception as e:
-			logger.error(f"Error creating goods issue: {str(e)}")
+				error_msg = f"Failed to create goods issue document: {response.text}"
+				logger.error(error_msg)
+				
+				# Parse SAP error response for better error handling
+				try:
+					error_response = response.json()
+					if "error" in error_response:
+						sap_error = error_response["error"]
+						if "message" in sap_error:
+							error_msg = f"SAP ByD Error: {sap_error['message']['value']}"
+				except:
+					pass  # Use original error message if parsing fails
+				
+				raise Exception(error_msg)
+				
+		except ValueError as e:
+			logger.error(f"Validation error creating goods issue document: {str(e)}")
 			raise
+		except Exception as e:
+			logger.error(f"Error creating goods issue document: {str(e)}")
+			raise
+	
+	def create_goods_issue(self, goods_issue_data: dict) -> dict:
+		'''
+			Create a goods issue in SAP ByD for store-to-store transfers
+			Wrapper method that calls create_goods_issue_document for backward compatibility
+		'''
+		return self.create_goods_issue_document(goods_issue_data)
+	
+	def validate_goods_issue_requirements(self, goods_issue_data: dict) -> dict:
+		'''
+			Validate SAP ByD goods issue requirements and return validation results
+		'''
+		validation_results = {
+			"is_valid": True,
+			"errors": [],
+			"warnings": []
+		}
+		
+		try:
+			# Check required header fields
+			required_header_fields = {
+				"TypeCode": "Goods issue type code",
+				"PostingDate": "Posting date",
+				"DocumentDate": "Document date",
+				"Item": "Line items"
+			}
+			
+			for field, description in required_header_fields.items():
+				if field not in goods_issue_data or not goods_issue_data[field]:
+					validation_results["errors"].append(f"Missing required field: {description} ({field})")
+					validation_results["is_valid"] = False
+			
+			# Validate TypeCode
+			if "TypeCode" in goods_issue_data:
+				valid_type_codes = ["01", "02", "03", "04", "05"]
+				if goods_issue_data["TypeCode"] not in valid_type_codes:
+					validation_results["errors"].append(f"Invalid TypeCode '{goods_issue_data['TypeCode']}'. Valid codes: {valid_type_codes}")
+					validation_results["is_valid"] = False
+			
+			# Validate dates
+			import datetime
+			for date_field in ["PostingDate", "DocumentDate"]:
+				if date_field in goods_issue_data:
+					try:
+						datetime.datetime.strptime(goods_issue_data[date_field], "%Y-%m-%d")
+					except ValueError:
+						validation_results["errors"].append(f"Invalid {date_field} format. Use YYYY-MM-DD")
+						validation_results["is_valid"] = False
+			
+			# Validate line items
+			if "Item" in goods_issue_data:
+				if not isinstance(goods_issue_data["Item"], list):
+					validation_results["errors"].append("Item field must be a list")
+					validation_results["is_valid"] = False
+				elif len(goods_issue_data["Item"]) == 0:
+					validation_results["errors"].append("At least one line item is required")
+					validation_results["is_valid"] = False
+				else:
+					# Validate each line item
+					for i, item in enumerate(goods_issue_data["Item"]):
+						item_errors = self._validate_goods_issue_line_item(item, i + 1)
+						validation_results["errors"].extend(item_errors)
+						if item_errors:
+							validation_results["is_valid"] = False
+			
+			# Check for warnings
+			if "Note" not in goods_issue_data or not goods_issue_data["Note"]:
+				validation_results["warnings"].append("Note field is empty - consider adding description")
+			
+			# Validate total quantities
+			if "Item" in goods_issue_data and isinstance(goods_issue_data["Item"], list):
+				total_items = len(goods_issue_data["Item"])
+				if total_items > 100:
+					validation_results["warnings"].append(f"Large number of line items ({total_items}) may impact performance")
+			
+		except Exception as e:
+			validation_results["errors"].append(f"Validation error: {str(e)}")
+			validation_results["is_valid"] = False
+		
+		return validation_results
+	
+	def _validate_goods_issue_line_item(self, item: dict, item_number: int) -> list:
+		'''
+			Validate individual goods issue line item
+		'''
+		errors = []
+		
+		# Required fields for line items
+		required_fields = {
+			"ProductID": "Product ID",
+			"Quantity": "Quantity",
+			"QuantityUnitCode": "Unit of measurement",
+			"SourceLogisticsAreaID": "Source logistics area"
+		}
+		
+		for field, description in required_fields.items():
+			if field not in item or not str(item[field]).strip():
+				errors.append(f"Line item {item_number}: Missing {description} ({field})")
+		
+		# Validate quantity
+		if "Quantity" in item:
+			try:
+				quantity = float(item["Quantity"])
+				if quantity <= 0:
+					errors.append(f"Line item {item_number}: Quantity must be positive ({quantity})")
+				if quantity > 999999:
+					errors.append(f"Line item {item_number}: Quantity too large ({quantity})")
+			except (ValueError, TypeError):
+				errors.append(f"Line item {item_number}: Invalid quantity format ({item['Quantity']})")
+		
+		# Validate ProductID format
+		if "ProductID" in item:
+			product_id = str(item["ProductID"]).strip()
+			if len(product_id) > 40:
+				errors.append(f"Line item {item_number}: ProductID too long (max 40 characters)")
+			if not product_id.replace("-", "").replace("_", "").isalnum():
+				errors.append(f"Line item {item_number}: ProductID contains invalid characters")
+		
+		# Validate QuantityUnitCode
+		if "QuantityUnitCode" in item:
+			unit_code = str(item["QuantityUnitCode"]).strip()
+			if len(unit_code) > 3:
+				errors.append(f"Line item {item_number}: QuantityUnitCode too long (max 3 characters)")
+		
+		# Validate SourceLogisticsAreaID
+		if "SourceLogisticsAreaID" in item:
+			source_area = str(item["SourceLogisticsAreaID"]).strip()
+			if len(source_area) > 20:
+				errors.append(f"Line item {item_number}: SourceLogisticsAreaID too long (max 20 characters)")
+		
+		return errors
+	
+	def prepare_goods_issue_document(self, transfer_data: dict) -> dict:
+		'''
+			Prepare goods issue document data in the correct SAP ByD format
+		'''
+		try:
+			# Extract required information
+			goods_issue_data = {
+				"TypeCode": transfer_data.get("type_code", "01"),  # Default to standard goods issue
+				"PostingDate": transfer_data.get("posting_date"),
+				"DocumentDate": transfer_data.get("document_date", transfer_data.get("posting_date")),
+				"Note": transfer_data.get("note", "Store-to-store transfer goods issue"),
+				"Item": []
+			}
+			
+			# Process line items
+			line_items = transfer_data.get("line_items", [])
+			for item in line_items:
+				line_item_data = {
+					"ProductID": item.get("product_id"),
+					"Quantity": str(item.get("quantity", 0)),
+					"QuantityUnitCode": item.get("unit_of_measurement", "EA"),
+					"SourceLogisticsAreaID": item.get("source_logistics_area"),
+					"Note": item.get("note", "")
+				}
+				
+				# Add optional fields if present
+				if "sales_order_id" in item:
+					line_item_data["SalesOrderID"] = str(item["sales_order_id"])
+				if "sales_order_item_id" in item:
+					line_item_data["SalesOrderItemID"] = item["sales_order_item_id"]
+				if "unit_price" in item:
+					line_item_data["UnitPrice"] = str(item["unit_price"])
+				
+				goods_issue_data["Item"].append(line_item_data)
+			
+			return goods_issue_data
+			
+		except Exception as e:
+			logger.error(f"Error preparing goods issue document: {str(e)}")
+			raise ValueError(f"Failed to prepare goods issue document: {str(e)}")
 	
 	def post_goods_issue(self, object_id: str) -> dict:
 		'''

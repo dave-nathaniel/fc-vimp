@@ -3237,3 +3237,836 @@ class SAPDocumentLinkingTest(TestCase):
         self.sales_order.refresh_from_db()
         self.assertIn('goods_issue_linked', self.sales_order.metadata)
         self.assertFalse(self.sales_order.metadata['goods_issue_linked'])
+
+
+class SAPByDGoodsIssueDocumentTest(TestCase):
+    """
+    Tests for SAP ByD goods issue document creation functionality
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        from byd_service.rest import RESTServices
+        
+        self.byd_service = RESTServices()
+        
+        # Sample valid goods issue data
+        self.valid_goods_issue_data = {
+            "TypeCode": "01",
+            "PostingDate": "2024-01-15",
+            "DocumentDate": "2024-01-15",
+            "Note": "Store-to-store transfer goods issue - GI-12345",
+            "Item": [
+                {
+                    "ProductID": "PROD001",
+                    "Quantity": "10.000",
+                    "QuantityUnitCode": "EA",
+                    "SourceLogisticsAreaID": "SRC001",
+                    "SalesOrderID": "12345",
+                    "SalesOrderItemID": "ITEM001",
+                    "Note": "Transfer to Destination Store"
+                },
+                {
+                    "ProductID": "PROD002",
+                    "Quantity": "5.000",
+                    "QuantityUnitCode": "EA",
+                    "SourceLogisticsAreaID": "SRC001",
+                    "SalesOrderID": "12345",
+                    "SalesOrderItemID": "ITEM002",
+                    "Note": "Transfer to Destination Store"
+                }
+            ]
+        }
+        
+        # Sample SAP ByD response
+        self.sample_sap_response = {
+            "d": {
+                "results": {
+                    "ObjectID": "GI123456789",
+                    "TypeCode": "01",
+                    "PostingDate": "2024-01-15",
+                    "DocumentDate": "2024-01-15",
+                    "Note": "Store-to-store transfer goods issue - GI-12345"
+                }
+            }
+        }
+    
+    @patch('byd_service.rest.RESTServices.refresh_csrf_token')
+    @patch('byd_service.rest.RESTServices.session')
+    def test_create_goods_issue_document_success(self, mock_session, mock_refresh_token):
+        """Test successful goods issue document creation"""
+        # Mock successful response
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = self.sample_sap_response
+        mock_session.post.return_value = mock_response
+        
+        result = self.byd_service.create_goods_issue_document(self.valid_goods_issue_data)
+        
+        # Verify response
+        self.assertEqual(result, self.sample_sap_response)
+        
+        # Verify method calls
+        mock_refresh_token.assert_called_once()
+        mock_session.post.assert_called_once()
+        
+        # Verify the call was made with correct URL and data
+        call_args = mock_session.post.call_args
+        self.assertIn('khgoodsissue/GoodsIssueCollection', call_args[0][0])
+    
+    def test_create_goods_issue_document_missing_required_fields(self):
+        """Test validation fails for missing required fields"""
+        # Test missing TypeCode
+        data = self.valid_goods_issue_data.copy()
+        del data["TypeCode"]
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Required field 'TypeCode' missing", str(context.exception))
+        
+        # Test missing PostingDate
+        data = self.valid_goods_issue_data.copy()
+        del data["PostingDate"]
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Required field 'PostingDate' missing", str(context.exception))
+        
+        # Test missing DocumentDate
+        data = self.valid_goods_issue_data.copy()
+        del data["DocumentDate"]
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Required field 'DocumentDate' missing", str(context.exception))
+        
+        # Test missing Item
+        data = self.valid_goods_issue_data.copy()
+        del data["Item"]
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Required field 'Item' missing", str(context.exception))
+    
+    def test_create_goods_issue_document_invalid_type_code(self):
+        """Test validation fails for invalid TypeCode"""
+        data = self.valid_goods_issue_data.copy()
+        data["TypeCode"] = "99"  # Invalid type code
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Invalid TypeCode '99'", str(context.exception))
+    
+    def test_create_goods_issue_document_invalid_date_format(self):
+        """Test validation fails for invalid date format"""
+        data = self.valid_goods_issue_data.copy()
+        data["PostingDate"] = "2024/01/15"  # Invalid format
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Invalid date format", str(context.exception))
+        
+        data = self.valid_goods_issue_data.copy()
+        data["DocumentDate"] = "invalid-date"
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Invalid date format", str(context.exception))
+    
+    def test_create_goods_issue_document_empty_line_items(self):
+        """Test validation fails for empty line items"""
+        data = self.valid_goods_issue_data.copy()
+        data["Item"] = []
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("must contain at least one line item", str(context.exception))
+        
+        data["Item"] = None
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("must contain at least one line item", str(context.exception))
+    
+    def test_create_goods_issue_document_invalid_line_item_fields(self):
+        """Test validation fails for invalid line item fields"""
+        data = self.valid_goods_issue_data.copy()
+        
+        # Test missing ProductID
+        data["Item"][0] = {
+            "Quantity": "10.000",
+            "QuantityUnitCode": "EA",
+            "SourceLogisticsAreaID": "SRC001"
+        }
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Required field 'ProductID' missing from line item 1", str(context.exception))
+        
+        # Test missing Quantity
+        data = self.valid_goods_issue_data.copy()
+        del data["Item"][0]["Quantity"]
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Required field 'Quantity' missing from line item 1", str(context.exception))
+        
+        # Test missing QuantityUnitCode
+        data = self.valid_goods_issue_data.copy()
+        del data["Item"][0]["QuantityUnitCode"]
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Required field 'QuantityUnitCode' missing from line item 1", str(context.exception))
+        
+        # Test missing SourceLogisticsAreaID
+        data = self.valid_goods_issue_data.copy()
+        del data["Item"][0]["SourceLogisticsAreaID"]
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Required field 'SourceLogisticsAreaID' missing from line item 1", str(context.exception))
+    
+    def test_create_goods_issue_document_invalid_quantity(self):
+        """Test validation fails for invalid quantities"""
+        data = self.valid_goods_issue_data.copy()
+        
+        # Test negative quantity
+        data["Item"][0]["Quantity"] = "-5.0"
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Quantity must be positive for line item 1", str(context.exception))
+        
+        # Test zero quantity
+        data["Item"][0]["Quantity"] = "0"
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Quantity must be positive for line item 1", str(context.exception))
+        
+        # Test invalid quantity format
+        data["Item"][0]["Quantity"] = "invalid"
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("Invalid quantity format for line item 1", str(context.exception))
+    
+    def test_create_goods_issue_document_empty_product_id(self):
+        """Test validation fails for empty ProductID"""
+        data = self.valid_goods_issue_data.copy()
+        data["Item"][0]["ProductID"] = ""
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("ProductID cannot be empty for line item 1", str(context.exception))
+        
+        data["Item"][0]["ProductID"] = "   "  # Whitespace only
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("ProductID cannot be empty for line item 1", str(context.exception))
+    
+    def test_create_goods_issue_document_empty_source_logistics_area(self):
+        """Test validation fails for empty SourceLogisticsAreaID"""
+        data = self.valid_goods_issue_data.copy()
+        data["Item"][0]["SourceLogisticsAreaID"] = ""
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.create_goods_issue_document(data)
+        self.assertIn("SourceLogisticsAreaID cannot be empty for line item 1", str(context.exception))
+    
+    def test_create_goods_issue_document_adds_default_note(self):
+        """Test that default note is added when missing"""
+        data = self.valid_goods_issue_data.copy()
+        del data["Note"]
+        
+        with patch('byd_service.rest.RESTServices.refresh_csrf_token'):
+            with patch('byd_service.rest.RESTServices.session') as mock_session:
+                mock_response = Mock()
+                mock_response.status_code = 201
+                mock_response.json.return_value = self.sample_sap_response
+                mock_session.post.return_value = mock_response
+                
+                self.byd_service.create_goods_issue_document(data)
+                
+                # Verify default note was added
+                call_args = mock_session.post.call_args
+                posted_data = call_args[1]['json']
+                self.assertEqual(posted_data["Note"], "Store-to-store transfer goods issue")
+    
+    def test_create_goods_issue_document_ensures_string_quantities(self):
+        """Test that quantities are converted to strings"""
+        data = self.valid_goods_issue_data.copy()
+        data["Item"][0]["Quantity"] = 10.5  # Numeric value
+        
+        with patch('byd_service.rest.RESTServices.refresh_csrf_token'):
+            with patch('byd_service.rest.RESTServices.session') as mock_session:
+                mock_response = Mock()
+                mock_response.status_code = 201
+                mock_response.json.return_value = self.sample_sap_response
+                mock_session.post.return_value = mock_response
+                
+                self.byd_service.create_goods_issue_document(data)
+                
+                # Verify quantity was converted to string
+                call_args = mock_session.post.call_args
+                posted_data = call_args[1]['json']
+                self.assertEqual(posted_data["Item"][0]["Quantity"], "10.5")
+                self.assertIsInstance(posted_data["Item"][0]["Quantity"], str)
+    
+    @patch('byd_service.rest.RESTServices.refresh_csrf_token')
+    @patch('byd_service.rest.RESTServices.session')
+    def test_create_goods_issue_document_sap_error_response(self, mock_session, mock_refresh_token):
+        """Test handling of SAP ByD error responses"""
+        # Mock error response
+        mock_response = Mock()
+        mock_response.status_code = 400
+        mock_response.text = "SAP ByD validation error"
+        mock_response.json.return_value = {
+            "error": {
+                "message": {
+                    "value": "Invalid product ID"
+                }
+            }
+        }
+        mock_session.post.return_value = mock_response
+        
+        with self.assertRaises(Exception) as context:
+            self.byd_service.create_goods_issue_document(self.valid_goods_issue_data)
+        
+        self.assertIn("SAP ByD Error: Invalid product ID", str(context.exception))
+    
+    @patch('byd_service.rest.RESTServices.refresh_csrf_token')
+    @patch('byd_service.rest.RESTServices.session')
+    def test_create_goods_issue_document_invalid_response_structure(self, mock_session, mock_refresh_token):
+        """Test handling of invalid response structure"""
+        # Mock response with missing ObjectID
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {
+            "d": {
+                "results": {
+                    "TypeCode": "01"
+                    # Missing ObjectID
+                }
+            }
+        }
+        mock_session.post.return_value = mock_response
+        
+        with self.assertRaises(Exception) as context:
+            self.byd_service.create_goods_issue_document(self.valid_goods_issue_data)
+        
+        self.assertIn("ObjectID not found in SAP ByD response", str(context.exception))
+    
+    @patch('byd_service.rest.RESTServices.refresh_csrf_token')
+    @patch('byd_service.rest.RESTServices.session')
+    def test_create_goods_issue_document_network_error(self, mock_session, mock_refresh_token):
+        """Test handling of network errors"""
+        mock_session.post.side_effect = Exception("Connection timeout")
+        
+        with self.assertRaises(Exception) as context:
+            self.byd_service.create_goods_issue_document(self.valid_goods_issue_data)
+        
+        self.assertIn("Connection timeout", str(context.exception))
+
+
+class SAPByDGoodsIssueValidationTest(TestCase):
+    """
+    Tests for SAP ByD goods issue validation functionality
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        from byd_service.rest import RESTServices
+        
+        self.byd_service = RESTServices()
+        
+        # Sample valid goods issue data
+        self.valid_goods_issue_data = {
+            "TypeCode": "01",
+            "PostingDate": "2024-01-15",
+            "DocumentDate": "2024-01-15",
+            "Note": "Store-to-store transfer goods issue",
+            "Item": [
+                {
+                    "ProductID": "PROD001",
+                    "Quantity": "10.000",
+                    "QuantityUnitCode": "EA",
+                    "SourceLogisticsAreaID": "SRC001"
+                }
+            ]
+        }
+    
+    def test_validate_goods_issue_requirements_success(self):
+        """Test successful validation of goods issue requirements"""
+        result = self.byd_service.validate_goods_issue_requirements(self.valid_goods_issue_data)
+        
+        self.assertTrue(result["is_valid"])
+        self.assertEqual(len(result["errors"]), 0)
+        self.assertEqual(len(result["warnings"]), 0)
+    
+    def test_validate_goods_issue_requirements_missing_header_fields(self):
+        """Test validation fails for missing header fields"""
+        data = self.valid_goods_issue_data.copy()
+        del data["TypeCode"]
+        del data["PostingDate"]
+        
+        result = self.byd_service.validate_goods_issue_requirements(data)
+        
+        self.assertFalse(result["is_valid"])
+        self.assertGreater(len(result["errors"]), 0)
+        
+        error_messages = " ".join(result["errors"])
+        self.assertIn("Goods issue type code", error_messages)
+        self.assertIn("Posting date", error_messages)
+    
+    def test_validate_goods_issue_requirements_invalid_type_code(self):
+        """Test validation fails for invalid TypeCode"""
+        data = self.valid_goods_issue_data.copy()
+        data["TypeCode"] = "99"
+        
+        result = self.byd_service.validate_goods_issue_requirements(data)
+        
+        self.assertFalse(result["is_valid"])
+        self.assertTrue(any("Invalid TypeCode" in error for error in result["errors"]))
+    
+    def test_validate_goods_issue_requirements_invalid_dates(self):
+        """Test validation fails for invalid date formats"""
+        data = self.valid_goods_issue_data.copy()
+        data["PostingDate"] = "2024/01/15"
+        data["DocumentDate"] = "invalid-date"
+        
+        result = self.byd_service.validate_goods_issue_requirements(data)
+        
+        self.assertFalse(result["is_valid"])
+        self.assertGreater(len(result["errors"]), 0)
+        
+        error_messages = " ".join(result["errors"])
+        self.assertIn("Invalid PostingDate format", error_messages)
+        self.assertIn("Invalid DocumentDate format", error_messages)
+    
+    def test_validate_goods_issue_requirements_invalid_items(self):
+        """Test validation fails for invalid line items"""
+        data = self.valid_goods_issue_data.copy()
+        data["Item"] = "not a list"
+        
+        result = self.byd_service.validate_goods_issue_requirements(data)
+        
+        self.assertFalse(result["is_valid"])
+        self.assertTrue(any("Item field must be a list" in error for error in result["errors"]))
+        
+        # Test empty items
+        data["Item"] = []
+        
+        result = self.byd_service.validate_goods_issue_requirements(data)
+        
+        self.assertFalse(result["is_valid"])
+        self.assertTrue(any("At least one line item is required" in error for error in result["errors"]))
+    
+    def test_validate_goods_issue_requirements_warnings(self):
+        """Test validation generates appropriate warnings"""
+        data = self.valid_goods_issue_data.copy()
+        del data["Note"]
+        
+        # Add many line items to trigger warning
+        data["Item"] = [data["Item"][0].copy() for _ in range(101)]
+        
+        result = self.byd_service.validate_goods_issue_requirements(data)
+        
+        self.assertTrue(result["is_valid"])  # Should still be valid
+        self.assertGreater(len(result["warnings"]), 0)
+        
+        warning_messages = " ".join(result["warnings"])
+        self.assertIn("Note field is empty", warning_messages)
+        self.assertIn("Large number of line items", warning_messages)
+    
+    def test_validate_line_item_missing_fields(self):
+        """Test line item validation for missing required fields"""
+        item = {
+            "Quantity": "10.000",
+            "QuantityUnitCode": "EA"
+            # Missing ProductID and SourceLogisticsAreaID
+        }
+        
+        errors = self.byd_service._validate_goods_issue_line_item(item, 1)
+        
+        self.assertGreater(len(errors), 0)
+        error_messages = " ".join(errors)
+        self.assertIn("Missing Product ID", error_messages)
+        self.assertIn("Missing Source logistics area", error_messages)
+    
+    def test_validate_line_item_invalid_quantity(self):
+        """Test line item validation for invalid quantities"""
+        # Test negative quantity
+        item = {
+            "ProductID": "PROD001",
+            "Quantity": "-5.0",
+            "QuantityUnitCode": "EA",
+            "SourceLogisticsAreaID": "SRC001"
+        }
+        
+        errors = self.byd_service._validate_goods_issue_line_item(item, 1)
+        
+        self.assertGreater(len(errors), 0)
+        self.assertTrue(any("Quantity must be positive" in error for error in errors))
+        
+        # Test invalid quantity format
+        item["Quantity"] = "invalid"
+        
+        errors = self.byd_service._validate_goods_issue_line_item(item, 1)
+        
+        self.assertGreater(len(errors), 0)
+        self.assertTrue(any("Invalid quantity format" in error for error in errors))
+        
+        # Test quantity too large
+        item["Quantity"] = "9999999"
+        
+        errors = self.byd_service._validate_goods_issue_line_item(item, 1)
+        
+        self.assertGreater(len(errors), 0)
+        self.assertTrue(any("Quantity too large" in error for error in errors))
+    
+    def test_validate_line_item_field_lengths(self):
+        """Test line item validation for field length limits"""
+        item = {
+            "ProductID": "A" * 50,  # Too long
+            "Quantity": "10.000",
+            "QuantityUnitCode": "TOOLONG",  # Too long
+            "SourceLogisticsAreaID": "A" * 25  # Too long
+        }
+        
+        errors = self.byd_service._validate_goods_issue_line_item(item, 1)
+        
+        self.assertGreater(len(errors), 0)
+        error_messages = " ".join(errors)
+        self.assertIn("ProductID too long", error_messages)
+        self.assertIn("QuantityUnitCode too long", error_messages)
+        self.assertIn("SourceLogisticsAreaID too long", error_messages)
+    
+    def test_validate_line_item_invalid_characters(self):
+        """Test line item validation for invalid characters in ProductID"""
+        item = {
+            "ProductID": "PROD@001!",  # Invalid characters
+            "Quantity": "10.000",
+            "QuantityUnitCode": "EA",
+            "SourceLogisticsAreaID": "SRC001"
+        }
+        
+        errors = self.byd_service._validate_goods_issue_line_item(item, 1)
+        
+        self.assertGreater(len(errors), 0)
+        self.assertTrue(any("ProductID contains invalid characters" in error for error in errors))
+
+
+class SAPByDGoodsIssuePreparationTest(TestCase):
+    """
+    Tests for SAP ByD goods issue document preparation functionality
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        from byd_service.rest import RESTServices
+        
+        self.byd_service = RESTServices()
+        
+        # Sample transfer data
+        self.transfer_data = {
+            "type_code": "01",
+            "posting_date": "2024-01-15",
+            "document_date": "2024-01-15",
+            "note": "Store-to-store transfer goods issue - GI-12345",
+            "line_items": [
+                {
+                    "product_id": "PROD001",
+                    "quantity": 10.0,
+                    "unit_of_measurement": "EA",
+                    "source_logistics_area": "SRC001",
+                    "sales_order_id": "12345",
+                    "sales_order_item_id": "ITEM001",
+                    "unit_price": 50.00,
+                    "note": "Transfer to Destination Store"
+                },
+                {
+                    "product_id": "PROD002",
+                    "quantity": 5.0,
+                    "unit_of_measurement": "EA",
+                    "source_logistics_area": "SRC001",
+                    "sales_order_id": "12345",
+                    "sales_order_item_id": "ITEM002",
+                    "note": "Transfer to Destination Store"
+                }
+            ]
+        }
+    
+    def test_prepare_goods_issue_document_success(self):
+        """Test successful goods issue document preparation"""
+        result = self.byd_service.prepare_goods_issue_document(self.transfer_data)
+        
+        # Verify header fields
+        self.assertEqual(result["TypeCode"], "01")
+        self.assertEqual(result["PostingDate"], "2024-01-15")
+        self.assertEqual(result["DocumentDate"], "2024-01-15")
+        self.assertEqual(result["Note"], "Store-to-store transfer goods issue - GI-12345")
+        
+        # Verify line items
+        self.assertEqual(len(result["Item"]), 2)
+        
+        # Verify first line item
+        item1 = result["Item"][0]
+        self.assertEqual(item1["ProductID"], "PROD001")
+        self.assertEqual(item1["Quantity"], "10.0")
+        self.assertEqual(item1["QuantityUnitCode"], "EA")
+        self.assertEqual(item1["SourceLogisticsAreaID"], "SRC001")
+        self.assertEqual(item1["SalesOrderID"], "12345")
+        self.assertEqual(item1["SalesOrderItemID"], "ITEM001")
+        self.assertEqual(item1["UnitPrice"], "50.0")
+        self.assertEqual(item1["Note"], "Transfer to Destination Store")
+        
+        # Verify second line item
+        item2 = result["Item"][1]
+        self.assertEqual(item2["ProductID"], "PROD002")
+        self.assertEqual(item2["Quantity"], "5.0")
+    
+    def test_prepare_goods_issue_document_default_values(self):
+        """Test goods issue document preparation with default values"""
+        data = {
+            "posting_date": "2024-01-15",
+            "line_items": [
+                {
+                    "product_id": "PROD001",
+                    "quantity": 10.0,
+                    "source_logistics_area": "SRC001"
+                }
+            ]
+        }
+        
+        result = self.byd_service.prepare_goods_issue_document(data)
+        
+        # Verify default values
+        self.assertEqual(result["TypeCode"], "01")  # Default type code
+        self.assertEqual(result["DocumentDate"], "2024-01-15")  # Defaults to posting date
+        self.assertEqual(result["Note"], "Store-to-store transfer goods issue")  # Default note
+        
+        # Verify line item defaults
+        item = result["Item"][0]
+        self.assertEqual(item["QuantityUnitCode"], "EA")  # Default unit
+        self.assertEqual(item["Note"], "")  # Default empty note
+    
+    def test_prepare_goods_issue_document_optional_fields(self):
+        """Test goods issue document preparation with optional fields"""
+        data = {
+            "posting_date": "2024-01-15",
+            "line_items": [
+                {
+                    "product_id": "PROD001",
+                    "quantity": 10.0,
+                    "source_logistics_area": "SRC001"
+                    # No optional fields
+                }
+            ]
+        }
+        
+        result = self.byd_service.prepare_goods_issue_document(data)
+        
+        # Verify optional fields are not included when not provided
+        item = result["Item"][0]
+        self.assertNotIn("SalesOrderID", item)
+        self.assertNotIn("SalesOrderItemID", item)
+        self.assertNotIn("UnitPrice", item)
+    
+    def test_prepare_goods_issue_document_quantity_conversion(self):
+        """Test that quantities are properly converted to strings"""
+        data = {
+            "posting_date": "2024-01-15",
+            "line_items": [
+                {
+                    "product_id": "PROD001",
+                    "quantity": 10,  # Integer
+                    "source_logistics_area": "SRC001",
+                    "unit_price": 50.5  # Float
+                }
+            ]
+        }
+        
+        result = self.byd_service.prepare_goods_issue_document(data)
+        
+        item = result["Item"][0]
+        self.assertEqual(item["Quantity"], "10")
+        self.assertIsInstance(item["Quantity"], str)
+        self.assertEqual(item["UnitPrice"], "50.5")
+        self.assertIsInstance(item["UnitPrice"], str)
+    
+    def test_prepare_goods_issue_document_error_handling(self):
+        """Test error handling in goods issue document preparation"""
+        # Test with invalid data structure
+        invalid_data = {
+            "posting_date": "2024-01-15",
+            "line_items": "not a list"
+        }
+        
+        with self.assertRaises(ValueError) as context:
+            self.byd_service.prepare_goods_issue_document(invalid_data)
+        
+        self.assertIn("Failed to prepare goods issue document", str(context.exception))
+    
+    def test_prepare_goods_issue_document_empty_line_items(self):
+        """Test goods issue document preparation with empty line items"""
+        data = {
+            "posting_date": "2024-01-15",
+            "line_items": []
+        }
+        
+        result = self.byd_service.prepare_goods_issue_document(data)
+        
+        # Should still create document structure with empty items
+        self.assertEqual(len(result["Item"]), 0)
+        self.assertIsInstance(result["Item"], list)
+
+
+class SAPByDGoodsIssueIntegrationTest(TestCase):
+    """
+    Integration tests for SAP ByD goods issue functionality with transfer service
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        from core_service.models import CustomUser
+        
+        # Create test user
+        self.user = CustomUser.objects.create_user(
+            username='testuser',
+            email='test@example.com',
+            password='testpass123'
+        )
+        
+        # Create test stores
+        self.source_store = Store.objects.create(
+            store_name='Source Store',
+            icg_warehouse_code='SRC001',
+            byd_cost_center_code='CC001'
+        )
+        
+        self.dest_store = Store.objects.create(
+            store_name='Destination Store',
+            icg_warehouse_code='DST001',
+            byd_cost_center_code='CC002'
+        )
+        
+        # Create test sales order
+        self.sales_order = SalesOrder.objects.create(
+            object_id='SO123456789',
+            sales_order_id=12345,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1500.00,
+            order_date='2024-01-01'
+        )
+        
+        # Create test line items
+        self.line_item1 = SalesOrderLineItem.objects.create(
+            sales_order=self.sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product 1',
+            quantity=10.000,
+            unit_price=50.00,
+            unit_of_measurement='EA'
+        )
+        
+        # Create test goods issue
+        self.goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            issue_number=12345,
+            source_store=self.source_store,
+            created_by=self.user
+        )
+        
+        # Create goods issue line item
+        self.gi_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=self.goods_issue,
+            sales_order_line_item=self.line_item1,
+            quantity_issued=8.0
+        )
+    
+    @patch('byd_service.rest.RESTServices.create_goods_issue_document')
+    @patch('byd_service.rest.RESTServices.post_goods_issue')
+    def test_post_goods_issue_to_sap_integration(self, mock_post_goods_issue, mock_create_goods_issue):
+        """Test integration between transfer service and SAP ByD goods issue creation"""
+        from transfer_service.tasks import post_goods_issue_to_sap
+        
+        # Mock SAP ByD responses
+        mock_create_goods_issue.return_value = {
+            "d": {
+                "results": {
+                    "ObjectID": "GI123456789",
+                    "TypeCode": "01",
+                    "PostingDate": "2024-01-15"
+                }
+            }
+        }
+        
+        mock_post_goods_issue.return_value = {
+            "success": True,
+            "message": "Goods issue posted successfully"
+        }
+        
+        # Execute the task
+        post_goods_issue_to_sap(self.goods_issue.id)
+        
+        # Verify SAP ByD methods were called
+        mock_create_goods_issue.assert_called_once()
+        mock_post_goods_issue.assert_called_once_with("GI123456789")
+        
+        # Verify goods issue was marked as posted
+        self.goods_issue.refresh_from_db()
+        self.assertTrue(self.goods_issue.posted_to_sap)
+        self.assertEqual(self.goods_issue.metadata['sap_object_id'], "GI123456789")
+        
+        # Verify the data structure passed to SAP ByD
+        call_args = mock_create_goods_issue.call_args[0][0]
+        self.assertEqual(call_args["TypeCode"], "01")
+        self.assertEqual(len(call_args["Item"]), 1)
+        self.assertEqual(call_args["Item"][0]["ProductID"], "PROD001")
+        self.assertEqual(call_args["Item"][0]["Quantity"], "8.0")
+    
+    @patch('byd_service.rest.RESTServices.create_goods_issue_document')
+    def test_post_goods_issue_to_sap_validation_error(self, mock_create_goods_issue):
+        """Test handling of SAP ByD validation errors"""
+        from transfer_service.tasks import post_goods_issue_to_sap, SAPIntegrationError
+        
+        # Mock SAP ByD validation error
+        mock_create_goods_issue.side_effect = ValueError("Invalid ProductID format")
+        
+        # Execute the task and expect error
+        with self.assertRaises(SAPIntegrationError):
+            post_goods_issue_to_sap(self.goods_issue.id)
+        
+        # Verify goods issue was not marked as posted
+        self.goods_issue.refresh_from_db()
+        self.assertFalse(self.goods_issue.posted_to_sap)
+    
+    @patch('byd_service.rest.RESTServices.validate_goods_issue_requirements')
+    def test_goods_issue_validation_before_creation(self, mock_validate):
+        """Test that goods issue validation is performed before creation"""
+        from byd_service.rest import RESTServices
+        
+        byd_service = RESTServices()
+        
+        # Mock validation failure
+        mock_validate.return_value = {
+            "is_valid": False,
+            "errors": ["Invalid TypeCode"],
+            "warnings": []
+        }
+        
+        goods_issue_data = {
+            "TypeCode": "99",  # Invalid
+            "PostingDate": "2024-01-15",
+            "DocumentDate": "2024-01-15",
+            "Item": []
+        }
+        
+        # Validation should be called during document creation
+        with self.assertRaises(ValueError):
+            byd_service.create_goods_issue_document(goods_issue_data)
