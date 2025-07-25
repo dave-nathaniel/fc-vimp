@@ -2440,3 +2440,800 @@ class SAPIntegrationErrorHandlingTest(TestCase):
             test_function()
         
         self.assertEqual(call_count, 1)  # Should not retry
+
+
+class SAPTransferCompletionTest(TestCase):
+    """
+    Tests for SAP ByD transfer completion workflow
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        from core_service.models import CustomUser
+        
+        # Create test user
+        self.user = CustomUser.objects.create_user(
+            username='testuser',
+            email='test@example.com',
+            password='testpass123'
+        )
+        
+        # Create test stores
+        self.source_store = Store.objects.create(
+            store_name='Source Store',
+            icg_warehouse_code='SRC001',
+            byd_cost_center_code='CC001'
+        )
+        
+        self.dest_store = Store.objects.create(
+            store_name='Destination Store',
+            icg_warehouse_code='DST001',
+            byd_cost_center_code='CC002'
+        )
+        
+        # Create test sales order
+        self.sales_order = SalesOrder.objects.create(
+            object_id='SO123456',
+            sales_order_id=12345,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01',
+            delivery_status_code='1'
+        )
+        
+        # Create test line item
+        self.line_item = SalesOrderLineItem.objects.create(
+            sales_order=self.sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product',
+            quantity=10.0,
+            unit_price=100.0,
+            unit_of_measurement='EA'
+        )
+        
+        # Create test goods issue
+        self.goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            issue_number=123451,
+            source_store=self.source_store,
+            created_by=self.user,
+            posted_to_sap=True,
+            metadata={'sap_object_id': 'GI123456'}
+        )
+        
+        # Create goods issue line item
+        self.gi_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=self.goods_issue,
+            sales_order_line_item=self.line_item,
+            quantity_issued=10.0
+        )
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_complete_transfer_in_sap_success(self, mock_rest_service):
+        """Test successful transfer completion in SAP ByD"""
+        # Mock SAP ByD service response
+        mock_service = mock_rest_service.return_value
+        mock_service.complete_transfer_in_sap.return_value = {
+            'success': True,
+            'sales_order_id': '12345',
+            'object_id': 'SO123456',
+            'status': 'Completely Delivered',
+            'goods_issue_reference': 'GI123456'
+        }
+        
+        # Create transfer receipt
+        receipt = TransferReceiptNote.objects.create(
+            goods_issue=self.goods_issue,
+            receipt_number=1234511,
+            destination_store=self.dest_store,
+            created_by=self.user
+        )
+        
+        # Create receipt line item (complete quantity)
+        TransferReceiptLineItem.objects.create(
+            transfer_receipt=receipt,
+            goods_issue_line_item=self.gi_line_item,
+            quantity_received=10.0
+        )
+        
+        # Test the service method
+        from transfer_service.services import TransferReceiptService
+        result = TransferReceiptService.complete_transfer_in_sap(receipt)
+        
+        # Verify result
+        self.assertTrue(result)
+        
+        # Verify SAP service was called correctly
+        mock_service.complete_transfer_in_sap.assert_called_once_with(
+            '12345',
+            'GI123456'
+        )
+        
+        # Verify sales order was updated
+        self.sales_order.refresh_from_db()
+        self.assertEqual(self.sales_order.delivery_status_code, '3')
+        self.assertIn('transfer_completed_date', self.sales_order.metadata)
+        self.assertIn('sap_completion_response', self.sales_order.metadata)
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_complete_transfer_in_sap_failure(self, mock_rest_service):
+        """Test transfer completion failure in SAP ByD"""
+        # Mock SAP ByD service failure
+        mock_service = mock_rest_service.return_value
+        mock_service.complete_transfer_in_sap.return_value = {
+            'success': False,
+            'error': 'SAP ByD error'
+        }
+        
+        # Create transfer receipt
+        receipt = TransferReceiptNote.objects.create(
+            goods_issue=self.goods_issue,
+            receipt_number=1234511,
+            destination_store=self.dest_store,
+            created_by=self.user
+        )
+        
+        # Create receipt line item (complete quantity)
+        TransferReceiptLineItem.objects.create(
+            transfer_receipt=receipt,
+            goods_issue_line_item=self.gi_line_item,
+            quantity_received=10.0
+        )
+        
+        # Test the service method
+        from transfer_service.services import TransferReceiptService
+        result = TransferReceiptService.complete_transfer_in_sap(receipt)
+        
+        # Verify result
+        self.assertFalse(result)
+        
+        # Verify sales order status was not updated
+        self.sales_order.refresh_from_db()
+        self.assertEqual(self.sales_order.delivery_status_code, '1')  # Unchanged
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_complete_transfer_in_sap_exception(self, mock_rest_service):
+        """Test transfer completion with SAP ByD exception"""
+        # Mock SAP ByD service exception
+        mock_service = mock_rest_service.return_value
+        mock_service.complete_transfer_in_sap.side_effect = Exception("Connection error")
+        
+        # Create transfer receipt
+        receipt = TransferReceiptNote.objects.create(
+            goods_issue=self.goods_issue,
+            receipt_number=1234511,
+            destination_store=self.dest_store,
+            created_by=self.user
+        )
+        
+        # Create receipt line item (complete quantity)
+        TransferReceiptLineItem.objects.create(
+            transfer_receipt=receipt,
+            goods_issue_line_item=self.gi_line_item,
+            quantity_received=10.0
+        )
+        
+        # Test the service method
+        from transfer_service.services import TransferReceiptService
+        result = TransferReceiptService.complete_transfer_in_sap(receipt)
+        
+        # Verify result
+        self.assertFalse(result)
+    
+    def test_byd_rest_complete_transfer_success(self):
+        """Test BYD REST service complete_transfer_in_sap method"""
+        from byd_service.rest import RESTServices
+        
+        # Create a real instance and mock its methods
+        mock_service = RESTServices()
+        mock_service.get_sales_order_by_id = Mock(return_value={
+            'ObjectID': 'SO123456',
+            'ID': '12345'
+        })
+        mock_service.refresh_csrf_token = Mock()
+        mock_service.session = Mock()
+        mock_service.auth_headers = {'x-csrf-token': 'test-token'}
+        mock_service.auth = Mock()
+        
+        # Mock successful PATCH response
+        mock_response = Mock()
+        mock_response.status_code = 204
+        mock_service.session.patch.return_value = mock_response
+        
+        # Test the method
+        result = mock_service.complete_transfer_in_sap('12345', 'GI123456')
+        
+        # Verify result
+        self.assertTrue(result['success'])
+        self.assertEqual(result['sales_order_id'], '12345')
+        self.assertEqual(result['status'], 'Completely Delivered')
+        self.assertEqual(result['goods_issue_reference'], 'GI123456')
+        
+        # Verify PATCH was called correctly
+        mock_service.session.patch.assert_called_once()
+        call_args = mock_service.session.patch.call_args
+        self.assertIn('DeliveryStatusCode', call_args[1]['json'])
+        self.assertEqual(call_args[1]['json']['DeliveryStatusCode'], '3')
+        self.assertIn('GoodsIssueReference', call_args[1]['json'])
+        self.assertEqual(call_args[1]['json']['GoodsIssueReference'], 'GI123456')
+    
+    def test_byd_rest_link_goods_issue_success(self):
+        """Test BYD REST service link_goods_issue_to_sales_order method"""
+        from byd_service.rest import RESTServices
+        
+        # Create a real instance and mock its methods
+        mock_service = RESTServices()
+        mock_service.get_sales_order_by_id = Mock(return_value={
+            'ObjectID': 'SO123456',
+            'ID': '12345'
+        })
+        mock_service.refresh_csrf_token = Mock()
+        mock_service.session = Mock()
+        mock_service.auth_headers = {'x-csrf-token': 'test-token'}
+        mock_service.auth = Mock()
+        
+        # Mock successful PATCH response
+        mock_response = Mock()
+        mock_response.status_code = 204
+        mock_service.session.patch.return_value = mock_response
+        
+        # Test the method
+        result = mock_service.link_goods_issue_to_sales_order('12345', 'GI123456')
+        
+        # Verify result
+        self.assertTrue(result)
+        
+        # Verify PATCH was called correctly
+        mock_service.session.patch.assert_called_once()
+        call_args = mock_service.session.patch.call_args
+        self.assertIn('GoodsIssueReference', call_args[1]['json'])
+        self.assertEqual(call_args[1]['json']['GoodsIssueReference'], 'GI123456')
+
+
+class SAPTransferCompletionTaskTest(TestCase):
+    """
+    Tests for SAP ByD transfer completion async tasks
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        from core_service.models import CustomUser
+        
+        # Create test user
+        self.user = CustomUser.objects.create_user(
+            username='testuser',
+            email='test@example.com',
+            password='testpass123'
+        )
+        
+        # Create test stores
+        self.source_store = Store.objects.create(
+            store_name='Source Store',
+            icg_warehouse_code='SRC001',
+            byd_cost_center_code='CC001'
+        )
+        
+        self.dest_store = Store.objects.create(
+            store_name='Destination Store',
+            icg_warehouse_code='DST001',
+            byd_cost_center_code='CC002'
+        )
+        
+        # Create test sales order
+        self.sales_order = SalesOrder.objects.create(
+            object_id='SO123456',
+            sales_order_id=12345,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01',
+            delivery_status_code='1'
+        )
+        
+        # Create test line item
+        self.line_item = SalesOrderLineItem.objects.create(
+            sales_order=self.sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product',
+            quantity=10.0,
+            unit_price=100.0,
+            unit_of_measurement='EA'
+        )
+        
+        # Create test goods issue
+        self.goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            issue_number=123451,
+            source_store=self.source_store,
+            created_by=self.user,
+            posted_to_sap=True,
+            metadata={'sap_object_id': 'GI123456'}
+        )
+        
+        # Create goods issue line item
+        self.gi_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=self.goods_issue,
+            sales_order_line_item=self.line_item,
+            quantity_issued=10.0
+        )
+        
+        # Create transfer receipt
+        self.receipt = TransferReceiptNote.objects.create(
+            goods_issue=self.goods_issue,
+            receipt_number=1234511,
+            destination_store=self.dest_store,
+            created_by=self.user
+        )
+        
+        # Create receipt line item (complete quantity)
+        self.receipt_line_item = TransferReceiptLineItem.objects.create(
+            transfer_receipt=self.receipt,
+            goods_issue_line_item=self.gi_line_item,
+            quantity_received=10.0
+        )
+    
+    @patch('byd_service.rest.RESTServices')
+    @patch('django_q.tasks.async_task')
+    def test_complete_transfer_in_sap_task_success(self, mock_async_task, mock_rest_service):
+        """Test successful complete_transfer_in_sap async task"""
+        from transfer_service.tasks import complete_transfer_in_sap
+        
+        # Mock SAP ByD service response
+        mock_service = mock_rest_service.return_value
+        mock_service.complete_transfer_in_sap.return_value = {
+            'success': True,
+            'sales_order_id': '12345',
+            'object_id': 'SO123456',
+            'status': 'Completely Delivered',
+            'goods_issue_reference': 'GI123456'
+        }
+        
+        # Run the task
+        complete_transfer_in_sap(self.receipt.id)
+        
+        # Verify SAP service was called correctly
+        mock_service.complete_transfer_in_sap.assert_called_once_with(
+            '12345',
+            'GI123456'
+        )
+        
+        # Verify sales order was updated
+        self.sales_order.refresh_from_db()
+        self.assertEqual(self.sales_order.delivery_status_code, '3')
+        self.assertIn('transfer_completed_date', self.sales_order.metadata)
+        self.assertIn('sap_completion_response', self.sales_order.metadata)
+        
+        # Verify receipt was updated
+        self.receipt.refresh_from_db()
+        self.assertIn('sap_completion_response', self.receipt.metadata)
+        self.assertIn('transfer_completed_date', self.receipt.metadata)
+    
+    @patch('byd_service.rest.RESTServices')
+    @patch('django_q.tasks.async_task')
+    def test_complete_transfer_in_sap_task_partial_delivery(self, mock_async_task, mock_rest_service):
+        """Test complete_transfer_in_sap task with partial delivery"""
+        from transfer_service.tasks import complete_transfer_in_sap
+        
+        # Update receipt to partial quantity
+        self.receipt_line_item.quantity_received = 5.0
+        self.receipt_line_item.save()
+        
+        # Run the task
+        complete_transfer_in_sap(self.receipt.id)
+        
+        # Verify SAP service was not called for completion
+        mock_service = mock_rest_service.return_value
+        mock_service.complete_transfer_in_sap.assert_not_called()
+        
+        # Verify async task was called for status update instead
+        mock_async_task.assert_called_once_with(
+            'transfer_service.tasks.update_sales_order_status',
+            self.sales_order.id
+        )
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_complete_transfer_in_sap_task_receipt_not_found(self, mock_rest_service):
+        """Test complete_transfer_in_sap task with non-existent receipt"""
+        from transfer_service.tasks import complete_transfer_in_sap, SAPIntegrationError
+        
+        # Test with non-existent receipt ID
+        with self.assertRaises(SAPIntegrationError) as context:
+            complete_transfer_in_sap(99999)
+        
+        self.assertIn("Transfer receipt with ID 99999 not found", str(context.exception))
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_complete_transfer_in_sap_task_sap_error(self, mock_rest_service):
+        """Test complete_transfer_in_sap task with SAP ByD error"""
+        from transfer_service.tasks import complete_transfer_in_sap, RetryableError
+        
+        # Mock SAP ByD service error
+        mock_service = mock_rest_service.return_value
+        mock_service.complete_transfer_in_sap.side_effect = Exception("SAP connection error")
+        
+        # Test the task
+        with self.assertRaises(RetryableError):
+            complete_transfer_in_sap(self.receipt.id)
+    
+    @patch('transfer_service.models.async_task')
+    def test_transfer_receipt_save_triggers_completion(self, mock_async_task):
+        """Test that saving a complete transfer receipt triggers SAP completion"""
+        # Create a completely new sales order for this test
+        new_sales_order = SalesOrder.objects.create(
+            object_id='SO123457',
+            sales_order_id=12346,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01',
+            delivery_status_code='1'
+        )
+        
+        # Create a new line item
+        new_line_item = SalesOrderLineItem.objects.create(
+            sales_order=new_sales_order,
+            object_id='ITEM002',
+            product_id='PROD002',
+            product_name='Test Product 2',
+            quantity=10.0,
+            unit_price=100.0,
+            unit_of_measurement='EA'
+        )
+        
+        # Create a new goods issue
+        new_goods_issue = GoodsIssueNote.objects.create(
+            sales_order=new_sales_order,
+            issue_number=123452,
+            source_store=self.source_store,
+            created_by=self.user,
+            posted_to_sap=True,
+            metadata={'sap_object_id': 'GI123457'}
+        )
+        
+        # Create goods issue line item
+        new_gi_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=new_goods_issue,
+            sales_order_line_item=new_line_item,
+            quantity_issued=10.0
+        )
+        
+        # Create a new receipt with complete quantity
+        new_receipt = TransferReceiptNote(
+            goods_issue=new_goods_issue,
+            destination_store=self.dest_store,
+            created_by=self.user
+        )
+        
+        receipt_data = {
+            'line_items': [{
+                'goods_issue_line_item_id': new_gi_line_item.id,
+                'quantity_received': 10.0,  # Complete quantity
+                'metadata': {}
+            }]
+        }
+        
+        # Save the receipt
+        new_receipt.save(receipt_data=receipt_data)
+        
+        # Verify async task was called for completion
+        # Check all calls made to async_task
+        calls = mock_async_task.call_args_list
+        completion_call = None
+        for call in calls:
+            if len(call[0]) >= 2 and call[0][0] == 'transfer_service.tasks.complete_transfer_in_sap':
+                completion_call = call
+                break
+        
+        self.assertIsNotNone(completion_call, f"Expected complete_transfer_in_sap call not found. Actual calls: {calls}")
+        self.assertEqual(completion_call[0][1], new_receipt.id)
+    
+    @patch('transfer_service.models.async_task')
+    def test_transfer_receipt_save_triggers_status_update(self, mock_async_task):
+        """Test that saving a partial transfer receipt triggers status update"""
+        # Create a completely new sales order for this test
+        new_sales_order = SalesOrder.objects.create(
+            object_id='SO123458',
+            sales_order_id=12347,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01',
+            delivery_status_code='1'
+        )
+        
+        # Create a new line item
+        new_line_item = SalesOrderLineItem.objects.create(
+            sales_order=new_sales_order,
+            object_id='ITEM003',
+            product_id='PROD003',
+            product_name='Test Product 3',
+            quantity=10.0,
+            unit_price=100.0,
+            unit_of_measurement='EA'
+        )
+        
+        # Create a new goods issue
+        new_goods_issue = GoodsIssueNote.objects.create(
+            sales_order=new_sales_order,
+            issue_number=123453,
+            source_store=self.source_store,
+            created_by=self.user,
+            posted_to_sap=True,
+            metadata={'sap_object_id': 'GI123458'}
+        )
+        
+        # Create goods issue line item
+        new_gi_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=new_goods_issue,
+            sales_order_line_item=new_line_item,
+            quantity_issued=10.0
+        )
+        
+        # Create a new receipt with partial quantity
+        new_receipt = TransferReceiptNote(
+            goods_issue=new_goods_issue,
+            destination_store=self.dest_store,
+            created_by=self.user
+        )
+        
+        receipt_data = {
+            'line_items': [{
+                'goods_issue_line_item_id': new_gi_line_item.id,
+                'quantity_received': 5.0,  # Partial quantity
+                'metadata': {}
+            }]
+        }
+        
+        # Save the receipt
+        new_receipt.save(receipt_data=receipt_data)
+        
+        # Verify async task was called for status update
+        # Check all calls made to async_task
+        calls = mock_async_task.call_args_list
+        status_call = None
+        for call in calls:
+            if len(call[0]) >= 2 and call[0][0] == 'transfer_service.tasks.update_sales_order_status':
+                status_call = call
+                break
+        
+        self.assertIsNotNone(status_call, f"Expected update_sales_order_status call not found. Actual calls: {calls}")
+        self.assertEqual(status_call[0][1], new_sales_order.id)
+
+
+class SAPDocumentLinkingTest(TestCase):
+    """
+    Tests for SAP ByD document linking between sales orders and goods issues
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        from core_service.models import CustomUser
+        
+        # Create test user
+        self.user = CustomUser.objects.create_user(
+            username='testuser',
+            email='test@example.com',
+            password='testpass123'
+        )
+        
+        # Create test stores
+        self.source_store = Store.objects.create(
+            store_name='Source Store',
+            icg_warehouse_code='SRC001',
+            byd_cost_center_code='CC001'
+        )
+        
+        self.dest_store = Store.objects.create(
+            store_name='Destination Store',
+            icg_warehouse_code='DST001',
+            byd_cost_center_code='CC002'
+        )
+        
+        # Create test sales order
+        self.sales_order = SalesOrder.objects.create(
+            object_id='SO123456',
+            sales_order_id=12345,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01',
+            delivery_status_code='1'
+        )
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_goods_issue_metadata_stores_sap_object_id(self, mock_rest_service):
+        """Test that goods issue metadata stores SAP object ID for linking"""
+        from transfer_service.tasks import post_goods_issue_to_sap
+        
+        # Create goods issue
+        goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            issue_number=123451,
+            source_store=self.source_store,
+            created_by=self.user
+        )
+        
+        # Create line item
+        line_item = SalesOrderLineItem.objects.create(
+            sales_order=self.sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product',
+            quantity=10.0,
+            unit_price=100.0,
+            unit_of_measurement='EA'
+        )
+        
+        GoodsIssueLineItem.objects.create(
+            goods_issue=goods_issue,
+            sales_order_line_item=line_item,
+            quantity_issued=10.0
+        )
+        
+        # Mock SAP ByD responses
+        mock_service = mock_rest_service.return_value
+        mock_service.create_goods_issue.return_value = {
+            'd': {
+                'results': {
+                    'ObjectID': 'GI123456'
+                }
+            }
+        }
+        mock_service.post_goods_issue.return_value = {'success': True}
+        
+        # Run the task
+        post_goods_issue_to_sap(goods_issue.id)
+        
+        # Verify goods issue metadata contains SAP object ID
+        goods_issue.refresh_from_db()
+        self.assertEqual(goods_issue.metadata['sap_object_id'], 'GI123456')
+        self.assertTrue(goods_issue.posted_to_sap)
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_transfer_completion_uses_goods_issue_reference(self, mock_rest_service):
+        """Test that transfer completion uses goods issue reference for linking"""
+        from transfer_service.services import TransferReceiptService
+        
+        # Create goods issue with SAP object ID
+        goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            issue_number=123451,
+            source_store=self.source_store,
+            created_by=self.user,
+            posted_to_sap=True,
+            metadata={'sap_object_id': 'GI123456'}
+        )
+        
+        # Create line items
+        line_item = SalesOrderLineItem.objects.create(
+            sales_order=self.sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product',
+            quantity=10.0,
+            unit_price=100.0,
+            unit_of_measurement='EA'
+        )
+        
+        gi_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=goods_issue,
+            sales_order_line_item=line_item,
+            quantity_issued=10.0
+        )
+        
+        # Create transfer receipt
+        receipt = TransferReceiptNote.objects.create(
+            goods_issue=goods_issue,
+            receipt_number=1234511,
+            destination_store=self.dest_store,
+            created_by=self.user
+        )
+        
+        TransferReceiptLineItem.objects.create(
+            transfer_receipt=receipt,
+            goods_issue_line_item=gi_line_item,
+            quantity_received=10.0
+        )
+        
+        # Mock SAP ByD service response
+        mock_service = mock_rest_service.return_value
+        mock_service.complete_transfer_in_sap.return_value = {
+            'success': True,
+            'sales_order_id': '12345',
+            'object_id': 'SO123456',
+            'status': 'Completely Delivered',
+            'goods_issue_reference': 'GI123456'
+        }
+        
+        # Test the service method
+        result = TransferReceiptService.complete_transfer_in_sap(receipt)
+        
+        # Verify result
+        self.assertTrue(result)
+        
+        # Verify SAP service was called with goods issue reference
+        mock_service.complete_transfer_in_sap.assert_called_once_with(
+            '12345',
+            'GI123456'
+        )
+        
+        # Verify sales order metadata includes linking information
+        self.sales_order.refresh_from_db()
+        self.assertIn('goods_issue_linked', self.sales_order.metadata)
+        self.assertTrue(self.sales_order.metadata['goods_issue_linked'])
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_transfer_completion_without_goods_issue_reference(self, mock_rest_service):
+        """Test transfer completion when goods issue has no SAP object ID"""
+        from transfer_service.services import TransferReceiptService
+        
+        # Create goods issue without SAP object ID
+        goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            issue_number=123451,
+            source_store=self.source_store,
+            created_by=self.user,
+            posted_to_sap=False,
+            metadata={}  # No SAP object ID
+        )
+        
+        # Create line items
+        line_item = SalesOrderLineItem.objects.create(
+            sales_order=self.sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product',
+            quantity=10.0,
+            unit_price=100.0,
+            unit_of_measurement='EA'
+        )
+        
+        gi_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=goods_issue,
+            sales_order_line_item=line_item,
+            quantity_issued=10.0
+        )
+        
+        # Create transfer receipt
+        receipt = TransferReceiptNote.objects.create(
+            goods_issue=goods_issue,
+            receipt_number=1234511,
+            destination_store=self.dest_store,
+            created_by=self.user
+        )
+        
+        TransferReceiptLineItem.objects.create(
+            transfer_receipt=receipt,
+            goods_issue_line_item=gi_line_item,
+            quantity_received=10.0
+        )
+        
+        # Mock SAP ByD service response
+        mock_service = mock_rest_service.return_value
+        mock_service.complete_transfer_in_sap.return_value = {
+            'success': True,
+            'sales_order_id': '12345',
+            'object_id': 'SO123456',
+            'status': 'Completely Delivered',
+            'goods_issue_reference': None
+        }
+        
+        # Test the service method
+        result = TransferReceiptService.complete_transfer_in_sap(receipt)
+        
+        # Verify result
+        self.assertTrue(result)
+        
+        # Verify SAP service was called without goods issue reference
+        mock_service.complete_transfer_in_sap.assert_called_once_with(
+            '12345',
+            None
+        )
+        
+        # Verify sales order metadata indicates no linking
+        self.sales_order.refresh_from_db()
+        self.assertIn('goods_issue_linked', self.sales_order.metadata)
+        self.assertFalse(self.sales_order.metadata['goods_issue_linked'])

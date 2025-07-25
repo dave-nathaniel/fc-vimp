@@ -4,6 +4,7 @@ Business logic services for store-to-store transfers
 import logging
 from django.db.models import QuerySet
 from django.core.exceptions import ValidationError
+from django.utils import timezone
 from core_service.models import CustomUser
 from egrn_service.models import Store
 from .models import SalesOrder, GoodsIssueNote, TransferReceiptNote, StoreAuthorization
@@ -204,7 +205,38 @@ class TransferReceiptService:
     def complete_transfer_in_sap(receipt: TransferReceiptNote) -> bool:
         """
         Mark transfer as completed in SAP ByD
-        This will be implemented when SAP integration is added
         """
-        # Placeholder for SAP ByD integration
-        raise NotImplementedError("SAP ByD completion not yet implemented")
+        from byd_service.rest import RESTServices
+        
+        try:
+            byd_service = RESTServices()
+            sales_order = receipt.goods_issue.sales_order
+            
+            # Get goods issue SAP object ID from metadata if available
+            goods_issue_object_id = receipt.goods_issue.metadata.get('sap_object_id')
+            
+            # Complete the transfer in SAP ByD
+            result = byd_service.complete_transfer_in_sap(
+                str(sales_order.sales_order_id),
+                goods_issue_object_id
+            )
+            
+            if result.get('success'):
+                # Update local sales order status
+                sales_order.delivery_status_code = '3'  # Completely Delivered
+                sales_order.metadata.update({
+                    'transfer_completed_date': timezone.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'sap_completion_response': result,
+                    'goods_issue_linked': goods_issue_object_id is not None
+                })
+                sales_order.save()
+                
+                logger.info(f"Transfer completed in SAP ByD for sales order {sales_order.sales_order_id}")
+                return True
+            else:
+                logger.error(f"Failed to complete transfer in SAP ByD for sales order {sales_order.sales_order_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error completing transfer in SAP ByD: {str(e)}")
+            return False

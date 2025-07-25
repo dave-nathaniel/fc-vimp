@@ -287,3 +287,92 @@ def update_sales_order_status(sales_order_id: int):
     except Exception as e:
         logger.error(f"Unexpected error updating sales order {sales_order_id} status: {e}")
         raise SAPIntegrationError(f"Unexpected error: {e}")
+
+
+@retry_on_failure(max_retries=3, delay=5)
+def complete_transfer_in_sap(receipt_id: int):
+    """
+    Async task to complete a store-to-store transfer in SAP ByD
+    This includes updating sales order status and linking goods issue documents
+    """
+    from byd_service.rest import RESTServices
+    from .services import TransferReceiptService
+    
+    try:
+        receipt = TransferReceiptNote.objects.get(id=receipt_id)
+        sales_order = receipt.goods_issue.sales_order
+        logger.info(f"Processing SAP transfer completion for receipt {receipt.receipt_number}")
+        
+        # Check if transfer is actually complete (all quantities received)
+        delivery_status = sales_order.delivery_status
+        if delivery_status[0] != '3':  # Not completely delivered
+            logger.info(f"Transfer not complete for sales order {sales_order.sales_order_id}, status: {delivery_status[1]}")
+            # Still update status to current state
+            async_task('transfer_service.tasks.update_sales_order_status', sales_order.id)
+            return
+        
+        # Initialize SAP ByD REST service
+        try:
+            byd_service = RESTServices()
+        except Exception as e:
+            logger.error(f"Failed to initialize SAP ByD service: {e}")
+            raise RetryableError(f"SAP ByD service initialization failed: {e}")
+        
+        # Validate sales order has required data
+        if not sales_order.object_id:
+            raise SAPIntegrationError(f"Sales order {sales_order.sales_order_id} missing ObjectID")
+        
+        # Get goods issue SAP object ID from metadata if available
+        goods_issue_object_id = receipt.goods_issue.metadata.get('sap_object_id')
+        
+        # Complete the transfer in SAP ByD
+        logger.info(f"Completing transfer in SAP ByD for sales order {sales_order.sales_order_id}")
+        try:
+            result = byd_service.complete_transfer_in_sap(
+                str(sales_order.sales_order_id),
+                goods_issue_object_id
+            )
+        except Exception as e:
+            logger.error(f"SAP ByD complete_transfer_in_sap failed: {e}")
+            if "authentication" in str(e).lower() or "unauthorized" in str(e).lower():
+                raise RetryableError(f"SAP ByD authentication error: {e}")
+            elif "timeout" in str(e).lower() or "connection" in str(e).lower():
+                raise RetryableError(f"SAP ByD connection error: {e}")
+            elif "not found" in str(e).lower():
+                raise SAPIntegrationError(f"Sales order not found in SAP ByD: {e}")
+            else:
+                raise RetryableError(f"SAP ByD complete transfer failed: {e}")
+        
+        # Validate response
+        if not result or not result.get('success'):
+            logger.error(f"Failed to complete transfer in SAP ByD: {result}")
+            raise RetryableError("SAP ByD returned failure for transfer completion")
+        
+        # Update local sales order status and metadata
+        sales_order.delivery_status_code = '3'  # Completely Delivered
+        sales_order.metadata.update({
+            'transfer_completed_date': timezone.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'sap_completion_response': result,
+            'completed_by_receipt': receipt.receipt_number,
+            'goods_issue_linked': goods_issue_object_id is not None
+        })
+        sales_order.save()
+        
+        # Update receipt metadata
+        receipt.metadata.update({
+            'sap_completion_response': result,
+            'transfer_completed_date': timezone.now().strftime("%Y-%m-%d %H:%M:%S")
+        })
+        receipt.save()
+        
+        logger.info(f"Transfer successfully completed in SAP ByD for sales order {sales_order.sales_order_id}")
+        
+    except TransferReceiptNote.DoesNotExist:
+        logger.error(f"Transfer receipt with ID {receipt_id} not found")
+        raise SAPIntegrationError(f"Transfer receipt with ID {receipt_id} not found")
+    except (SAPIntegrationError, RetryableError):
+        # Re-raise these specific exceptions for proper handling
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error completing transfer for receipt {receipt_id}: {e}")
+        raise SAPIntegrationError(f"Unexpected error: {e}")

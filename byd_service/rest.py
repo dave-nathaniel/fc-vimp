@@ -5,6 +5,7 @@ import time
 from requests import get, post
 from pathlib import Path
 from dotenv import load_dotenv
+from django.utils import timezone
 
 from .authenticate import SAPAuthentication
 
@@ -418,3 +419,87 @@ class RESTServices:
 		except Exception as e:
 			logger.error(f"Error posting goods issue: {str(e)}")
 			raise
+	
+	def complete_transfer_in_sap(self, sales_order_id: str, goods_issue_object_id: str = None) -> dict:
+		'''
+			Complete a store-to-store transfer in SAP ByD by updating sales order status
+			and linking goods issue document
+		'''
+		try:
+			# First get the sales order to get its ObjectID
+			sales_order = self.get_sales_order_by_id(sales_order_id)
+			if not sales_order:
+				logger.error(f"Sales order {sales_order_id} not found")
+				raise Exception(f"Sales order {sales_order_id} not found")
+			
+			object_id = sales_order.get("ObjectID")
+			if not object_id:
+				logger.error(f"ObjectID not found for sales order {sales_order_id}")
+				raise Exception(f"ObjectID not found for sales order {sales_order_id}")
+			
+			# Update the delivery status to completely delivered
+			action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khsalesorder/SalesOrderCollection('{object_id}')"
+			update_data = {
+				"DeliveryStatusCode": "3"  # Completely Delivered
+			}
+			
+			# Add goods issue document reference if provided
+			if goods_issue_object_id:
+				update_data["GoodsIssueReference"] = goods_issue_object_id
+			
+			self.refresh_csrf_token()
+			response = self.session.patch(action_url, json=update_data, headers=self.auth_headers, auth=self.auth)
+			
+			if response.status_code == 204:  # PATCH typically returns 204 No Content on success
+				logger.info(f"Transfer completed for sales order {sales_order_id}")
+				return {
+					"success": True,
+					"sales_order_id": sales_order_id,
+					"object_id": object_id,
+					"status": "Completely Delivered",
+					"goods_issue_reference": goods_issue_object_id
+				}
+			else:
+				logger.error(f"Failed to complete transfer: {response.text}")
+				raise Exception(f"Error from SAP: {response.text}")
+				
+		except Exception as e:
+			logger.error(f"Error completing transfer for sales order {sales_order_id}: {str(e)}")
+			raise
+	
+	def link_goods_issue_to_sales_order(self, sales_order_id: str, goods_issue_object_id: str) -> bool:
+		'''
+			Link a goods issue document to a sales order in SAP ByD
+		'''
+		try:
+			# Get the sales order
+			sales_order = self.get_sales_order_by_id(sales_order_id)
+			if not sales_order:
+				logger.error(f"Sales order {sales_order_id} not found")
+				return False
+			
+			object_id = sales_order.get("ObjectID")
+			if not object_id:
+				logger.error(f"ObjectID not found for sales order {sales_order_id}")
+				return False
+			
+			# Update sales order with goods issue reference
+			action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khsalesorder/SalesOrderCollection('{object_id}')"
+			update_data = {
+				"GoodsIssueReference": goods_issue_object_id,
+				"LastChangeDateTime": timezone.now().strftime("%Y-%m-%dT%H:%M:%S")
+			}
+			
+			self.refresh_csrf_token()
+			response = self.session.patch(action_url, json=update_data, headers=self.auth_headers, auth=self.auth)
+			
+			if response.status_code == 204:
+				logger.info(f"Goods issue {goods_issue_object_id} linked to sales order {sales_order_id}")
+				return True
+			else:
+				logger.error(f"Failed to link goods issue to sales order: {response.text}")
+				return False
+				
+		except Exception as e:
+			logger.error(f"Error linking goods issue to sales order: {str(e)}")
+			return False

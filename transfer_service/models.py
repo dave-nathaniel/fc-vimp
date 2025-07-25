@@ -10,6 +10,8 @@ from egrn_service.models import Store
 from byd_service.rest import RESTServices
 from byd_service.util import to_python_time
 
+logger = logging.getLogger(__name__)
+
 
 # Initialize REST services
 byd_rest_services = RESTServices()
@@ -419,6 +421,7 @@ class TransferReceiptNote(models.Model):
         Generate unique receipt number and create line items
         """
         receipt_data = kwargs.pop('receipt_data', None)
+        is_new = self.pk is None
         
         if not self.receipt_number:
             # Generate receipt number based on goods issue number
@@ -443,6 +446,21 @@ class TransferReceiptNote(models.Model):
             except Exception as e:
                 self.delete()
                 raise e
+        
+        # Check if transfer is complete and trigger SAP completion
+        if not is_new or (receipt_data and receipt_data.get('line_items')):
+            # Refresh sales order to get updated delivery status
+            self.goods_issue.sales_order.refresh_from_db()
+            delivery_status = self.goods_issue.sales_order.delivery_status
+            
+            # If transfer is completely delivered, trigger SAP completion
+            if delivery_status[0] == '3':  # Completely Delivered
+                logger.info(f"Transfer complete for sales order {self.goods_issue.sales_order.sales_order_id}, triggering SAP completion")
+                self.complete_transfer_in_sap()
+            else:
+                # Update status for partial delivery
+                logger.info(f"Transfer partially complete for sales order {self.goods_issue.sales_order.sales_order_id}, updating status")
+                async_task('transfer_service.tasks.update_sales_order_status', self.goods_issue.sales_order.id)
         
         return self
     
@@ -470,7 +488,7 @@ class TransferReceiptNote(models.Model):
         """
         Mark transfer as completed in SAP ByD
         """
-        async_task('transfer_service.tasks.update_sales_order_status', self.goods_issue.sales_order.id)
+        async_task('transfer_service.tasks.complete_transfer_in_sap', self.id)
     
     def __str__(self):
         return f"TR-{self.receipt_number}"
