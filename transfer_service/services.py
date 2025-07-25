@@ -35,6 +35,60 @@ class AuthorizationService:
         ).exists()
     
     @staticmethod
+    def validate_store_access_with_role(user: CustomUser, store_id: str, required_roles: list = None) -> bool:
+        """
+        Validate if a user has access to a specific store with required role
+        """
+        query = StoreAuthorization.objects.filter(user=user, store_id=store_id)
+        
+        if required_roles:
+            query = query.filter(role__in=required_roles)
+        
+        return query.exists()
+    
+    @staticmethod
+    def get_user_store_role(user: CustomUser, store_id: str) -> str:
+        """
+        Get user's role for a specific store
+        """
+        try:
+            auth = StoreAuthorization.objects.get(user=user, store_id=store_id)
+            return auth.role
+        except StoreAuthorization.DoesNotExist:
+            return None
+    
+    @staticmethod
+    def validate_transfer_authorization(user: CustomUser, sales_order, operation_type: str) -> bool:
+        """
+        Validate user authorization for transfer operations
+        """
+        from .validators import StoreAuthorizationValidator
+        
+        if operation_type == 'goods_issue':
+            # User must have access to source store
+            StoreAuthorizationValidator.validate_store_access(
+                user, sales_order.source_store.id, 
+                required_roles=['manager', 'assistant', 'clerk']
+            )
+        elif operation_type == 'transfer_receipt':
+            # User must have access to destination store
+            StoreAuthorizationValidator.validate_store_access(
+                user, sales_order.destination_store.id,
+                required_roles=['manager', 'assistant', 'clerk']
+            )
+        elif operation_type == 'view':
+            # User must have access to either source or destination store
+            source_access = AuthorizationService.validate_store_access(user, sales_order.source_store.id)
+            dest_access = AuthorizationService.validate_store_access(user, sales_order.destination_store.id)
+            
+            if not (source_access or dest_access):
+                raise ValidationError(
+                    f"User {user.username} is not authorized to view this transfer"
+                )
+        
+        return True
+    
+    @staticmethod
     def filter_by_user_stores(queryset: QuerySet, user: CustomUser) -> QuerySet:
         """
         Filter a queryset to only include records for stores the user has access to
@@ -141,10 +195,92 @@ class GoodsIssueService:
     def validate_inventory_availability(store_id: str, items: list) -> bool:
         """
         Validate inventory availability at source store
-        This will be implemented when ICG integration is added
+        This is a placeholder for ICG integration
         """
-        # Placeholder for ICG integration
-        raise NotImplementedError("ICG inventory validation not yet implemented")
+        from .validators import InventoryValidator
+        
+        # Use the validator for basic validation
+        InventoryValidator.validate_inventory_availability(store_id, items)
+        
+        # Placeholder for actual ICG inventory check
+        logger.info(f"Validating inventory availability for store {store_id}")
+        
+        # In real implementation, this would:
+        # 1. Call ICG API to get current inventory levels
+        # 2. Check if requested quantities are available
+        # 3. Return detailed availability information
+        
+        # For now, simulate inventory check with business rules
+        for item in items:
+            product_id = item.get('product_id')
+            requested_quantity = float(item.get('quantity', 0))
+            
+            # Simulate inventory check (placeholder logic)
+            # In real implementation, this would be an ICG API call
+            simulated_available = 100.0  # Placeholder available quantity
+            
+            if requested_quantity > simulated_available:
+                raise ValidationError(
+                    f"Insufficient inventory for product {product_id}. "
+                    f"Requested: {requested_quantity}, Available: {simulated_available}"
+                )
+            
+            logger.info(f"Inventory check passed for product {product_id}: {requested_quantity}/{simulated_available}")
+        
+        return True
+    
+    @staticmethod
+    def validate_goods_issue_business_rules(sales_order, line_items_data, user, source_store):
+        """
+        Validate all business rules for goods issue creation
+        """
+        from .validators import (
+            BusinessRuleValidator, 
+            StoreAuthorizationValidator,
+            GoodsIssueValidator
+        )
+        
+        # Validate sales order status
+        BusinessRuleValidator.validate_sales_order_status_for_operation(
+            sales_order, 'goods_issue'
+        )
+        
+        # Validate store authorization
+        StoreAuthorizationValidator.validate_store_access(
+            user, source_store.id, required_roles=['manager', 'assistant', 'clerk']
+        )
+        
+        # Validate store relationships
+        BusinessRuleValidator.validate_store_relationship_constraints(
+            sales_order, source_store=source_store
+        )
+        
+        # Validate line item relationships
+        BusinessRuleValidator.validate_line_item_relationships(
+            line_items_data, sales_order, 'goods_issue'
+        )
+        
+        # Validate quantity constraints
+        BusinessRuleValidator.validate_quantity_constraints(
+            line_items_data, 'goods_issue'
+        )
+        
+        # Validate goods issue specific rules
+        GoodsIssueValidator.validate_goods_issue_creation(
+            sales_order, source_store, line_items_data, user
+        )
+        
+        # Validate inventory availability (placeholder)
+        inventory_items = [
+            {
+                'product_id': item['sales_order_line_item'].product_id,
+                'quantity': item['quantity_issued']
+            }
+            for item in line_items_data
+        ]
+        GoodsIssueService.validate_inventory_availability(source_store.id, inventory_items)
+        
+        return True
     
     @staticmethod
     def post_to_icg_inventory(goods_issue: GoodsIssueNote) -> bool:
@@ -191,6 +327,119 @@ class TransferReceiptService:
         """
         # Placeholder for validation logic
         raise NotImplementedError("Transfer receipt validation not yet implemented")
+    
+    @staticmethod
+    def validate_transfer_receipt_business_rules(goods_issue, line_items_data, user, destination_store):
+        """
+        Validate all business rules for transfer receipt creation
+        """
+        from .validators import (
+            BusinessRuleValidator,
+            StoreAuthorizationValidator,
+            TransferReceiptValidator
+        )
+        
+        # Validate transfer completion rules
+        BusinessRuleValidator.validate_transfer_completion_rules(goods_issue)
+        
+        # Validate sales order status
+        BusinessRuleValidator.validate_sales_order_status_for_operation(
+            goods_issue.sales_order, 'transfer_receipt'
+        )
+        
+        # Validate store authorization
+        StoreAuthorizationValidator.validate_store_access(
+            user, destination_store.id, required_roles=['manager', 'assistant', 'clerk']
+        )
+        
+        # Validate store relationships
+        BusinessRuleValidator.validate_store_relationship_constraints(
+            goods_issue.sales_order, destination_store=destination_store
+        )
+        
+        # Validate line item relationships
+        BusinessRuleValidator.validate_line_item_relationships(
+            line_items_data, goods_issue, 'transfer_receipt'
+        )
+        
+        # Validate quantity constraints
+        BusinessRuleValidator.validate_quantity_constraints(
+            line_items_data, 'transfer_receipt'
+        )
+        
+        # Validate transfer receipt specific rules
+        TransferReceiptValidator.validate_transfer_receipt_creation(
+            goods_issue, destination_store, line_items_data, user
+        )
+        
+        return True
+    
+    @staticmethod
+    def validate_receipt_quantities(goods_issue, line_items_data):
+        """
+        Validate receipt quantities against issued quantities
+        """
+        errors = []
+        
+        for i, item_data in enumerate(line_items_data):
+            line_number = i + 1
+            gi_line_item = item_data.get('goods_issue_line_item')
+            quantity_received = item_data.get('quantity_received', 0)
+            
+            if not gi_line_item:
+                errors.append(f"Line item {line_number}: Goods issue line item is required")
+                continue
+            
+            # Validate line item belongs to goods issue
+            if gi_line_item.goods_issue != goods_issue:
+                errors.append(
+                    f"Line item {line_number}: Line item does not belong to the specified goods issue"
+                )
+                continue
+            
+            # Check existing received quantities
+            from django.db.models import Sum
+            existing_received = gi_line_item.transfer_receipt_items.aggregate(
+                total=Sum('quantity_received')
+            )['total'] or 0
+            
+            available_quantity = float(gi_line_item.quantity_issued) - float(existing_received)
+            
+            if float(quantity_received) > available_quantity:
+                errors.append(
+                    f"Line item {line_number}: Cannot receive {quantity_received}. "
+                    f"Available quantity: {available_quantity}"
+                )
+        
+        if errors:
+            raise ValidationError(errors)
+        
+        return True
+    
+    @staticmethod
+    def check_quantity_variations(line_items_data):
+        """
+        Check for quantity variations between issued and received quantities
+        """
+        variations = []
+        
+        for item_data in line_items_data:
+            gi_line_item = item_data.get('goods_issue_line_item')
+            quantity_received = float(item_data.get('quantity_received', 0))
+            
+            if gi_line_item:
+                quantity_issued = float(gi_line_item.quantity_issued)
+                
+                if quantity_received != quantity_issued:
+                    variations.append({
+                        'product_id': gi_line_item.product_id,
+                        'product_name': gi_line_item.product_name,
+                        'quantity_issued': quantity_issued,
+                        'quantity_received': quantity_received,
+                        'variance': quantity_received - quantity_issued
+                    })
+        
+        return variations
     
     @staticmethod
     def update_destination_inventory(receipt: TransferReceiptNote) -> bool:

@@ -4070,3 +4070,817 @@ class SAPByDGoodsIssueIntegrationTest(TestCase):
         # Validation should be called during document creation
         with self.assertRaises(ValueError):
             byd_service.create_goods_issue_document(goods_issue_data)
+
+
+class BusinessRuleValidationTest(TestCase):
+    """
+    Tests for business rule validation
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        # Create test user
+        self.user = User.objects.create_user(
+            username='testuser',
+            email='test@example.com',
+            password='testpass123'
+        )
+        
+        # Create test stores
+        self.source_store = Store.objects.create(
+            store_name='Source Store',
+            icg_warehouse_code='SRC001',
+            byd_cost_center_code='CC001'
+        )
+        
+        self.dest_store = Store.objects.create(
+            store_name='Destination Store', 
+            icg_warehouse_code='DST001',
+            byd_cost_center_code='CC002'
+        )
+        
+        # Create store authorization
+        StoreAuthorization.objects.create(
+            user=self.user,
+            store=self.source_store,
+            role='manager'
+        )
+        
+        StoreAuthorization.objects.create(
+            user=self.user,
+            store=self.dest_store,
+            role='manager'
+        )
+        
+        # Create test sales order
+        self.sales_order = SalesOrder.objects.create(
+            object_id='SO123456',
+            sales_order_id=12345,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01',
+            delivery_status_code='1'
+        )
+        
+        # Create test line items
+        self.line_item1 = SalesOrderLineItem.objects.create(
+            sales_order=self.sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product 1',
+            quantity=10.0,
+            unit_price=50.0,
+            unit_of_measurement='EA'
+        )
+        
+        self.line_item2 = SalesOrderLineItem.objects.create(
+            sales_order=self.sales_order,
+            object_id='ITEM002',
+            product_id='PROD002',
+            product_name='Test Product 2',
+            quantity=5.0,
+            unit_price=100.0,
+            unit_of_measurement='EA'
+        )
+    
+    def test_inventory_validator_basic_validation(self):
+        """Test basic inventory validation"""
+        from .validators import InventoryValidator
+        
+        # Test valid inventory items
+        items = [
+            {'product_id': 'PROD001', 'quantity': 5.0},
+            {'product_id': 'PROD002', 'quantity': 3.0}
+        ]
+        
+        # Should not raise exception
+        result = InventoryValidator.validate_inventory_availability('SRC001', items)
+        self.assertTrue(result)
+    
+    def test_inventory_validator_missing_store_id(self):
+        """Test inventory validation fails with missing store ID"""
+        from .validators import InventoryValidator
+        
+        items = [{'product_id': 'PROD001', 'quantity': 5.0}]
+        
+        with self.assertRaises(ValidationError) as context:
+            InventoryValidator.validate_inventory_availability(None, items)
+        
+        self.assertIn('Store ID is required', str(context.exception))
+    
+    def test_inventory_validator_missing_product_items(self):
+        """Test inventory validation fails with missing product items"""
+        from .validators import InventoryValidator
+        
+        with self.assertRaises(ValidationError) as context:
+            InventoryValidator.validate_inventory_availability('SRC001', [])
+        
+        self.assertIn('Product items are required', str(context.exception))
+    
+    def test_inventory_validator_invalid_quantity(self):
+        """Test inventory validation fails with invalid quantity"""
+        from .validators import InventoryValidator
+        
+        items = [{'product_id': 'PROD001', 'quantity': -5.0}]
+        
+        with self.assertRaises(ValidationError) as context:
+            InventoryValidator.validate_inventory_availability('SRC001', items)
+        
+        self.assertIn('must be greater than 0', str(context.exception))
+    
+    def test_store_authorization_validator_valid_access(self):
+        """Test store authorization validation with valid access"""
+        from .validators import StoreAuthorizationValidator
+        
+        # Should not raise exception
+        auth = StoreAuthorizationValidator.validate_store_access(
+            self.user, self.source_store.id
+        )
+        self.assertIsNotNone(auth)
+    
+    def test_store_authorization_validator_invalid_user(self):
+        """Test store authorization validation fails with invalid user"""
+        from .validators import StoreAuthorizationValidator
+        
+        with self.assertRaises(ValidationError) as context:
+            StoreAuthorizationValidator.validate_store_access(None, self.source_store.id)
+        
+        self.assertIn('User must be authenticated', str(context.exception))
+    
+    def test_store_authorization_validator_unauthorized_store(self):
+        """Test store authorization validation fails for unauthorized store"""
+        from .validators import StoreAuthorizationValidator
+        
+        # Create another store without authorization
+        other_store = Store.objects.create(
+            store_name='Other Store',
+            icg_warehouse_code='OTHER001',
+            byd_cost_center_code='CC003'
+        )
+        
+        with self.assertRaises(ValidationError) as context:
+            StoreAuthorizationValidator.validate_store_access(
+                self.user, other_store.id
+            )
+        
+        self.assertIn('is not authorized for store', str(context.exception))
+    
+    def test_store_authorization_validator_role_requirement(self):
+        """Test store authorization validation with role requirements"""
+        from .validators import StoreAuthorizationValidator
+        
+        # Should pass with manager role
+        auth = StoreAuthorizationValidator.validate_store_access(
+            self.user, self.source_store.id, required_roles=['manager', 'assistant']
+        )
+        self.assertIsNotNone(auth)
+        
+        # Should fail with viewer role requirement when user is manager
+        with self.assertRaises(ValidationError) as context:
+            StoreAuthorizationValidator.validate_store_access(
+                self.user, self.source_store.id, required_roles=['viewer']
+            )
+        
+        self.assertIn('does not have required role', str(context.exception))
+    
+    def test_business_rule_validator_sales_order_status(self):
+        """Test business rule validation for sales order status"""
+        from .validators import BusinessRuleValidator
+        
+        # Should pass with status '1' (Not Started)
+        result = BusinessRuleValidator.validate_sales_order_status_for_operation(
+            self.sales_order, 'goods_issue'
+        )
+        self.assertTrue(result)
+        
+        # Should fail with status '3' (Completely Delivered)
+        self.sales_order.delivery_status_code = '3'
+        self.sales_order.save()
+        
+        with self.assertRaises(ValidationError) as context:
+            BusinessRuleValidator.validate_sales_order_status_for_operation(
+                self.sales_order, 'goods_issue'
+            )
+        
+        self.assertIn('Cannot create goods issue for a completely delivered', str(context.exception))
+    
+    def test_business_rule_validator_quantity_constraints_goods_issue(self):
+        """Test quantity constraints validation for goods issue"""
+        from .validators import BusinessRuleValidator
+        
+        # Valid quantity within available
+        line_items_data = [
+            {
+                'sales_order_line_item': self.line_item1,
+                'quantity_issued': 5.0
+            }
+        ]
+        
+        result = BusinessRuleValidator.validate_quantity_constraints(
+            line_items_data, 'goods_issue'
+        )
+        self.assertTrue(result)
+        
+        # Invalid quantity exceeding available
+        line_items_data = [
+            {
+                'sales_order_line_item': self.line_item1,
+                'quantity_issued': 15.0  # Exceeds available 10.0
+            }
+        ]
+        
+        with self.assertRaises(ValidationError) as context:
+            BusinessRuleValidator.validate_quantity_constraints(
+                line_items_data, 'goods_issue'
+            )
+        
+        self.assertIn('Cannot issue 15.0', str(context.exception))
+    
+    def test_business_rule_validator_store_relationships(self):
+        """Test store relationship constraints validation"""
+        from .validators import BusinessRuleValidator
+        
+        # Valid store relationships
+        result = BusinessRuleValidator.validate_store_relationship_constraints(
+            self.sales_order, source_store=self.source_store, destination_store=self.dest_store
+        )
+        self.assertTrue(result)
+        
+        # Invalid source store
+        other_store = Store.objects.create(
+            store_name='Other Store',
+            icg_warehouse_code='OTHER001',
+            byd_cost_center_code='CC003'
+        )
+        
+        with self.assertRaises(ValidationError) as context:
+            BusinessRuleValidator.validate_store_relationship_constraints(
+                self.sales_order, source_store=other_store
+            )
+        
+        self.assertIn('does not match sales order source store', str(context.exception))
+    
+    def test_business_rule_validator_line_item_relationships(self):
+        """Test line item relationship validation"""
+        from .validators import BusinessRuleValidator
+        
+        # Valid line item relationships
+        line_items_data = [
+            {'sales_order_line_item': self.line_item1}
+        ]
+        
+        result = BusinessRuleValidator.validate_line_item_relationships(
+            line_items_data, self.sales_order, 'goods_issue'
+        )
+        self.assertTrue(result)
+        
+        # Create another sales order and line item
+        other_sales_order = SalesOrder.objects.create(
+            object_id='SO789012',
+            sales_order_id=67890,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=500.00,
+            order_date='2024-01-02'
+        )
+        
+        other_line_item = SalesOrderLineItem.objects.create(
+            sales_order=other_sales_order,
+            object_id='ITEM003',
+            product_id='PROD003',
+            product_name='Test Product 3',
+            quantity=8.0,
+            unit_price=25.0,
+            unit_of_measurement='EA'
+        )
+        
+        # Invalid line item relationship
+        line_items_data = [
+            {'sales_order_line_item': other_line_item}  # Belongs to different sales order
+        ]
+        
+        with self.assertRaises(ValidationError) as context:
+            BusinessRuleValidator.validate_line_item_relationships(
+                line_items_data, self.sales_order, 'goods_issue'
+            )
+        
+        self.assertIn('does not belong to the specified sales order', str(context.exception))
+    
+    def test_goods_issue_service_inventory_validation(self):
+        """Test goods issue service inventory validation"""
+        from .services import GoodsIssueService
+        
+        # Valid inventory items
+        items = [
+            {'product_id': 'PROD001', 'quantity': 5.0},
+            {'product_id': 'PROD002', 'quantity': 3.0}
+        ]
+        
+        result = GoodsIssueService.validate_inventory_availability('SRC001', items)
+        self.assertTrue(result)
+        
+        # Invalid inventory items (exceeding simulated available quantity)
+        items = [
+            {'product_id': 'PROD001', 'quantity': 150.0}  # Exceeds simulated 100.0
+        ]
+        
+        with self.assertRaises(ValidationError) as context:
+            GoodsIssueService.validate_inventory_availability('SRC001', items)
+        
+        self.assertIn('Insufficient inventory', str(context.exception))
+    
+    def test_goods_issue_service_business_rules_validation(self):
+        """Test goods issue service comprehensive business rules validation"""
+        from .services import GoodsIssueService
+        
+        line_items_data = [
+            {
+                'sales_order_line_item': self.line_item1,
+                'quantity_issued': 5.0
+            }
+        ]
+        
+        # Should pass all validations
+        result = GoodsIssueService.validate_goods_issue_business_rules(
+            self.sales_order, line_items_data, self.user, self.source_store
+        )
+        self.assertTrue(result)
+        
+        # Should fail with unauthorized user
+        unauthorized_user = User.objects.create_user(
+            username='unauthorized',
+            email='unauthorized@example.com',
+            password='testpass123'
+        )
+        
+        with self.assertRaises(ValidationError) as context:
+            GoodsIssueService.validate_goods_issue_business_rules(
+                self.sales_order, line_items_data, unauthorized_user, self.source_store
+            )
+        
+        self.assertIn('is not authorized for store', str(context.exception))
+    
+    def test_transfer_receipt_service_quantity_validation(self):
+        """Test transfer receipt service quantity validation"""
+        from .services import TransferReceiptService
+        
+        # Create goods issue first
+        goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            source_store=self.source_store,
+            created_by=self.user,
+            posted_to_icg=True,
+            posted_to_sap=True
+        )
+        
+        gi_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=goods_issue,
+            sales_order_line_item=self.line_item1,
+            quantity_issued=8.0
+        )
+        
+        # Valid receipt quantities
+        line_items_data = [
+            {
+                'goods_issue_line_item': gi_line_item,
+                'quantity_received': 7.0
+            }
+        ]
+        
+        result = TransferReceiptService.validate_receipt_quantities(
+            goods_issue, line_items_data
+        )
+        self.assertTrue(result)
+        
+        # Invalid receipt quantities (exceeding issued)
+        line_items_data = [
+            {
+                'goods_issue_line_item': gi_line_item,
+                'quantity_received': 10.0  # Exceeds issued 8.0
+            }
+        ]
+        
+        with self.assertRaises(ValidationError) as context:
+            TransferReceiptService.validate_receipt_quantities(
+                goods_issue, line_items_data
+            )
+        
+        self.assertIn('Cannot receive 10.0', str(context.exception))
+    
+    def test_transfer_receipt_service_quantity_variations(self):
+        """Test transfer receipt service quantity variation detection"""
+        from .services import TransferReceiptService
+        
+        # Create goods issue
+        goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            source_store=self.source_store,
+            created_by=self.user
+        )
+        
+        gi_line_item1 = GoodsIssueLineItem.objects.create(
+            goods_issue=goods_issue,
+            sales_order_line_item=self.line_item1,
+            quantity_issued=8.0
+        )
+        
+        gi_line_item2 = GoodsIssueLineItem.objects.create(
+            goods_issue=goods_issue,
+            sales_order_line_item=self.line_item2,
+            quantity_issued=5.0
+        )
+        
+        # Test with variations
+        line_items_data = [
+            {
+                'goods_issue_line_item': gi_line_item1,
+                'quantity_received': 7.0  # Variation: -1.0
+            },
+            {
+                'goods_issue_line_item': gi_line_item2,
+                'quantity_received': 5.0  # No variation
+            }
+        ]
+        
+        variations = TransferReceiptService.check_quantity_variations(line_items_data)
+        
+        self.assertEqual(len(variations), 1)
+        self.assertEqual(variations[0]['product_id'], 'PROD001')
+        self.assertEqual(variations[0]['variance'], -1.0)
+    
+    def test_authorization_service_enhanced_methods(self):
+        """Test enhanced authorization service methods"""
+        from .services import AuthorizationService
+        
+        # Test role-based access validation
+        result = AuthorizationService.validate_store_access_with_role(
+            self.user, self.source_store.id, required_roles=['manager']
+        )
+        self.assertTrue(result)
+        
+        # Test get user store role
+        role = AuthorizationService.get_user_store_role(self.user, self.source_store.id)
+        self.assertEqual(role, 'manager')
+        
+        # Test transfer authorization validation
+        result = AuthorizationService.validate_transfer_authorization(
+            self.user, self.sales_order, 'goods_issue'
+        )
+        self.assertTrue(result)
+        
+        # Test unauthorized transfer operation
+        unauthorized_user = User.objects.create_user(
+            username='unauthorized',
+            email='unauthorized@example.com',
+            password='testpass123'
+        )
+        
+        with self.assertRaises(ValidationError) as context:
+            AuthorizationService.validate_transfer_authorization(
+                unauthorized_user, self.sales_order, 'goods_issue'
+            )
+        
+        self.assertIn('is not authorized for store', str(context.exception))
+
+
+class QuantityValidationTest(TestCase):
+    """
+    Tests for quantity validation logic
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        # Create test user
+        self.user = User.objects.create_user(
+            username='testuser',
+            email='test@example.com',
+            password='testpass123'
+        )
+        
+        # Create test stores
+        self.source_store = Store.objects.create(
+            store_name='Source Store',
+            icg_warehouse_code='SRC001',
+            byd_cost_center_code='CC001'
+        )
+        
+        self.dest_store = Store.objects.create(
+            store_name='Destination Store', 
+            icg_warehouse_code='DST001',
+            byd_cost_center_code='CC002'
+        )
+        
+        # Create test sales order
+        self.sales_order = SalesOrder.objects.create(
+            object_id='SO123456',
+            sales_order_id=12345,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01'
+        )
+        
+        # Create test line item
+        self.line_item = SalesOrderLineItem.objects.create(
+            sales_order=self.sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product 1',
+            quantity=10.0,
+            unit_price=50.0,
+            unit_of_measurement='EA'
+        )
+    
+    def test_quantity_validation_with_existing_issues(self):
+        """Test quantity validation with existing goods issues"""
+        from .validators import BusinessRuleValidator
+        
+        # Create existing goods issue
+        goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            source_store=self.source_store,
+            created_by=self.user
+        )
+        
+        GoodsIssueLineItem.objects.create(
+            goods_issue=goods_issue,
+            sales_order_line_item=self.line_item,
+            quantity_issued=6.0  # 6 already issued
+        )
+        
+        # Try to issue 5 more (should pass - total 11 > 10 but available is 4)
+        line_items_data = [
+            {
+                'sales_order_line_item': self.line_item,
+                'quantity_issued': 4.0  # Available: 10 - 6 = 4
+            }
+        ]
+        
+        result = BusinessRuleValidator.validate_quantity_constraints(
+            line_items_data, 'goods_issue'
+        )
+        self.assertTrue(result)
+        
+        # Try to issue 5 more (should fail - exceeds available)
+        line_items_data = [
+            {
+                'sales_order_line_item': self.line_item,
+                'quantity_issued': 5.0  # Exceeds available 4
+            }
+        ]
+        
+        with self.assertRaises(ValidationError) as context:
+            BusinessRuleValidator.validate_quantity_constraints(
+                line_items_data, 'goods_issue'
+            )
+        
+        self.assertIn('Cannot issue 5.0', str(context.exception))
+        self.assertIn('Available quantity: 4', str(context.exception))
+    
+    def test_quantity_validation_with_existing_receipts(self):
+        """Test quantity validation with existing transfer receipts"""
+        from .validators import BusinessRuleValidator
+        
+        # Create goods issue
+        goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            source_store=self.source_store,
+            created_by=self.user
+        )
+        
+        gi_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=goods_issue,
+            sales_order_line_item=self.line_item,
+            quantity_issued=8.0
+        )
+        
+        # Create existing transfer receipt
+        transfer_receipt = TransferReceiptNote.objects.create(
+            goods_issue=goods_issue,
+            destination_store=self.dest_store,
+            created_by=self.user
+        )
+        
+        TransferReceiptLineItem.objects.create(
+            transfer_receipt=transfer_receipt,
+            goods_issue_line_item=gi_line_item,
+            quantity_received=5.0  # 5 already received
+        )
+        
+        # Try to receive 3 more (should pass - total 8 issued, 5 received, 3 available)
+        line_items_data = [
+            {
+                'goods_issue_line_item': gi_line_item,
+                'quantity_received': 3.0  # Available: 8 - 5 = 3
+            }
+        ]
+        
+        result = BusinessRuleValidator.validate_quantity_constraints(
+            line_items_data, 'transfer_receipt'
+        )
+        self.assertTrue(result)
+        
+        # Try to receive 4 more (should fail - exceeds available)
+        line_items_data = [
+            {
+                'goods_issue_line_item': gi_line_item,
+                'quantity_received': 4.0  # Exceeds available 3
+            }
+        ]
+        
+        with self.assertRaises(ValidationError) as context:
+            BusinessRuleValidator.validate_quantity_constraints(
+                line_items_data, 'transfer_receipt'
+            )
+        
+        self.assertIn('Cannot receive 4.0', str(context.exception))
+        self.assertIn('Available quantity: 3', str(context.exception))
+
+
+class StatusValidationTest(TestCase):
+    """
+    Tests for status validation logic
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        # Create test user
+        self.user = User.objects.create_user(
+            username='testuser',
+            email='test@example.com',
+            password='testpass123'
+        )
+        
+        # Create test stores
+        self.source_store = Store.objects.create(
+            store_name='Source Store',
+            icg_warehouse_code='SRC001',
+            byd_cost_center_code='CC001'
+        )
+        
+        self.dest_store = Store.objects.create(
+            store_name='Destination Store', 
+            icg_warehouse_code='DST001',
+            byd_cost_center_code='CC002'
+        )
+    
+    def test_sales_order_status_validation_for_goods_issue(self):
+        """Test sales order status validation for goods issue operations"""
+        from .validators import BusinessRuleValidator
+        
+        # Test with 'Not Started' status (should pass)
+        sales_order = SalesOrder.objects.create(
+            object_id='SO123456',
+            sales_order_id=12345,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01',
+            delivery_status_code='1'  # Not Started
+        )
+        
+        result = BusinessRuleValidator.validate_sales_order_status_for_operation(
+            sales_order, 'goods_issue'
+        )
+        self.assertTrue(result)
+        
+        # Test with 'Partially Delivered' status (should pass)
+        sales_order.delivery_status_code = '2'
+        sales_order.save()
+        
+        result = BusinessRuleValidator.validate_sales_order_status_for_operation(
+            sales_order, 'goods_issue'
+        )
+        self.assertTrue(result)
+        
+        # Test with 'Completely Delivered' status (should fail)
+        sales_order.delivery_status_code = '3'
+        sales_order.save()
+        
+        with self.assertRaises(ValidationError) as context:
+            BusinessRuleValidator.validate_sales_order_status_for_operation(
+                sales_order, 'goods_issue'
+            )
+        
+        self.assertIn('Cannot create goods issue for a completely delivered', str(context.exception))
+    
+    def test_sales_order_status_validation_for_transfer_receipt(self):
+        """Test sales order status validation for transfer receipt operations"""
+        from .validators import BusinessRuleValidator
+        
+        # Test with 'Not Started' status (should fail)
+        sales_order = SalesOrder.objects.create(
+            object_id='SO123456',
+            sales_order_id=12345,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01',
+            delivery_status_code='1'  # Not Started
+        )
+        
+        with self.assertRaises(ValidationError) as context:
+            BusinessRuleValidator.validate_sales_order_status_for_operation(
+                sales_order, 'transfer_receipt'
+            )
+        
+        self.assertIn('Cannot create transfer receipt for a sales order with no goods issued', str(context.exception))
+        
+        # Test with 'Partially Delivered' status (should pass if goods issue exists)
+        sales_order.delivery_status_code = '2'
+        sales_order.save()
+        
+        # Create a goods issue to allow transfer receipt
+        line_item = SalesOrderLineItem.objects.create(
+            sales_order=sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product 1',
+            quantity=10.0,
+            unit_price=50.0,
+            unit_of_measurement='EA'
+        )
+        
+        goods_issue = GoodsIssueNote.objects.create(
+            sales_order=sales_order,
+            source_store=self.source_store,
+            created_by=self.user
+        )
+        
+        result = BusinessRuleValidator.validate_sales_order_status_for_operation(
+            sales_order, 'transfer_receipt'
+        )
+        self.assertTrue(result)
+        
+        # Test with 'Completely Delivered' status (should pass if goods issue exists)
+        sales_order.delivery_status_code = '3'
+        sales_order.save()
+        
+        result = BusinessRuleValidator.validate_sales_order_status_for_operation(
+            sales_order, 'transfer_receipt'
+        )
+        self.assertTrue(result)
+    
+    def test_transfer_completion_rules_validation(self):
+        """Test transfer completion rules validation"""
+        from .validators import BusinessRuleValidator
+        
+        # Create sales order
+        sales_order = SalesOrder.objects.create(
+            object_id='SO123456',
+            sales_order_id=12345,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01'
+        )
+        
+        # Create goods issue without external system posting
+        goods_issue = GoodsIssueNote.objects.create(
+            sales_order=sales_order,
+            source_store=self.source_store,
+            created_by=self.user,
+            posted_to_icg=False,
+            posted_to_sap=False
+        )
+        
+        # Should fail validation
+        with self.assertRaises(ValidationError) as context:
+            BusinessRuleValidator.validate_transfer_completion_rules(goods_issue)
+        
+        errors = str(context.exception)
+        self.assertIn('must be posted to ICG', errors)
+        self.assertIn('must be posted to SAP ByD', errors)
+        
+        # Update goods issue to be posted to external systems
+        goods_issue.posted_to_icg = True
+        goods_issue.posted_to_sap = True
+        goods_issue.save()
+        
+        # Should still fail without line items
+        with self.assertRaises(ValidationError) as context:
+            BusinessRuleValidator.validate_transfer_completion_rules(goods_issue)
+        
+        self.assertIn('must have line items', str(context.exception))
+        
+        # Add line items
+        line_item = SalesOrderLineItem.objects.create(
+            sales_order=sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product 1',
+            quantity=10.0,
+            unit_price=50.0,
+            unit_of_measurement='EA'
+        )
+        
+        GoodsIssueLineItem.objects.create(
+            goods_issue=goods_issue,
+            sales_order_line_item=line_item,
+            quantity_issued=8.0
+        )
+        
+        # Should now pass validation
+        result = BusinessRuleValidator.validate_transfer_completion_rules(goods_issue)
+        self.assertTrue(result)
