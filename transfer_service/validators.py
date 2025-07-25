@@ -5,9 +5,280 @@ from django.core.exceptions import ValidationError
 from django.db.models import Sum
 from decimal import Decimal, InvalidOperation
 from rest_framework import serializers
+from rest_framework.response import Response
+from rest_framework import status
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class ValidationErrorResponse:
+    """
+    Utility class for creating standardized error responses
+    """
+    
+    @staticmethod
+    def create_error_response(message, error_code, field_errors=None, validation_errors=None, status_code=status.HTTP_400_BAD_REQUEST):
+        """
+        Create a standardized error response
+        """
+        return Response({
+            'success': False,
+            'message': message,
+            'error_code': error_code,
+            'details': {
+                'field_errors': field_errors or {},
+                'validation_errors': validation_errors or []
+            }
+        }, status=status_code)
+    
+    @staticmethod
+    def create_validation_error_response(errors):
+        """
+        Create error response from Django ValidationError or DRF serializer errors
+        """
+        if isinstance(errors, ValidationError):
+            if hasattr(errors, 'error_dict'):
+                # Field-specific errors
+                field_errors = {}
+                validation_errors = []
+                for field, error_list in errors.error_dict.items():
+                    field_errors[field] = [str(error) for error in error_list]
+                return ValidationErrorResponse.create_error_response(
+                    'Validation failed',
+                    'VALIDATION_ERROR',
+                    field_errors=field_errors,
+                    validation_errors=validation_errors
+                )
+            else:
+                # General validation errors
+                validation_errors = [str(error) for error in errors.error_list] if hasattr(errors, 'error_list') else [str(errors)]
+                return ValidationErrorResponse.create_error_response(
+                    'Validation failed',
+                    'VALIDATION_ERROR',
+                    validation_errors=validation_errors
+                )
+        elif isinstance(errors, dict):
+            # DRF serializer errors
+            field_errors = {}
+            validation_errors = []
+            for field, error_list in errors.items():
+                if field == 'non_field_errors':
+                    validation_errors.extend([str(error) for error in error_list])
+                else:
+                    field_errors[field] = [str(error) for error in error_list]
+            return ValidationErrorResponse.create_error_response(
+                'Validation failed',
+                'VALIDATION_ERROR',
+                field_errors=field_errors,
+                validation_errors=validation_errors
+            )
+        else:
+            # Generic error
+            return ValidationErrorResponse.create_error_response(
+                'Validation failed',
+                'VALIDATION_ERROR',
+                validation_errors=[str(errors)]
+            )
+    
+    @staticmethod
+    def create_authorization_error_response(message="You are not authorized to perform this action"):
+        """
+        Create authorization error response
+        """
+        return ValidationErrorResponse.create_error_response(
+            message,
+            'AUTHORIZATION_ERROR',
+            status_code=status.HTTP_403_FORBIDDEN
+        )
+    
+    @staticmethod
+    def create_not_found_error_response(resource_name="Resource"):
+        """
+        Create not found error response
+        """
+        return ValidationErrorResponse.create_error_response(
+            f'{resource_name} not found',
+            'NOT_FOUND_ERROR',
+            status_code=status.HTTP_404_NOT_FOUND
+        )
+    
+    @staticmethod
+    def create_business_rule_error_response(message, validation_errors=None):
+        """
+        Create business rule violation error response
+        """
+        return ValidationErrorResponse.create_error_response(
+            message,
+            'BUSINESS_RULE_ERROR',
+            validation_errors=validation_errors or [message]
+        )
+    
+    @staticmethod
+    def create_external_system_error_response(system_name, error_message):
+        """
+        Create external system integration error response
+        """
+        return ValidationErrorResponse.create_error_response(
+            f'Integration with {system_name} failed',
+            'EXTERNAL_SYSTEM_ERROR',
+            validation_errors=[error_message],
+            status_code=status.HTTP_502_BAD_GATEWAY
+        )
+    
+    @staticmethod
+    def create_internal_error_response(error_message="An internal error occurred"):
+        """
+        Create internal server error response
+        """
+        return ValidationErrorResponse.create_error_response(
+            'Internal server error',
+            'INTERNAL_ERROR',
+            validation_errors=[error_message],
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+class FieldValidator:
+    """
+    Field-level validation utilities
+    """
+    
+    @staticmethod
+    def validate_required_field(value, field_name):
+        """
+        Validate that a required field is not empty
+        """
+        if value is None:
+            raise ValidationError({field_name: [f"{field_name} is required"]})
+        
+        if isinstance(value, str) and value.strip() == "":
+            raise ValidationError({field_name: [f"{field_name} cannot be empty"]})
+        
+        return value
+    
+    @staticmethod
+    def validate_positive_decimal(value, field_name="value", max_digits=15, decimal_places=3):
+        """
+        Validate that a decimal value is positive and within limits
+        """
+        if value is None:
+            raise ValidationError({field_name: [f"{field_name} cannot be null"]})
+        
+        try:
+            decimal_value = Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError):
+            raise ValidationError({field_name: [f"{field_name} must be a valid decimal number"]})
+        
+        if decimal_value <= 0:
+            raise ValidationError({field_name: [f"{field_name} must be greater than 0"]})
+        
+        # Check decimal places
+        if decimal_value.as_tuple().exponent < -decimal_places:
+            raise ValidationError({field_name: [f"{field_name} cannot have more than {decimal_places} decimal places"]})
+        
+        # Check total digits
+        total_digits = len(decimal_value.as_tuple().digits)
+        if total_digits > max_digits:
+            raise ValidationError({field_name: [f"{field_name} cannot have more than {max_digits} total digits"]})
+        
+        return decimal_value
+    
+    @staticmethod
+    def validate_positive_integer(value, field_name="value"):
+        """
+        Validate that an integer value is positive
+        """
+        if value is None:
+            raise ValidationError({field_name: [f"{field_name} cannot be null"]})
+        
+        try:
+            int_value = int(value)
+        except (ValueError, TypeError):
+            raise ValidationError({field_name: [f"{field_name} must be a valid integer"]})
+        
+        if int_value <= 0:
+            raise ValidationError({field_name: [f"{field_name} must be greater than 0"]})
+        
+        return int_value
+    
+    @staticmethod
+    def validate_string_length(value, field_name, min_length=None, max_length=None):
+        """
+        Validate string length constraints
+        """
+        if value is None:
+            raise ValidationError({field_name: [f"{field_name} cannot be null"]})
+        
+        if not isinstance(value, str):
+            raise ValidationError({field_name: [f"{field_name} must be a string"]})
+        
+        if min_length is not None and len(value) < min_length:
+            raise ValidationError({field_name: [f"{field_name} must be at least {min_length} characters long"]})
+        
+        if max_length is not None and len(value) > max_length:
+            raise ValidationError({field_name: [f"{field_name} cannot be longer than {max_length} characters"]})
+        
+        return value
+    
+    @staticmethod
+    def validate_choice_field(value, field_name, choices):
+        """
+        Validate that value is in allowed choices
+        """
+        if value is None:
+            raise ValidationError({field_name: [f"{field_name} cannot be null"]})
+        
+        valid_choices = [choice[0] for choice in choices] if isinstance(choices[0], (list, tuple)) else choices
+        
+        if value not in valid_choices:
+            raise ValidationError({field_name: [f"{field_name} must be one of: {', '.join(valid_choices)}"]})
+        
+        return value
+    
+    @staticmethod
+    def validate_email_field(value, field_name):
+        """
+        Validate email format
+        """
+        if value is None:
+            return value  # Allow null emails
+        
+        if not isinstance(value, str):
+            raise ValidationError({field_name: [f"{field_name} must be a string"]})
+        
+        import re
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, value):
+            raise ValidationError({field_name: [f"{field_name} must be a valid email address"]})
+        
+        return value
+    
+    @staticmethod
+    def validate_date_field(value, field_name):
+        """
+        Validate date field
+        """
+        if value is None:
+            raise ValidationError({field_name: [f"{field_name} cannot be null"]})
+        
+        from datetime import date, datetime
+        
+        if isinstance(value, str):
+            try:
+                from django.utils.dateparse import parse_date
+                parsed_date = parse_date(value)
+                if parsed_date is None:
+                    raise ValueError()
+                return parsed_date
+            except (ValueError, TypeError):
+                raise ValidationError({field_name: [f"{field_name} must be a valid date in YYYY-MM-DD format"]})
+        elif isinstance(value, datetime):
+            return value.date()
+        elif isinstance(value, date):
+            return value
+        else:
+            raise ValidationError({field_name: [f"{field_name} must be a valid date"]})
 
 
 class TransferDataValidator:
@@ -20,18 +291,7 @@ class TransferDataValidator:
         """
         Validate that a decimal value is positive
         """
-        if value is None:
-            raise ValidationError(f"{field_name} cannot be null")
-        
-        try:
-            decimal_value = Decimal(str(value))
-        except (InvalidOperation, ValueError):
-            raise ValidationError(f"{field_name} must be a valid decimal number")
-        
-        if decimal_value <= 0:
-            raise ValidationError(f"{field_name} must be greater than 0")
-        
-        return decimal_value
+        return FieldValidator.validate_positive_decimal(value, field_name)
     
     @staticmethod
     def validate_stores_different(source_store, destination_store):
@@ -48,8 +308,50 @@ class TransferDataValidator:
         """
         Validate that a required field is not empty
         """
-        if value is None or (isinstance(value, str) and value.strip() == ""):
-            raise ValidationError(f"{field_name} is required")
+        return FieldValidator.validate_required_field(value, field_name)
+    
+    @staticmethod
+    def validate_model_instance(instance, model_class, field_name):
+        """
+        Validate that instance is of expected model type
+        """
+        if instance is None:
+            raise ValidationError({field_name: [f"{field_name} cannot be null"]})
+        
+        if not isinstance(instance, model_class):
+            raise ValidationError({field_name: [f"{field_name} must be a valid {model_class.__name__} instance"]})
+        
+        return instance
+    
+    @staticmethod
+    def validate_foreign_key_exists(model_class, field_name, lookup_value, lookup_field='id'):
+        """
+        Validate that foreign key reference exists
+        """
+        try:
+            lookup_kwargs = {lookup_field: lookup_value}
+            instance = model_class.objects.get(**lookup_kwargs)
+            return instance
+        except model_class.DoesNotExist:
+            raise ValidationError({field_name: [f"{model_class.__name__} with {lookup_field}={lookup_value} does not exist"]})
+        except Exception as e:
+            raise ValidationError({field_name: [f"Error validating {field_name}: {str(e)}"]})
+    
+    @staticmethod
+    def validate_json_field(value, field_name, required_keys=None):
+        """
+        Validate JSON field structure
+        """
+        if value is None:
+            return {}
+        
+        if not isinstance(value, dict):
+            raise ValidationError({field_name: [f"{field_name} must be a valid JSON object"]})
+        
+        if required_keys:
+            missing_keys = [key for key in required_keys if key not in value]
+            if missing_keys:
+                raise ValidationError({field_name: [f"{field_name} missing required keys: {', '.join(missing_keys)}"]})
         
         return value
 
@@ -64,50 +366,81 @@ class SalesOrderValidator(TransferDataValidator):
         """
         Validate sales order data from SAP ByD
         """
-        errors = []
+        field_errors = {}
+        validation_errors = []
+        
+        # Validate input is a dictionary
+        if not isinstance(so_data, dict):
+            raise ValidationError("Sales order data must be a valid dictionary")
         
         # Required fields validation
         required_fields = ["ObjectID", "ID", "TotalNetAmount"]
         for field in required_fields:
-            if field not in so_data or so_data[field] is None:
-                errors.append(f"Required field '{field}' is missing or null")
+            try:
+                cls.validate_required_field(so_data.get(field), field)
+            except ValidationError as e:
+                field_errors.update(e.error_dict if hasattr(e, 'error_dict') else {field: [str(e)]})
+        
+        # Validate ObjectID format
+        if "ObjectID" in so_data and so_data["ObjectID"]:
+            try:
+                FieldValidator.validate_string_length(so_data["ObjectID"], "ObjectID", min_length=1, max_length=32)
+            except ValidationError as e:
+                field_errors.update(e.error_dict)
         
         # Validate sales order ID is numeric
-        if "ID" in so_data:
+        if "ID" in so_data and so_data["ID"]:
             try:
-                int(so_data["ID"])
-            except (ValueError, TypeError):
-                errors.append("Sales order ID must be a valid integer")
+                FieldValidator.validate_positive_integer(so_data["ID"], "ID")
+            except ValidationError as e:
+                field_errors.update(e.error_dict)
         
         # Validate total net amount
-        if "TotalNetAmount" in so_data:
+        if "TotalNetAmount" in so_data and so_data["TotalNetAmount"]:
             try:
                 cls.validate_positive_decimal(so_data["TotalNetAmount"], "TotalNetAmount")
             except ValidationError as e:
-                errors.append(str(e))
+                field_errors.update(e.error_dict if hasattr(e, 'error_dict') else {"TotalNetAmount": [str(e)]})
         
         # Validate party information
         seller_party = so_data.get("SellerParty", {})
         buyer_party = so_data.get("BuyerParty", {})
         
-        if not seller_party.get("PartyID"):
-            errors.append("SellerParty PartyID is required")
+        if not isinstance(seller_party, dict):
+            field_errors["SellerParty"] = ["SellerParty must be a valid object"]
+        elif not seller_party.get("PartyID"):
+            field_errors["SellerParty"] = ["SellerParty PartyID is required"]
         
-        if not buyer_party.get("PartyID"):
-            errors.append("BuyerParty PartyID is required")
+        if not isinstance(buyer_party, dict):
+            field_errors["BuyerParty"] = ["BuyerParty must be a valid object"]
+        elif not buyer_party.get("PartyID"):
+            field_errors["BuyerParty"] = ["BuyerParty PartyID is required"]
         
         # Validate line items exist
         items = so_data.get("Item", [])
         if not items:
-            errors.append("Sales order must contain at least one line item")
+            validation_errors.append("Sales order must contain at least one line item")
+        elif not isinstance(items, list):
+            field_errors["Item"] = ["Item must be a list of line items"]
+        else:
+            # Validate each line item
+            for i, item in enumerate(items):
+                try:
+                    cls.validate_line_item_data(item, i + 1)
+                except ValidationError as e:
+                    if hasattr(e, 'error_dict'):
+                        for field, errors in e.error_dict.items():
+                            field_key = f"Item[{i}].{field}"
+                            field_errors[field_key] = errors
+                    else:
+                        validation_errors.append(f"Line item {i + 1}: {str(e)}")
         
-        # Validate each line item
-        for i, item in enumerate(items):
-            item_errors = cls.validate_line_item_data(item, i + 1)
-            errors.extend(item_errors)
-        
-        if errors:
-            raise ValidationError(errors)
+        # Raise combined errors if any exist
+        if field_errors or validation_errors:
+            error = ValidationError("Sales order validation failed")
+            error.error_dict = field_errors
+            error.error_list = validation_errors
+            raise error
         
         return True
     
@@ -116,29 +449,67 @@ class SalesOrderValidator(TransferDataValidator):
         """
         Validate sales order line item data
         """
-        errors = []
+        field_errors = {}
+        
+        if not isinstance(item_data, dict):
+            raise ValidationError(f"Line item {line_number} must be a valid dictionary")
         
         # Required fields for line items
         required_fields = ["ObjectID", "ProductID", "Description", "Quantity", "ListUnitPriceAmount"]
         for field in required_fields:
-            if field not in item_data or item_data[field] is None:
-                errors.append(f"Line item {line_number}: Required field '{field}' is missing or null")
+            try:
+                cls.validate_required_field(item_data.get(field), field)
+            except ValidationError as e:
+                field_errors.update(e.error_dict if hasattr(e, 'error_dict') else {field: [str(e)]})
+        
+        # Validate ObjectID format
+        if "ObjectID" in item_data and item_data["ObjectID"]:
+            try:
+                FieldValidator.validate_string_length(item_data["ObjectID"], "ObjectID", min_length=1, max_length=32)
+            except ValidationError as e:
+                field_errors.update(e.error_dict)
+        
+        # Validate ProductID format
+        if "ProductID" in item_data and item_data["ProductID"]:
+            try:
+                FieldValidator.validate_string_length(item_data["ProductID"], "ProductID", min_length=1, max_length=32)
+            except ValidationError as e:
+                field_errors.update(e.error_dict)
+        
+        # Validate Description format
+        if "Description" in item_data and item_data["Description"]:
+            try:
+                FieldValidator.validate_string_length(item_data["Description"], "Description", min_length=1, max_length=100)
+            except ValidationError as e:
+                field_errors.update(e.error_dict)
         
         # Validate quantity
-        if "Quantity" in item_data:
+        if "Quantity" in item_data and item_data["Quantity"]:
             try:
-                cls.validate_positive_decimal(item_data["Quantity"], f"Line item {line_number} Quantity")
+                cls.validate_positive_decimal(item_data["Quantity"], "Quantity")
             except ValidationError as e:
-                errors.append(str(e))
+                field_errors.update(e.error_dict if hasattr(e, 'error_dict') else {"Quantity": [str(e)]})
         
         # Validate unit price
-        if "ListUnitPriceAmount" in item_data:
+        if "ListUnitPriceAmount" in item_data and item_data["ListUnitPriceAmount"]:
             try:
-                cls.validate_positive_decimal(item_data["ListUnitPriceAmount"], f"Line item {line_number} ListUnitPriceAmount")
+                cls.validate_positive_decimal(item_data["ListUnitPriceAmount"], "ListUnitPriceAmount")
             except ValidationError as e:
-                errors.append(str(e))
+                field_errors.update(e.error_dict if hasattr(e, 'error_dict') else {"ListUnitPriceAmount": [str(e)]})
         
-        return errors
+        # Validate unit of measurement if present
+        if "QuantityUnitCodeText" in item_data and item_data["QuantityUnitCodeText"]:
+            try:
+                FieldValidator.validate_string_length(item_data["QuantityUnitCodeText"], "QuantityUnitCodeText", max_length=32)
+            except ValidationError as e:
+                field_errors.update(e.error_dict)
+        
+        if field_errors:
+            error = ValidationError(f"Line item {line_number} validation failed")
+            error.error_dict = field_errors
+            raise error
+        
+        return True
 
 
 class GoodsIssueValidator(TransferDataValidator):
@@ -151,22 +522,55 @@ class GoodsIssueValidator(TransferDataValidator):
         """
         Validate goods issue creation data
         """
-        errors = []
+        field_errors = {}
+        validation_errors = []
+        
+        # Validate input parameters
+        try:
+            cls.validate_model_instance(sales_order, type(sales_order), "sales_order")
+        except ValidationError as e:
+            field_errors.update(e.error_dict)
+        
+        try:
+            cls.validate_model_instance(source_store, type(source_store), "source_store")
+        except ValidationError as e:
+            field_errors.update(e.error_dict)
+        
+        try:
+            cls.validate_model_instance(user, type(user), "user")
+        except ValidationError as e:
+            field_errors.update(e.error_dict)
         
         # Validate sales order and store relationship
-        if source_store != sales_order.source_store:
-            errors.append("Source store must match the sales order source store")
+        if sales_order and source_store and source_store != sales_order.source_store:
+            validation_errors.append(
+                f"Source store '{source_store.store_name}' does not match "
+                f"sales order source store '{sales_order.source_store.store_name}'"
+            )
         
         # Validate line items
         if not line_items_data:
-            errors.append("At least one line item is required")
+            validation_errors.append("At least one line item is required")
+        elif not isinstance(line_items_data, list):
+            field_errors["line_items"] = ["Line items must be a list"]
         else:
             for i, item_data in enumerate(line_items_data):
-                item_errors = cls.validate_goods_issue_line_item(item_data, sales_order, i + 1)
-                errors.extend(item_errors)
+                try:
+                    cls.validate_goods_issue_line_item(item_data, sales_order, i + 1)
+                except ValidationError as e:
+                    if hasattr(e, 'error_dict'):
+                        for field, errors in e.error_dict.items():
+                            field_key = f"line_items[{i}].{field}"
+                            field_errors[field_key] = errors
+                    else:
+                        validation_errors.append(f"Line item {i + 1}: {str(e)}")
         
-        if errors:
-            raise ValidationError(errors)
+        # Raise combined errors if any exist
+        if field_errors or validation_errors:
+            error = ValidationError("Goods issue validation failed")
+            error.error_dict = field_errors
+            error.error_list = validation_errors
+            raise error
         
         return True
     
@@ -175,45 +579,69 @@ class GoodsIssueValidator(TransferDataValidator):
         """
         Validate individual goods issue line item
         """
-        errors = []
+        field_errors = {}
+        validation_errors = []
+        
+        if not isinstance(item_data, dict):
+            raise ValidationError(f"Line item {line_number} must be a valid dictionary")
         
         # Validate required fields
-        if 'sales_order_line_item' not in item_data:
-            errors.append(f"Line item {line_number}: sales_order_line_item is required")
-            return errors
+        if 'sales_order_line_item' not in item_data or item_data['sales_order_line_item'] is None:
+            field_errors["sales_order_line_item"] = ["sales_order_line_item is required"]
         
-        if 'quantity_issued' not in item_data:
-            errors.append(f"Line item {line_number}: quantity_issued is required")
-            return errors
+        if 'quantity_issued' not in item_data or item_data['quantity_issued'] is None:
+            field_errors["quantity_issued"] = ["quantity_issued is required"]
+        
+        # If basic validation failed, return early
+        if field_errors:
+            error = ValidationError(f"Line item {line_number} validation failed")
+            error.error_dict = field_errors
+            raise error
         
         so_line_item = item_data['sales_order_line_item']
         quantity_issued = item_data['quantity_issued']
         
         # Validate line item belongs to sales order
-        if so_line_item.sales_order != sales_order:
-            errors.append(f"Line item {line_number}: Line item does not belong to the specified sales order")
+        if sales_order and so_line_item.sales_order != sales_order:
+            validation_errors.append("Line item does not belong to the specified sales order")
         
         # Validate quantity issued
         try:
-            quantity_issued = cls.validate_positive_decimal(quantity_issued, f"Line item {line_number} quantity_issued")
+            quantity_issued = cls.validate_positive_decimal(quantity_issued, "quantity_issued")
         except ValidationError as e:
-            errors.append(str(e))
-            return errors
+            field_errors.update(e.error_dict if hasattr(e, 'error_dict') else {"quantity_issued": [str(e)]})
         
         # Validate quantity doesn't exceed available quantity
-        existing_issued = so_line_item.goods_issue_items.aggregate(
-            total=Sum('quantity_issued')
-        )['total'] or Decimal('0')
+        if not field_errors and not validation_errors:
+            try:
+                existing_issued = so_line_item.goods_issue_items.aggregate(
+                    total=Sum('quantity_issued')
+                )['total'] or Decimal('0')
+                
+                available_quantity = Decimal(str(so_line_item.quantity)) - existing_issued
+                
+                if quantity_issued > available_quantity:
+                    validation_errors.append(
+                        f"Cannot issue {quantity_issued}. Available quantity: {available_quantity}"
+                    )
+            except Exception as e:
+                validation_errors.append(f"Error validating quantity availability: {str(e)}")
         
-        available_quantity = Decimal(str(so_line_item.quantity)) - existing_issued
+        # Validate metadata if present
+        if 'metadata' in item_data:
+            try:
+                cls.validate_json_field(item_data['metadata'], "metadata")
+            except ValidationError as e:
+                field_errors.update(e.error_dict)
         
-        if quantity_issued > available_quantity:
-            errors.append(
-                f"Line item {line_number}: Cannot issue {quantity_issued}. "
-                f"Available quantity: {available_quantity}"
-            )
+        # Raise combined errors if any exist
+        if field_errors or validation_errors:
+            error = ValidationError(f"Line item {line_number} validation failed")
+            error.error_dict = field_errors
+            error.error_list = validation_errors
+            raise error
         
-        return errors
+        return True
 
 
 class TransferReceiptValidator(TransferDataValidator):
@@ -226,22 +654,62 @@ class TransferReceiptValidator(TransferDataValidator):
         """
         Validate transfer receipt creation data
         """
-        errors = []
+        field_errors = {}
+        validation_errors = []
+        
+        # Validate input parameters
+        try:
+            cls.validate_model_instance(goods_issue, type(goods_issue), "goods_issue")
+        except ValidationError as e:
+            field_errors.update(e.error_dict)
+        
+        try:
+            cls.validate_model_instance(destination_store, type(destination_store), "destination_store")
+        except ValidationError as e:
+            field_errors.update(e.error_dict)
+        
+        try:
+            cls.validate_model_instance(user, type(user), "user")
+        except ValidationError as e:
+            field_errors.update(e.error_dict)
         
         # Validate goods issue and store relationship
-        if destination_store != goods_issue.sales_order.destination_store:
-            errors.append("Destination store must match the sales order destination store")
+        if goods_issue and destination_store and destination_store != goods_issue.sales_order.destination_store:
+            validation_errors.append(
+                f"Destination store '{destination_store.store_name}' does not match "
+                f"sales order destination store '{goods_issue.sales_order.destination_store.store_name}'"
+            )
+        
+        # Validate goods issue has been posted to external systems
+        if goods_issue and not goods_issue.posted_to_icg:
+            validation_errors.append("Goods issue must be posted to ICG before creating transfer receipt")
+        
+        if goods_issue and not goods_issue.posted_to_sap:
+            validation_errors.append("Goods issue must be posted to SAP ByD before creating transfer receipt")
         
         # Validate line items
         if not line_items_data:
-            errors.append("At least one line item is required")
+            validation_errors.append("At least one line item is required")
+        elif not isinstance(line_items_data, list):
+            field_errors["line_items"] = ["Line items must be a list"]
         else:
             for i, item_data in enumerate(line_items_data):
-                item_errors = cls.validate_transfer_receipt_line_item(item_data, goods_issue, i + 1)
-                errors.extend(item_errors)
+                try:
+                    cls.validate_transfer_receipt_line_item(item_data, goods_issue, i + 1)
+                except ValidationError as e:
+                    if hasattr(e, 'error_dict'):
+                        for field, errors in e.error_dict.items():
+                            field_key = f"line_items[{i}].{field}"
+                            field_errors[field_key] = errors
+                    else:
+                        validation_errors.append(f"Line item {i + 1}: {str(e)}")
         
-        if errors:
-            raise ValidationError(errors)
+        # Raise combined errors if any exist
+        if field_errors or validation_errors:
+            error = ValidationError("Transfer receipt validation failed")
+            error.error_dict = field_errors
+            error.error_list = validation_errors
+            raise error
         
         return True
     
@@ -250,45 +718,69 @@ class TransferReceiptValidator(TransferDataValidator):
         """
         Validate individual transfer receipt line item
         """
-        errors = []
+        field_errors = {}
+        validation_errors = []
+        
+        if not isinstance(item_data, dict):
+            raise ValidationError(f"Line item {line_number} must be a valid dictionary")
         
         # Validate required fields
-        if 'goods_issue_line_item' not in item_data:
-            errors.append(f"Line item {line_number}: goods_issue_line_item is required")
-            return errors
+        if 'goods_issue_line_item' not in item_data or item_data['goods_issue_line_item'] is None:
+            field_errors["goods_issue_line_item"] = ["goods_issue_line_item is required"]
         
-        if 'quantity_received' not in item_data:
-            errors.append(f"Line item {line_number}: quantity_received is required")
-            return errors
+        if 'quantity_received' not in item_data or item_data['quantity_received'] is None:
+            field_errors["quantity_received"] = ["quantity_received is required"]
+        
+        # If basic validation failed, return early
+        if field_errors:
+            error = ValidationError(f"Line item {line_number} validation failed")
+            error.error_dict = field_errors
+            raise error
         
         gi_line_item = item_data['goods_issue_line_item']
         quantity_received = item_data['quantity_received']
         
         # Validate line item belongs to goods issue
-        if gi_line_item.goods_issue != goods_issue:
-            errors.append(f"Line item {line_number}: Line item does not belong to the specified goods issue")
+        if goods_issue and gi_line_item.goods_issue != goods_issue:
+            validation_errors.append("Line item does not belong to the specified goods issue")
         
         # Validate quantity received
         try:
-            quantity_received = cls.validate_positive_decimal(quantity_received, f"Line item {line_number} quantity_received")
+            quantity_received = cls.validate_positive_decimal(quantity_received, "quantity_received")
         except ValidationError as e:
-            errors.append(str(e))
-            return errors
+            field_errors.update(e.error_dict if hasattr(e, 'error_dict') else {"quantity_received": [str(e)]})
         
         # Validate quantity doesn't exceed issued quantity
-        existing_received = gi_line_item.transfer_receipt_items.aggregate(
-            total=Sum('quantity_received')
-        )['total'] or Decimal('0')
+        if not field_errors and not validation_errors:
+            try:
+                existing_received = gi_line_item.transfer_receipt_items.aggregate(
+                    total=Sum('quantity_received')
+                )['total'] or Decimal('0')
+                
+                available_quantity = Decimal(str(gi_line_item.quantity_issued)) - existing_received
+                
+                if quantity_received > available_quantity:
+                    validation_errors.append(
+                        f"Cannot receive {quantity_received}. Available quantity: {available_quantity}"
+                    )
+            except Exception as e:
+                validation_errors.append(f"Error validating quantity availability: {str(e)}")
         
-        available_quantity = Decimal(str(gi_line_item.quantity_issued)) - existing_received
+        # Validate metadata if present
+        if 'metadata' in item_data:
+            try:
+                cls.validate_json_field(item_data['metadata'], "metadata")
+            except ValidationError as e:
+                field_errors.update(e.error_dict)
         
-        if quantity_received > available_quantity:
-            errors.append(
-                f"Line item {line_number}: Cannot receive {quantity_received}. "
-                f"Available quantity: {available_quantity}"
-            )
+        # Raise combined errors if any exist
+        if field_errors or validation_errors:
+            error = ValidationError(f"Line item {line_number} validation failed")
+            error.error_dict = field_errors
+            error.error_list = validation_errors
+            raise error
         
-        return errors
+        return True
 
 
 class StoreAuthorizationValidator(TransferDataValidator):
@@ -303,29 +795,109 @@ class StoreAuthorizationValidator(TransferDataValidator):
         """
         from .models import StoreAuthorization
         
-        if not user or not user.is_authenticated:
-            raise ValidationError("User must be authenticated")
+        field_errors = {}
+        validation_errors = []
         
+        # Validate user
+        if not user:
+            field_errors["user"] = ["User is required"]
+        elif not user.is_authenticated:
+            validation_errors.append("User must be authenticated")
+        
+        # Validate store_id
         if not store_id:
-            raise ValidationError("Store ID is required")
+            field_errors["store_id"] = ["Store ID is required"]
+        else:
+            try:
+                FieldValidator.validate_positive_integer(store_id, "store_id")
+            except ValidationError as e:
+                field_errors.update(e.error_dict)
+        
+        # Validate required_roles if provided
+        if required_roles is not None:
+            if not isinstance(required_roles, (list, tuple)):
+                field_errors["required_roles"] = ["Required roles must be a list or tuple"]
+            elif not all(isinstance(role, str) for role in required_roles):
+                field_errors["required_roles"] = ["All required roles must be strings"]
+        
+        # If basic validation failed, raise error
+        if field_errors or validation_errors:
+            error = ValidationError("Store authorization validation failed")
+            error.error_dict = field_errors
+            error.error_list = validation_errors
+            raise error
         
         # Check if user has authorization for the store
-        authorization = StoreAuthorization.objects.filter(
-            user=user,
-            store_id=store_id
-        ).first()
+        try:
+            authorization = StoreAuthorization.objects.filter(
+                user=user,
+                store_id=store_id
+            ).first()
+            
+            if not authorization:
+                raise ValidationError(f"User '{user.username}' is not authorized for store {store_id}")
+            
+            # Check role requirements if specified
+            if required_roles and authorization.role not in required_roles:
+                raise ValidationError(
+                    f"User '{user.username}' does not have required role for store {store_id}. "
+                    f"Required: {', '.join(required_roles)}, Current: {authorization.role}"
+                )
+            
+            return authorization
+            
+        except Exception as e:
+            if isinstance(e, ValidationError):
+                raise e
+            else:
+                raise ValidationError(f"Error validating store authorization: {str(e)}")
+    
+    @classmethod
+    def validate_store_authorization_data(cls, user, store, role):
+        """
+        Validate store authorization creation data
+        """
+        from .models import StoreAuthorization
         
-        if not authorization:
-            raise ValidationError(f"User {user.username} is not authorized for store {store_id}")
+        field_errors = {}
+        validation_errors = []
         
-        # Check role requirements if specified
-        if required_roles and authorization.role not in required_roles:
-            raise ValidationError(
-                f"User {user.username} does not have required role for store {store_id}. "
-                f"Required: {required_roles}, Current: {authorization.role}"
-            )
+        # Validate user
+        try:
+            cls.validate_model_instance(user, type(user), "user")
+        except ValidationError as e:
+            field_errors.update(e.error_dict)
         
-        return authorization
+        # Validate store
+        try:
+            cls.validate_model_instance(store, type(store), "store")
+        except ValidationError as e:
+            field_errors.update(e.error_dict)
+        
+        # Validate role
+        if role:
+            try:
+                valid_roles = [choice[0] for choice in StoreAuthorization.STORE_ROLE_CHOICES]
+                FieldValidator.validate_choice_field(role, "role", StoreAuthorization.STORE_ROLE_CHOICES)
+            except ValidationError as e:
+                field_errors.update(e.error_dict)
+        else:
+            field_errors["role"] = ["Role is required"]
+        
+        # Check for duplicate authorization
+        if user and store and not field_errors:
+            existing = StoreAuthorization.objects.filter(user=user, store=store).first()
+            if existing:
+                validation_errors.append(f"User '{user.username}' already has authorization for store '{store.store_name}'")
+        
+        # Raise combined errors if any exist
+        if field_errors or validation_errors:
+            error = ValidationError("Store authorization data validation failed")
+            error.error_dict = field_errors
+            error.error_list = validation_errors
+            raise error
+        
+        return True
 
 
 class InventoryValidator(TransferDataValidator):

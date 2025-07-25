@@ -13,6 +13,10 @@ from .serializers import (
     GoodsIssueNoteCreateSerializer, TransferReceiptNoteCreateSerializer
 )
 from .services import AuthorizationService
+from .validators import (
+    ValidationErrorResponse, GoodsIssueValidator, TransferReceiptValidator,
+    StoreAuthorizationValidator, InventoryValidator
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -228,7 +232,7 @@ def send_transfer_receipt_notification(transfer_receipt):
 @permission_classes([permissions.IsAuthenticated])
 def create_goods_issue(request):
     """
-    Create a goods issue note with validation, inventory checking, and notifications
+    Create a goods issue note with comprehensive validation, inventory checking, and notifications
     """
     try:
         with transaction.atomic():
@@ -239,15 +243,7 @@ def create_goods_issue(request):
             )
             
             if not serializer.is_valid():
-                return Response({
-                    'success': False,
-                    'message': 'Validation failed',
-                    'error_code': 'VALIDATION_ERROR',
-                    'details': {
-                        'field_errors': serializer.errors,
-                        'validation_errors': []
-                    }
-                }, status=status.HTTP_400_BAD_REQUEST)
+                return ValidationErrorResponse.create_validation_error_response(serializer.errors)
             
             # Extract validated data
             validated_data = serializer.validated_data
@@ -255,30 +251,41 @@ def create_goods_issue(request):
             source_store = validated_data['source_store']
             line_items = validated_data['line_items']
             
-            # Additional store authorization validation
-            auth_service = AuthorizationService()
-            if not auth_service.validate_store_access(request.user, source_store.id):
-                return Response({
-                    'success': False,
-                    'message': 'You are not authorized to create goods issues for this store',
-                    'error_code': 'AUTHORIZATION_ERROR',
-                    'details': {
-                        'field_errors': {},
-                        'validation_errors': ['Store authorization failed']
-                    }
-                }, status=status.HTTP_403_FORBIDDEN)
+            # Enhanced store authorization validation
+            try:
+                StoreAuthorizationValidator.validate_store_access(
+                    request.user, 
+                    source_store.id,
+                    required_roles=['manager', 'assistant']
+                )
+            except ValidationError as e:
+                return ValidationErrorResponse.create_authorization_error_response(
+                    f"You are not authorized to create goods issues for store '{source_store.store_name}'"
+                )
             
-            # Check inventory availability (placeholder for ICG integration)
-            if not check_inventory_availability(source_store.id, line_items):
-                return Response({
-                    'success': False,
-                    'message': 'Insufficient inventory available for goods issue',
-                    'error_code': 'INVENTORY_INSUFFICIENT',
-                    'details': {
-                        'field_errors': {},
-                        'validation_errors': ['Inventory availability check failed']
+            # Comprehensive goods issue validation
+            try:
+                GoodsIssueValidator.validate_goods_issue_creation(
+                    sales_order, source_store, line_items, request.user
+                )
+            except ValidationError as e:
+                return ValidationErrorResponse.create_validation_error_response(e)
+            
+            # Enhanced inventory availability validation
+            try:
+                inventory_items = [
+                    {
+                        'product_id': item['sales_order_line_item'].product_id,
+                        'quantity': item['quantity_issued']
                     }
-                }, status=status.HTTP_400_BAD_REQUEST)
+                    for item in line_items
+                ]
+                InventoryValidator.validate_inventory_availability(source_store.id, inventory_items)
+            except ValidationError as e:
+                return ValidationErrorResponse.create_business_rule_error_response(
+                    "Insufficient inventory available for goods issue",
+                    [str(error) for error in e.error_list] if hasattr(e, 'error_list') else [str(e)]
+                )
             
             # Create the goods issue note
             goods_issue = serializer.save()
@@ -289,8 +296,12 @@ def create_goods_issue(request):
                 logger.warning(f"Failed to send notification for goods issue {goods_issue.issue_number}")
             
             # Trigger async tasks for external system integration
-            goods_issue.post_to_icg()  # Post to ICG inventory system
-            goods_issue.post_to_sap()  # Post to SAP ByD
+            try:
+                goods_issue.post_to_icg()  # Post to ICG inventory system
+                goods_issue.post_to_sap()  # Post to SAP ByD
+            except Exception as e:
+                logger.error(f"Error posting goods issue to external systems: {str(e)}")
+                # Don't fail the request, but log the error
             
             # Return success response with created goods issue data
             response_serializer = GoodsIssueNoteSerializer(goods_issue)
@@ -302,34 +313,20 @@ def create_goods_issue(request):
             }, status=status.HTTP_201_CREATED)
             
     except ValidationError as e:
-        return Response({
-            'success': False,
-            'message': 'Validation error occurred',
-            'error_code': 'VALIDATION_ERROR',
-            'details': {
-                'field_errors': {},
-                'validation_errors': [str(e)]
-            }
-        }, status=status.HTTP_400_BAD_REQUEST)
+        return ValidationErrorResponse.create_validation_error_response(e)
         
     except Exception as e:
         logger.error(f"Error creating goods issue: {str(e)}")
-        return Response({
-            'success': False,
-            'message': 'An error occurred while creating the goods issue',
-            'error_code': 'INTERNAL_ERROR',
-            'details': {
-                'field_errors': {},
-                'validation_errors': [str(e)]
-            }
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return ValidationErrorResponse.create_internal_error_response(
+            f"An error occurred while creating the goods issue: {str(e)}"
+        )
 
 
 @api_view(['POST'])
 @permission_classes([permissions.IsAuthenticated])
 def create_transfer_receipt(request):
     """
-    Create a transfer receipt note with validation, authorization checks, and notifications
+    Create a transfer receipt note with comprehensive validation, authorization checks, and notifications
     """
     try:
         with transaction.atomic():
@@ -340,15 +337,7 @@ def create_transfer_receipt(request):
             )
             
             if not serializer.is_valid():
-                return Response({
-                    'success': False,
-                    'message': 'Validation failed',
-                    'error_code': 'VALIDATION_ERROR',
-                    'details': {
-                        'field_errors': serializer.errors,
-                        'validation_errors': []
-                    }
-                }, status=status.HTTP_400_BAD_REQUEST)
+                return ValidationErrorResponse.create_validation_error_response(serializer.errors)
             
             # Extract validated data
             validated_data = serializer.validated_data
@@ -356,62 +345,25 @@ def create_transfer_receipt(request):
             destination_store = validated_data['destination_store']
             line_items = validated_data['line_items']
             
-            # Additional store authorization validation
-            auth_service = AuthorizationService()
-            if not auth_service.validate_store_access(request.user, destination_store.id):
-                return Response({
-                    'success': False,
-                    'message': 'You are not authorized to create transfer receipts for this store',
-                    'error_code': 'AUTHORIZATION_ERROR',
-                    'details': {
-                        'field_errors': {},
-                        'validation_errors': ['Store authorization failed']
-                    }
-                }, status=status.HTTP_403_FORBIDDEN)
+            # Enhanced store authorization validation
+            try:
+                StoreAuthorizationValidator.validate_store_access(
+                    request.user, 
+                    destination_store.id,
+                    required_roles=['manager', 'assistant']
+                )
+            except ValidationError as e:
+                return ValidationErrorResponse.create_authorization_error_response(
+                    f"You are not authorized to create transfer receipts for store '{destination_store.store_name}'"
+                )
             
-            # Validate against corresponding goods issue
-            if destination_store != goods_issue.sales_order.destination_store:
-                return Response({
-                    'success': False,
-                    'message': 'Destination store must match the sales order destination store',
-                    'error_code': 'STORE_MISMATCH',
-                    'details': {
-                        'field_errors': {},
-                        'validation_errors': ['Store mismatch with goods issue']
-                    }
-                }, status=status.HTTP_400_BAD_REQUEST)
-            
-            # Validate that goods issue line items belong to the goods issue
-            for item_data in line_items:
-                gi_line_item = item_data['goods_issue_line_item']
-                if gi_line_item.goods_issue != goods_issue:
-                    return Response({
-                        'success': False,
-                        'message': f'Line item {gi_line_item.id} does not belong to goods issue {goods_issue.id}',
-                        'error_code': 'LINE_ITEM_MISMATCH',
-                        'details': {
-                            'field_errors': {},
-                            'validation_errors': ['Line item mismatch with goods issue']
-                        }
-                    }, status=status.HTTP_400_BAD_REQUEST)
-                
-                # Validate quantity doesn't exceed issued quantity
-                existing_received = gi_line_item.transfer_receipt_items.aggregate(
-                    total=Sum('quantity_received')
-                )['total'] or 0
-                
-                total_to_receive = float(existing_received) + float(item_data['quantity_received'])
-                
-                if total_to_receive > float(gi_line_item.quantity_issued):
-                    return Response({
-                        'success': False,
-                        'message': f'Cannot receive {item_data["quantity_received"]} for product {gi_line_item.product_name}. Available: {float(gi_line_item.quantity_issued) - float(existing_received)}',
-                        'error_code': 'QUANTITY_EXCEEDED',
-                        'details': {
-                            'field_errors': {},
-                            'validation_errors': ['Received quantity exceeds issued quantity']
-                        }
-                    }, status=status.HTTP_400_BAD_REQUEST)
+            # Comprehensive transfer receipt validation
+            try:
+                TransferReceiptValidator.validate_transfer_receipt_creation(
+                    goods_issue, destination_store, line_items, request.user
+                )
+            except ValidationError as e:
+                return ValidationErrorResponse.create_validation_error_response(e)
             
             # Create the transfer receipt note
             transfer_receipt = serializer.save()
@@ -422,8 +374,12 @@ def create_transfer_receipt(request):
                 logger.warning(f"Failed to send notifications for transfer receipt {transfer_receipt.receipt_number}")
             
             # Trigger async tasks for external system integration
-            transfer_receipt.update_destination_inventory()  # Update ICG inventory
-            transfer_receipt.complete_transfer_in_sap()  # Update SAP ByD status
+            try:
+                transfer_receipt.update_destination_inventory()  # Update ICG inventory
+                transfer_receipt.complete_transfer_in_sap()  # Update SAP ByD status
+            except Exception as e:
+                logger.error(f"Error posting transfer receipt to external systems: {str(e)}")
+                # Don't fail the request, but log the error
             
             # Return success response with created transfer receipt data
             response_serializer = TransferReceiptNoteSerializer(transfer_receipt)
@@ -435,24 +391,10 @@ def create_transfer_receipt(request):
             }, status=status.HTTP_201_CREATED)
             
     except ValidationError as e:
-        return Response({
-            'success': False,
-            'message': 'Validation error occurred',
-            'error_code': 'VALIDATION_ERROR',
-            'details': {
-                'field_errors': {},
-                'validation_errors': [str(e)]
-            }
-        }, status=status.HTTP_400_BAD_REQUEST)
+        return ValidationErrorResponse.create_validation_error_response(e)
         
     except Exception as e:
         logger.error(f"Error creating transfer receipt: {str(e)}")
-        return Response({
-            'success': False,
-            'message': 'An error occurred while creating the transfer receipt',
-            'error_code': 'INTERNAL_ERROR',
-            'details': {
-                'field_errors': {},
-                'validation_errors': [str(e)]
-            }
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return ValidationErrorResponse.create_internal_error_response(
+            f"An error occurred while creating the transfer receipt: {str(e)}"
+        )

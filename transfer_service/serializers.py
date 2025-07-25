@@ -7,6 +7,10 @@ from .models import (
     TransferReceiptNote, TransferReceiptLineItem
 )
 from .services import AuthorizationService
+from .validators import (
+    FieldValidator, GoodsIssueValidator, TransferReceiptValidator,
+    StoreAuthorizationValidator
+)
 
 
 class SalesOrderLineItemSerializer(serializers.ModelSerializer):
@@ -110,11 +114,13 @@ class GoodsIssueLineItemSerializer(serializers.ModelSerializer):
     
     def validate_quantity_issued(self, value):
         """Validate that quantity issued is positive and doesn't exceed available quantity"""
-        if value <= 0:
-            raise serializers.ValidationError("Quantity issued must be greater than 0")
-        
-        # Additional validation will be handled in the model's clean method
-        return value
+        try:
+            return FieldValidator.validate_positive_decimal(value, "quantity_issued")
+        except DjangoValidationError as e:
+            field_errors = e.error_dict if hasattr(e, 'error_dict') else {"quantity_issued": [str(e)]}
+            if "quantity_issued" in field_errors:
+                raise serializers.ValidationError(field_errors["quantity_issued"][0])
+            raise serializers.ValidationError(str(e))
 
 
 class GoodsIssueLineItemCreateSerializer(serializers.ModelSerializer):
@@ -126,9 +132,13 @@ class GoodsIssueLineItemCreateSerializer(serializers.ModelSerializer):
     
     def validate_quantity_issued(self, value):
         """Validate quantity issued"""
-        if value <= 0:
-            raise serializers.ValidationError("Quantity issued must be greater than 0")
-        return value
+        try:
+            return FieldValidator.validate_positive_decimal(value, "quantity_issued")
+        except DjangoValidationError as e:
+            field_errors = e.error_dict if hasattr(e, 'error_dict') else {"quantity_issued": [str(e)]}
+            if "quantity_issued" in field_errors:
+                raise serializers.ValidationError(field_errors["quantity_issued"][0])
+            raise serializers.ValidationError(str(e))
     
     def validate(self, attrs):
         """Validate the entire line item"""
@@ -182,25 +192,33 @@ class GoodsIssueNoteCreateSerializer(serializers.ModelSerializer):
         source_store = attrs['source_store']
         line_items = attrs['line_items']
         
-        # Validate store authorization
-        auth_service = AuthorizationService()
-        if not auth_service.validate_store_access(user, source_store.id):
+        # Enhanced store authorization validation
+        try:
+            StoreAuthorizationValidator.validate_store_access(
+                user, 
+                source_store.id,
+                required_roles=['manager', 'assistant']
+            )
+        except DjangoValidationError as e:
             raise serializers.ValidationError("You are not authorized to create goods issues for this store")
         
-        # Validate that source store matches sales order
-        if source_store != sales_order.source_store:
-            raise serializers.ValidationError("Source store must match the sales order source store")
-        
-        # Validate line items exist and belong to the sales order
-        if not line_items:
-            raise serializers.ValidationError("At least one line item is required")
-        
-        for item_data in line_items:
-            so_line_item = item_data['sales_order_line_item']
-            if so_line_item.sales_order != sales_order:
-                raise serializers.ValidationError(
-                    f"Line item {so_line_item.id} does not belong to sales order {sales_order.id}"
-                )
+        # Comprehensive goods issue validation
+        try:
+            GoodsIssueValidator.validate_goods_issue_creation(
+                sales_order, source_store, line_items, user
+            )
+        except DjangoValidationError as e:
+            if hasattr(e, 'error_dict'):
+                # Convert field errors to DRF format
+                field_errors = {}
+                for field, errors in e.error_dict.items():
+                    field_errors[field] = [str(error) for error in errors]
+                raise serializers.ValidationError(field_errors)
+            elif hasattr(e, 'error_list'):
+                # Convert general errors to DRF format
+                raise serializers.ValidationError(e.error_list)
+            else:
+                raise serializers.ValidationError(str(e))
         
         return attrs
     
@@ -255,11 +273,13 @@ class TransferReceiptLineItemSerializer(serializers.ModelSerializer):
     
     def validate_quantity_received(self, value):
         """Validate that quantity received is positive and doesn't exceed issued quantity"""
-        if value <= 0:
-            raise serializers.ValidationError("Quantity received must be greater than 0")
-        
-        # Additional validation will be handled in the model's clean method
-        return value
+        try:
+            return FieldValidator.validate_positive_decimal(value, "quantity_received")
+        except DjangoValidationError as e:
+            field_errors = e.error_dict if hasattr(e, 'error_dict') else {"quantity_received": [str(e)]}
+            if "quantity_received" in field_errors:
+                raise serializers.ValidationError(field_errors["quantity_received"][0])
+            raise serializers.ValidationError(str(e))
 
 
 class TransferReceiptLineItemCreateSerializer(serializers.ModelSerializer):
@@ -271,9 +291,13 @@ class TransferReceiptLineItemCreateSerializer(serializers.ModelSerializer):
     
     def validate_quantity_received(self, value):
         """Validate quantity received"""
-        if value <= 0:
-            raise serializers.ValidationError("Quantity received must be greater than 0")
-        return value
+        try:
+            return FieldValidator.validate_positive_decimal(value, "quantity_received")
+        except DjangoValidationError as e:
+            field_errors = e.error_dict if hasattr(e, 'error_dict') else {"quantity_received": [str(e)]}
+            if "quantity_received" in field_errors:
+                raise serializers.ValidationError(field_errors["quantity_received"][0])
+            raise serializers.ValidationError(str(e))
     
     def validate(self, attrs):
         """Validate the entire line item"""
@@ -328,25 +352,33 @@ class TransferReceiptNoteCreateSerializer(serializers.ModelSerializer):
         destination_store = attrs['destination_store']
         line_items = attrs['line_items']
         
-        # Validate store authorization
-        auth_service = AuthorizationService()
-        if not auth_service.validate_store_access(user, destination_store.id):
+        # Enhanced store authorization validation
+        try:
+            StoreAuthorizationValidator.validate_store_access(
+                user, 
+                destination_store.id,
+                required_roles=['manager', 'assistant']
+            )
+        except DjangoValidationError as e:
             raise serializers.ValidationError("You are not authorized to create transfer receipts for this store")
         
-        # Validate that destination store matches sales order
-        if destination_store != goods_issue.sales_order.destination_store:
-            raise serializers.ValidationError("Destination store must match the sales order destination store")
-        
-        # Validate line items exist and belong to the goods issue
-        if not line_items:
-            raise serializers.ValidationError("At least one line item is required")
-        
-        for item_data in line_items:
-            gi_line_item = item_data['goods_issue_line_item']
-            if gi_line_item.goods_issue != goods_issue:
-                raise serializers.ValidationError(
-                    f"Line item {gi_line_item.id} does not belong to goods issue {goods_issue.id}"
-                )
+        # Comprehensive transfer receipt validation
+        try:
+            TransferReceiptValidator.validate_transfer_receipt_creation(
+                goods_issue, destination_store, line_items, user
+            )
+        except DjangoValidationError as e:
+            if hasattr(e, 'error_dict'):
+                # Convert field errors to DRF format
+                field_errors = {}
+                for field, errors in e.error_dict.items():
+                    field_errors[field] = [str(error) for error in errors]
+                raise serializers.ValidationError(field_errors)
+            elif hasattr(e, 'error_list'):
+                # Convert general errors to DRF format
+                raise serializers.ValidationError(e.error_list)
+            else:
+                raise serializers.ValidationError(str(e))
         
         return attrs
     
