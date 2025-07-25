@@ -1995,3 +1995,448 @@ class TransferReceiptModelTest(TestCase):
         
         self.assertNotEqual(receipt1.receipt_number, receipt2.receipt_number)
         self.assertEqual(receipt2.receipt_number, receipt1.receipt_number + 1)
+
+class SAPIntegrationTasksTest(TestCase):
+    """
+    Tests for SAP ByD integration async tasks
+    """
+    
+    def setUp(self):
+        """Set up test data"""
+        # Create test user
+        self.user = User.objects.create_user(
+            username='testuser',
+            email='test@example.com',
+            password='testpass123'
+        )
+        
+        # Create test stores
+        self.source_store = Store.objects.create(
+            store_name='Source Store',
+            icg_warehouse_code='SRC001',
+            byd_cost_center_code='CC001'
+        )
+        
+        self.dest_store = Store.objects.create(
+            store_name='Destination Store', 
+            icg_warehouse_code='DST001',
+            byd_cost_center_code='CC002'
+        )
+        
+        # Create test sales order
+        self.sales_order = SalesOrder.objects.create(
+            object_id='SO123456',
+            sales_order_id=12345,
+            source_store=self.source_store,
+            destination_store=self.dest_store,
+            total_net_amount=1000.00,
+            order_date='2024-01-01'
+        )
+        
+        # Create test line item
+        self.line_item = SalesOrderLineItem.objects.create(
+            sales_order=self.sales_order,
+            object_id='ITEM001',
+            product_id='PROD001',
+            product_name='Test Product',
+            quantity=10.0,
+            unit_price=100.0,
+            unit_of_measurement='EA'
+        )
+        
+        # Create test goods issue
+        self.goods_issue = GoodsIssueNote.objects.create(
+            sales_order=self.sales_order,
+            source_store=self.source_store,
+            created_by=self.user
+        )
+        
+        # Create test goods issue line item
+        self.gi_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=self.goods_issue,
+            sales_order_line_item=self.line_item,
+            quantity_issued=5.0
+        )
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_post_goods_issue_to_sap_success(self, mock_rest_services):
+        """Test successful goods issue posting to SAP ByD"""
+        from transfer_service.tasks import post_goods_issue_to_sap
+        
+        # Mock SAP ByD responses
+        mock_service = mock_rest_services.return_value
+        mock_service.create_goods_issue.return_value = {
+            "d": {
+                "results": {
+                    "ObjectID": "GI123456789"
+                }
+            }
+        }
+        mock_service.post_goods_issue.return_value = {
+            "success": True,
+            "message": "Goods issue posted successfully"
+        }
+        
+        # Execute the task
+        post_goods_issue_to_sap(self.goods_issue.id)
+        
+        # Verify SAP service calls
+        mock_service.create_goods_issue.assert_called_once()
+        mock_service.post_goods_issue.assert_called_once_with("GI123456789")
+        
+        # Verify goods issue was updated
+        self.goods_issue.refresh_from_db()
+        self.assertTrue(self.goods_issue.posted_to_sap)
+        self.assertEqual(self.goods_issue.metadata['sap_object_id'], "GI123456789")
+        self.assertIn('sap_posted_date', self.goods_issue.metadata)
+        
+        # Verify create_goods_issue was called with correct data
+        call_args = mock_service.create_goods_issue.call_args[0][0]
+        self.assertEqual(call_args['TypeCode'], '01')
+        self.assertIn('Item', call_args)
+        self.assertEqual(len(call_args['Item']), 1)
+        
+        item_data = call_args['Item'][0]
+        self.assertEqual(item_data['ProductID'], 'PROD001')
+        self.assertEqual(item_data['Quantity'], '5.000')
+        self.assertEqual(item_data['SalesOrderID'], '12345')
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_post_goods_issue_to_sap_already_posted(self, mock_rest_services):
+        """Test goods issue posting skips if already posted"""
+        from transfer_service.tasks import post_goods_issue_to_sap
+        
+        # Mark goods issue as already posted
+        self.goods_issue.posted_to_sap = True
+        self.goods_issue.save()
+        
+        # Execute the task
+        post_goods_issue_to_sap(self.goods_issue.id)
+        
+        # Verify SAP service was not called
+        mock_rest_services.assert_not_called()
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_post_goods_issue_to_sap_create_failure(self, mock_rest_services):
+        """Test goods issue posting handles create failure"""
+        from transfer_service.tasks import post_goods_issue_to_sap, SAPIntegrationError
+        
+        # Mock SAP ByD create failure
+        mock_service = mock_rest_services.return_value
+        mock_service.create_goods_issue.side_effect = Exception("SAP create failed")
+        
+        # Execute the task and expect exception
+        with self.assertRaises(SAPIntegrationError):
+            post_goods_issue_to_sap(self.goods_issue.id)
+        
+        # Verify goods issue was not marked as posted
+        self.goods_issue.refresh_from_db()
+        self.assertFalse(self.goods_issue.posted_to_sap)
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_post_goods_issue_to_sap_post_failure(self, mock_rest_services):
+        """Test goods issue posting handles post failure"""
+        from transfer_service.tasks import post_goods_issue_to_sap, RetryableError
+        
+        # Mock SAP ByD responses
+        mock_service = mock_rest_services.return_value
+        mock_service.create_goods_issue.return_value = {
+            "d": {
+                "results": {
+                    "ObjectID": "GI123456789"
+                }
+            }
+        }
+        mock_service.post_goods_issue.side_effect = Exception("Object is locked")
+        
+        # Execute the task and expect retryable error
+        with self.assertRaises(RetryableError):
+            post_goods_issue_to_sap(self.goods_issue.id)
+        
+        # Verify goods issue was not marked as posted
+        self.goods_issue.refresh_from_db()
+        self.assertFalse(self.goods_issue.posted_to_sap)
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_post_goods_issue_to_sap_invalid_response(self, mock_rest_services):
+        """Test goods issue posting handles invalid response"""
+        from transfer_service.tasks import post_goods_issue_to_sap, RetryableError
+        
+        # Mock invalid SAP ByD response
+        mock_service = mock_rest_services.return_value
+        mock_service.create_goods_issue.return_value = {
+            "invalid": "response"
+        }
+        
+        # Execute the task and expect retryable error
+        with self.assertRaises(RetryableError):
+            post_goods_issue_to_sap(self.goods_issue.id)
+    
+    def test_post_goods_issue_to_sap_not_found(self):
+        """Test goods issue posting handles non-existent goods issue"""
+        from transfer_service.tasks import post_goods_issue_to_sap, SAPIntegrationError
+        
+        # Execute the task with non-existent ID
+        with self.assertRaises(SAPIntegrationError):
+            post_goods_issue_to_sap(99999)
+    
+    def test_post_goods_issue_to_sap_no_line_items(self):
+        """Test goods issue posting handles goods issue with no line items"""
+        from transfer_service.tasks import post_goods_issue_to_sap, SAPIntegrationError
+        
+        # Delete line items
+        self.goods_issue.line_items.all().delete()
+        
+        # Execute the task and expect error
+        with self.assertRaises(SAPIntegrationError) as context:
+            post_goods_issue_to_sap(self.goods_issue.id)
+        
+        self.assertIn("has no line items", str(context.exception))
+    
+    def test_post_goods_issue_to_sap_missing_store_identifiers(self):
+        """Test goods issue posting handles missing store identifiers"""
+        from transfer_service.tasks import post_goods_issue_to_sap, SAPIntegrationError
+        
+        # Remove store identifiers
+        self.source_store.byd_cost_center_code = None
+        self.source_store.icg_warehouse_code = None
+        self.source_store.save()
+        
+        # Execute the task and expect error
+        with self.assertRaises(SAPIntegrationError) as context:
+            post_goods_issue_to_sap(self.goods_issue.id)
+        
+        self.assertIn("missing SAP identifiers", str(context.exception))
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_update_sales_order_status_success(self, mock_rest_services):
+        """Test successful sales order status update in SAP ByD"""
+        from transfer_service.tasks import update_sales_order_status
+        
+        # Mock SAP ByD response
+        mock_service = mock_rest_services.return_value
+        mock_service.update_sales_order_status.return_value = True
+        
+        # Set initial status different from calculated status
+        self.sales_order.delivery_status_code = '1'
+        self.sales_order.save()
+        
+        # Execute the task
+        update_sales_order_status(self.sales_order.id)
+        
+        # Verify SAP service call - status should be '2' (partially delivered) since we have goods issued
+        mock_service.update_sales_order_status.assert_called_once_with('12345', '2')
+        
+        # Verify sales order was updated
+        self.sales_order.refresh_from_db()
+        self.assertIn('last_status_update', self.sales_order.metadata)
+        self.assertTrue(self.sales_order.metadata['sap_status_updated'])
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_update_sales_order_status_no_change(self, mock_rest_services):
+        """Test sales order status update skips if status unchanged"""
+        from transfer_service.tasks import update_sales_order_status
+        
+        # Set status to match calculated status
+        calculated_status = self.sales_order.delivery_status[0]
+        self.sales_order.delivery_status_code = calculated_status
+        self.sales_order.save()
+        
+        # Execute the task
+        update_sales_order_status(self.sales_order.id)
+        
+        # Verify SAP service was not called
+        mock_rest_services.assert_not_called()
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_update_sales_order_status_sap_failure(self, mock_rest_services):
+        """Test sales order status update handles SAP failure"""
+        from transfer_service.tasks import update_sales_order_status, RetryableError
+        
+        # Mock SAP ByD failure
+        mock_service = mock_rest_services.return_value
+        mock_service.update_sales_order_status.return_value = False
+        
+        # Execute the task and expect retryable error
+        with self.assertRaises(RetryableError):
+            update_sales_order_status(self.sales_order.id)
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_update_sales_order_status_authentication_error(self, mock_rest_services):
+        """Test sales order status update handles authentication error"""
+        from transfer_service.tasks import update_sales_order_status, RetryableError
+        
+        # Mock authentication error
+        mock_service = mock_rest_services.return_value
+        mock_service.update_sales_order_status.side_effect = Exception("Authentication failed")
+        
+        # Execute the task and expect retryable error
+        with self.assertRaises(RetryableError):
+            update_sales_order_status(self.sales_order.id)
+    
+    def test_update_sales_order_status_not_found(self):
+        """Test sales order status update handles non-existent sales order"""
+        from transfer_service.tasks import update_sales_order_status, SAPIntegrationError
+        
+        # Execute the task with non-existent ID
+        with self.assertRaises(SAPIntegrationError):
+            update_sales_order_status(99999)
+    
+    def test_update_sales_order_status_missing_object_id(self):
+        """Test sales order status update handles missing ObjectID"""
+        from transfer_service.tasks import update_sales_order_status, SAPIntegrationError
+        
+        # Remove ObjectID
+        self.sales_order.object_id = None
+        self.sales_order.save()
+        
+        # Execute the task and expect error
+        with self.assertRaises(SAPIntegrationError) as context:
+            update_sales_order_status(self.sales_order.id)
+        
+        self.assertIn("missing ObjectID", str(context.exception))
+    
+    @patch('transfer_service.tasks.time.sleep')
+    @patch('byd_service.rest.RESTServices')
+    def test_retry_mechanism_success_after_failure(self, mock_rest_services, mock_sleep):
+        """Test retry mechanism succeeds after initial failure"""
+        from transfer_service.tasks import post_goods_issue_to_sap
+        
+        # Mock SAP ByD responses - fail first, succeed second
+        mock_service = mock_rest_services.return_value
+        mock_service.create_goods_issue.side_effect = [
+            Exception("Connection timeout"),  # First call fails
+            {  # Second call succeeds
+                "d": {
+                    "results": {
+                        "ObjectID": "GI123456789"
+                    }
+                }
+            }
+        ]
+        mock_service.post_goods_issue.return_value = {
+            "success": True
+        }
+        
+        # Execute the task
+        post_goods_issue_to_sap(self.goods_issue.id)
+        
+        # Verify retry was attempted
+        self.assertEqual(mock_service.create_goods_issue.call_count, 2)
+        mock_sleep.assert_called_once_with(5)  # First retry delay
+        
+        # Verify final success
+        self.goods_issue.refresh_from_db()
+        self.assertTrue(self.goods_issue.posted_to_sap)
+    
+    @patch('transfer_service.tasks.time.sleep')
+    @patch('byd_service.rest.RESTServices')
+    def test_retry_mechanism_exhausted(self, mock_rest_services, mock_sleep):
+        """Test retry mechanism exhausts all attempts"""
+        from transfer_service.tasks import post_goods_issue_to_sap, RetryableError
+        
+        # Mock SAP ByD to always fail with retryable error
+        mock_service = mock_rest_services.return_value
+        mock_service.create_goods_issue.side_effect = Exception("Connection timeout")
+        
+        # Execute the task and expect final failure
+        with self.assertRaises(RetryableError):
+            post_goods_issue_to_sap(self.goods_issue.id)
+        
+        # Verify all retries were attempted
+        self.assertEqual(mock_service.create_goods_issue.call_count, 3)
+        self.assertEqual(mock_sleep.call_count, 2)  # 2 retry delays
+        
+        # Verify exponential backoff
+        mock_sleep.assert_any_call(5)   # First retry: 5s
+        mock_sleep.assert_any_call(10)  # Second retry: 10s
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_goods_issue_data_validation(self, mock_rest_services):
+        """Test goods issue data validation before SAP posting"""
+        from transfer_service.tasks import post_goods_issue_to_sap, SAPIntegrationError
+        
+        # Create line item with missing product ID
+        invalid_line_item = GoodsIssueLineItem.objects.create(
+            goods_issue=self.goods_issue,
+            sales_order_line_item=self.line_item,
+            quantity_issued=0  # Invalid quantity
+        )
+        invalid_line_item.sales_order_line_item.product_id = None
+        invalid_line_item.sales_order_line_item.save()
+        
+        # Execute the task and expect validation error
+        with self.assertRaises(SAPIntegrationError) as context:
+            post_goods_issue_to_sap(self.goods_issue.id)
+        
+        self.assertIn("missing product ID", str(context.exception))
+    
+    @patch('byd_service.rest.RESTServices')
+    def test_goods_issue_zero_quantity_validation(self, mock_rest_services):
+        """Test goods issue validation for zero quantities"""
+        from transfer_service.tasks import post_goods_issue_to_sap, SAPIntegrationError
+        
+        # Set quantity to zero
+        self.gi_line_item.quantity_issued = 0
+        self.gi_line_item.save()
+        
+        # Execute the task and expect validation error
+        with self.assertRaises(SAPIntegrationError) as context:
+            post_goods_issue_to_sap(self.goods_issue.id)
+        
+        self.assertIn("Invalid quantity", str(context.exception))
+
+
+class SAPIntegrationErrorHandlingTest(TestCase):
+    """
+    Tests for SAP integration error handling and classification
+    """
+    
+    def test_sap_integration_error_creation(self):
+        """Test SAPIntegrationError can be created"""
+        from transfer_service.tasks import SAPIntegrationError
+        
+        error = SAPIntegrationError("Test error message")
+        self.assertEqual(str(error), "Test error message")
+    
+    def test_retryable_error_creation(self):
+        """Test RetryableError can be created"""
+        from transfer_service.tasks import RetryableError
+        
+        error = RetryableError("Test retryable error")
+        self.assertEqual(str(error), "Test retryable error")
+    
+    def test_retry_decorator_function(self):
+        """Test retry decorator functionality"""
+        from transfer_service.tasks import retry_on_failure, RetryableError
+        
+        call_count = 0
+        
+        @retry_on_failure(max_retries=2, delay=0.1)
+        def test_function():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 2:
+                raise RetryableError("Temporary failure")
+            return "success"
+        
+        result = test_function()
+        self.assertEqual(result, "success")
+        self.assertEqual(call_count, 2)
+    
+    def test_retry_decorator_non_retryable_error(self):
+        """Test retry decorator doesn't retry non-retryable errors"""
+        from transfer_service.tasks import retry_on_failure, SAPIntegrationError
+        
+        call_count = 0
+        
+        @retry_on_failure(max_retries=3, delay=0.1)
+        def test_function():
+            nonlocal call_count
+            call_count += 1
+            raise SAPIntegrationError("Permanent failure")
+        
+        with self.assertRaises(SAPIntegrationError):
+            test_function()
+        
+        self.assertEqual(call_count, 1)  # Should not retry
