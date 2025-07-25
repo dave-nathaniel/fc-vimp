@@ -304,3 +304,117 @@ class RESTServices:
 		except Exception as e:
 			logger.error(f"Error posting Delivery Notification: {str(e)}")
 			raise
+	
+	# Sales Order methods for store-to-store transfers
+	def get_sales_order_by_id(self, sales_order_id: str) -> dict:
+		'''
+			Fetch a sales order from SAP ByD by ID
+		'''
+		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khsalesorder/SalesOrderCollection?$format=json"
+					  f"&$expand=Item,BuyerParty,SellerParty&$filter=ID eq '{sales_order_id}'")
+		
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				results = response_json["d"]["results"]
+				return results[0] if results else None
+			else:
+				logger.error(f"Failed to fetch sales order {sales_order_id}: {response.text}")
+				return None
+		except Exception as e:
+			logger.error(f"Error fetching sales order {sales_order_id}: {str(e)}")
+			raise
+	
+	def get_store_sales_orders(self, store_id: str) -> list:
+		'''
+			Get sales orders for a specific store (as source or destination)
+		'''
+		# This assumes store_id maps to a cost center or similar identifier in SAP ByD
+		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khsalesorder/SalesOrderCollection?$format=json"
+					  f"&$expand=Item,BuyerParty,SellerParty"
+					  f"&$filter=BuyerParty/PartyID eq '{store_id}' or SellerParty/PartyID eq '{store_id}'")
+		
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				return response_json["d"]["results"]
+			else:
+				logger.error(f"Failed to fetch sales orders for store {store_id}: {response.text}")
+				return []
+		except Exception as e:
+			logger.error(f"Error fetching sales orders for store {store_id}: {str(e)}")
+			raise
+	
+	def update_sales_order_status(self, sales_order_id: str, status: str) -> bool:
+		'''
+			Update sales order delivery status in SAP ByD
+		'''
+		# First get the sales order to get its ObjectID
+		sales_order = self.get_sales_order_by_id(sales_order_id)
+		if not sales_order:
+			logger.error(f"Sales order {sales_order_id} not found")
+			return False
+		
+		object_id = sales_order.get("ObjectID")
+		if not object_id:
+			logger.error(f"ObjectID not found for sales order {sales_order_id}")
+			return False
+		
+		# Update the delivery status
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khsalesorder/SalesOrderCollection('{object_id}')"
+		update_data = {
+			"DeliveryStatusCode": status
+		}
+		
+		try:
+			self.refresh_csrf_token()
+			response = self.session.patch(action_url, json=update_data, headers=self.auth_headers, auth=self.auth)
+			if response.status_code == 204:  # PATCH typically returns 204 No Content on success
+				logger.info(f"Sales order {sales_order_id} status updated to {status}")
+				return True
+			else:
+				logger.error(f"Failed to update sales order status: {response.text}")
+				return False
+		except Exception as e:
+			logger.error(f"Error updating sales order status: {str(e)}")
+			return False
+	
+	def create_goods_issue(self, goods_issue_data: dict) -> dict:
+		'''
+			Create a goods issue in SAP ByD for store-to-store transfers
+		'''
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khgoodsissue/GoodsIssueCollection"
+		
+		try:
+			self.refresh_csrf_token()
+			response = self.__post__(action_url, json=goods_issue_data)
+			if response.status_code == 201:
+				logger.info(f"Goods issue successfully created in SAP ByD.")
+				return response.json()
+			else:
+				logger.error(f"Failed to create goods issue: {response.text}")
+				raise Exception(f"Error from SAP: {response.text}")
+		except Exception as e:
+			logger.error(f"Error creating goods issue: {str(e)}")
+			raise
+	
+	def post_goods_issue(self, object_id: str) -> dict:
+		'''
+			Post a goods issue in SAP ByD
+		'''
+		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khgoodsissue/PostGoodsIssue?ObjectID='{object_id}'"
+		
+		try:
+			self.refresh_csrf_token()
+			response = self.__post__(action_url)
+			if response.status_code == 200:
+				logger.info(f"Goods issue successfully posted.")
+				return response.json()
+			else:
+				logger.error(f"Failed to post goods issue: {response.text}")
+				raise Exception(f"Error from SAP: {response.text}")
+		except Exception as e:
+			logger.error(f"Error posting goods issue: {str(e)}")
+			raise

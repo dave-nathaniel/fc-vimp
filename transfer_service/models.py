@@ -69,45 +69,100 @@ class SalesOrder(models.Model):
         """
         return sum(item.received_quantity for item in self.line_items.all())
     
-    def create_sales_order(self, so_data):
+    @classmethod
+    def create_sales_order(cls, so_data):
         """
         Create a sales order from SAP ByD data
         """
-        self.object_id = so_data["ObjectID"]
-        self.sales_order_id = so_data["ID"]
-        self.total_net_amount = so_data["TotalNetAmount"]
-        self.order_date = to_python_time(so_data["LastChangeDateTime"])
+        # Validate required fields
+        required_fields = ["ObjectID", "ID", "TotalNetAmount"]
+        for field in required_fields:
+            if field not in so_data:
+                raise ValidationError(f"Required field '{field}' missing from sales order data")
         
-        # Get source and destination stores from metadata
-        # This will need to be adapted based on actual SAP ByD structure
-        source_store_code = so_data.get("SourceStore", {}).get("Code")
-        dest_store_code = so_data.get("DestinationStore", {}).get("Code")
+        # Create new sales order instance
+        sales_order = cls()
+        sales_order.object_id = so_data["ObjectID"]
+        sales_order.sales_order_id = int(so_data["ID"])
+        sales_order.total_net_amount = float(so_data["TotalNetAmount"])
+        
+        # Handle date conversion
+        if "LastChangeDateTime" in so_data:
+            sales_order.order_date = to_python_time(so_data["LastChangeDateTime"])
+        elif "CreationDateTime" in so_data:
+            sales_order.order_date = to_python_time(so_data["CreationDateTime"])
+        else:
+            from django.utils import timezone
+            sales_order.order_date = timezone.now().date()
+        
+        # Get source and destination stores from SAP ByD data
+        # Map SellerParty to source store and BuyerParty to destination store
+        seller_party = so_data.get("SellerParty", {})
+        buyer_party = so_data.get("BuyerParty", {})
+        
+        source_store_code = seller_party.get("PartyID") if seller_party else None
+        dest_store_code = buyer_party.get("PartyID") if buyer_party else None
+        
+        if not source_store_code or not dest_store_code:
+            raise ValidationError("Source and destination store information missing from sales order")
         
         try:
-            self.source_store = Store.objects.get(byd_cost_center_code=source_store_code)
-            self.destination_store = Store.objects.get(byd_cost_center_code=dest_store_code)
+            # Try to find stores by various identifiers
+            sales_order.source_store = cls._find_store_by_identifier(source_store_code)
+            sales_order.destination_store = cls._find_store_by_identifier(dest_store_code)
         except Store.DoesNotExist:
             raise ValidationError(f"Store not found for codes: {source_store_code}, {dest_store_code}")
         
+        # Validate that source and destination are different
+        if sales_order.source_store == sales_order.destination_store:
+            raise ValidationError("Source and destination stores cannot be the same")
+        
+        # Set delivery status from SAP ByD data
+        delivery_status = so_data.get("DeliveryStatusCode", "1")
+        if delivery_status in [choice[0] for choice in cls.DELIVERY_STATUS_CHOICES]:
+            sales_order.delivery_status_code = delivery_status
+        
+        # Store metadata (excluding items which will be processed separately)
         so_items = so_data.pop("Item", [])
-        self.metadata = so_data
-        self.save()
+        sales_order.metadata = so_data
+        sales_order.save()
         
         # Create line items
         created = 0
         try:
             for line_item in so_items:
-                self.__create_line_items__(line_item)
+                sales_order.__create_line_items__(line_item)
                 created += 1
         except Exception as e:
-            self.delete()
+            sales_order.delete()
             raise Exception(f"Error creating line items for sales order: {e}")
             
         if created == 0:
-            self.delete()
+            sales_order.delete()
             raise Exception("No line items were created for sales order.")
             
-        return self
+        return sales_order
+    
+    @staticmethod
+    def _find_store_by_identifier(identifier):
+        """
+        Find a store by various possible identifiers
+        """
+        # Try different store identifier fields
+        try:
+            return Store.objects.get(byd_cost_center_code=identifier)
+        except Store.DoesNotExist:
+            try:
+                return Store.objects.get(icg_warehouse_code=identifier)
+            except Store.DoesNotExist:
+                try:
+                    # Only try ID lookup if identifier is numeric
+                    if identifier.isdigit():
+                        return Store.objects.get(id=int(identifier))
+                    else:
+                        raise Store.DoesNotExist()
+                except (Store.DoesNotExist, ValueError):
+                    raise Store.DoesNotExist(f"Store not found for identifier: {identifier}")
     
     def __create_line_items__(self, line_item):
         """

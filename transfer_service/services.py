@@ -1,11 +1,14 @@
 """
 Business logic services for store-to-store transfers
 """
+import logging
 from django.db.models import QuerySet
 from django.core.exceptions import ValidationError
 from core_service.models import CustomUser
 from egrn_service.models import Store
 from .models import SalesOrder, GoodsIssueNote, TransferReceiptNote, StoreAuthorization
+
+logger = logging.getLogger(__name__)
 
 
 class AuthorizationService:
@@ -53,32 +56,66 @@ class SalesOrderService:
     Service for managing sales orders from SAP ByD
     """
     
-    @staticmethod
-    def fetch_sales_order_by_id(sales_order_id: str) -> dict:
+    def __init__(self):
+        from byd_service.rest import RESTServices
+        self.byd_rest = RESTServices()
+    
+    def fetch_sales_order_by_id(self, sales_order_id: str) -> dict:
         """
         Fetch a sales order from SAP ByD by ID
-        This will be implemented when SAP integration is added
         """
-        # Placeholder for SAP ByD integration
-        raise NotImplementedError("SAP ByD integration not yet implemented")
+        try:
+            return self.byd_rest.get_sales_order_by_id(sales_order_id)
+        except Exception as e:
+            logger.error(f"Error fetching sales order {sales_order_id}: {str(e)}")
+            raise
     
-    @staticmethod
-    def get_store_sales_orders(store_id: str) -> list:
+    def get_store_sales_orders(self, store_id: str) -> list:
         """
         Get sales orders for a specific store
-        This will be implemented when SAP integration is added
         """
-        # Placeholder for SAP ByD integration
-        raise NotImplementedError("SAP ByD integration not yet implemented")
+        try:
+            return self.byd_rest.get_store_sales_orders(store_id)
+        except Exception as e:
+            logger.error(f"Error fetching sales orders for store {store_id}: {str(e)}")
+            raise
     
-    @staticmethod
-    def update_sales_order_status(sales_order_id: str, status: str) -> bool:
+    def update_sales_order_status(self, sales_order_id: str, status: str) -> bool:
         """
         Update sales order status in SAP ByD
-        This will be implemented when SAP integration is added
         """
-        # Placeholder for SAP ByD integration
-        raise NotImplementedError("SAP ByD integration not yet implemented")
+        try:
+            return self.byd_rest.update_sales_order_status(sales_order_id, status)
+        except Exception as e:
+            logger.error(f"Error updating sales order status: {str(e)}")
+            raise
+    
+    def create_or_update_local_sales_order(self, sales_order_id: str):
+        """
+        Fetch sales order from SAP ByD and create/update local record
+        """
+        try:
+            # Check if sales order already exists locally
+            try:
+                local_so = SalesOrder.objects.get(sales_order_id=sales_order_id)
+                logger.info(f"Sales order {sales_order_id} already exists locally")
+                return local_so
+            except SalesOrder.DoesNotExist:
+                pass
+            
+            # Fetch from SAP ByD
+            sap_data = self.fetch_sales_order_by_id(sales_order_id)
+            if not sap_data:
+                raise ValidationError(f"Sales order {sales_order_id} not found in SAP ByD")
+            
+            # Create local sales order
+            local_so = SalesOrder.create_sales_order(sap_data)
+            logger.info(f"Created local sales order {sales_order_id}")
+            return local_so
+            
+        except Exception as e:
+            logger.error(f"Error creating/updating local sales order {sales_order_id}: {str(e)}")
+            raise
 
 
 class GoodsIssueService:
