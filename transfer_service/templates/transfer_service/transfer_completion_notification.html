@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transfer Completion Notification</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background-color: #28a745;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            border-radius: 5px 5px 0 0;
+        }
+        .content {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border: 1px solid #ddd;
+        }
+        .info-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: white;
+            border-radius: 5px;
+            border-left: 4px solid #28a745;
+        }
+        .info-row {
+            display: flex;
+            margin-bottom: 10px;
+        }
+        .info-label {
+            font-weight: bold;
+            width: 150px;
+            color: #555;
+        }
+        .info-value {
+            flex: 1;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            background-color: white;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #28a745;
+            color: white;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        .footer {
+            background-color: #333;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            border-radius: 0 0 5px 5px;
+            font-size: 12px;
+        }
+        .total-row {
+            font-weight: bold;
+            background-color: #e8f4f8 !important;
+        }
+        .variation-warning {
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Transfer Completion Notification</h1>
+        <p>TR-{{ transfer_receipt.receipt_number }}</p>
+    </div>
+    
+    <div class="content">
+        {% if has_variations %}
+        <div class="variation-warning">
+            <strong>⚠️ Quantity Variations Detected:</strong> Some received quantities differ from issued quantities. Please review the details below.
+        </div>
+        {% endif %}
+
+        <div class="info-section">
+            <h3>Transfer Information</h3>
+            <div class="info-row">
+                <span class="info-label">Sales Order:</span>
+                <span class="info-value">SO-{{ sales_order.sales_order_id }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Goods Issue:</span>
+                <span class="info-value">GI-{{ goods_issue.issue_number }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Transfer Receipt:</span>
+                <span class="info-value">TR-{{ transfer_receipt.receipt_number }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Receipt Date:</span>
+                <span class="info-value">{{ transfer_receipt.created_date|date:"F d, Y" }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Received By:</span>
+                <span class="info-value">{{ created_by.get_full_name|default:created_by.username }}</span>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <h3>Store Information</h3>
+            <div class="info-row">
+                <span class="info-label">From Store:</span>
+                <span class="info-value">{{ source_store.store_name }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">To Store:</span>
+                <span class="info-value">{{ destination_store.store_name }}</span>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <h3>Items Received</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Product ID</th>
+                        <th>Product Name</th>
+                        <th>Qty Issued</th>
+                        <th>Qty Received</th>
+                        <th>Unit Price</th>
+                        <th>Total Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in line_items %}
+                    <tr {% if item.quantity_received != item.goods_issue_line_item.quantity_issued %}style="background-color: #fff3cd;"{% endif %}>
+                        <td>{{ item.product_id }}</td>
+                        <td>{{ item.product_name }}</td>
+                        <td>{{ item.goods_issue_line_item.quantity_issued }} {{ item.goods_issue_line_item.sales_order_line_item.unit_of_measurement }}</td>
+                        <td>{{ item.quantity_received }} {{ item.goods_issue_line_item.sales_order_line_item.unit_of_measurement }}</td>
+                        <td>${{ item.goods_issue_line_item.sales_order_line_item.unit_price|floatformat:2 }}</td>
+                        <td>${{ item.value_received|floatformat:2 }}</td>
+                    </tr>
+                    {% endfor %}
+                    <tr class="total-row">
+                        <td colspan="3"><strong>Total</strong></td>
+                        <td><strong>{{ transfer_receipt.total_quantity_received }}</strong></td>
+                        <td></td>
+                        <td><strong>${{ transfer_receipt.total_value_received|floatformat:2 }}</strong></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="info-section">
+            <h3>Transfer Status</h3>
+            <p>The transfer from <strong>{{ source_store.store_name }}</strong> to <strong>{{ destination_store.store_name }}</strong> has been completed.</p>
+            <p>The destination store has confirmed receipt of the items listed above.</p>
+            {% if has_variations %}
+            <p><strong>Note:</strong> There are quantity variations between issued and received quantities. Please review and investigate any discrepancies.</p>
+            {% endif %}
+        </div>
+    </div>
+    
+    <div class="footer">
+        <p>This is an automated notification from the VIMP Transfer System</p>
+        <p>Food Concepts PLC - Vendor Invoice Management Platform</p>
+    </div>
+</body>
+</html>
