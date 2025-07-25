@@ -15,6 +15,11 @@ class SAPIntegrationError(Exception):
     pass
 
 
+class ICGIntegrationError(Exception):
+    """Custom exception for ICG integration errors"""
+    pass
+
+
 class RetryableError(Exception):
     """Exception for errors that should be retried"""
     pass
@@ -49,23 +54,106 @@ def retry_on_failure(max_retries=3, delay=5):
     return decorator
 
 
+@retry_on_failure(max_retries=3, delay=5)
 def post_goods_issue_to_icg(goods_issue_id: int):
     """
     Async task to post goods issue to ICG inventory system
-    This will be implemented when ICG integration is added
+    Placeholder implementation with proper error handling structure
     """
+    from .icg_service import ICGTransferService, ICGTransferError, ICGConnectionError, ICGInventoryError
+    
     try:
         goods_issue = GoodsIssueNote.objects.get(id=goods_issue_id)
         logger.info(f"Processing ICG posting for goods issue {goods_issue.issue_number}")
         
-        # Placeholder for ICG integration
-        # This will be implemented in task 3.3
-        logger.warning("ICG integration not yet implemented")
+        # Skip if already posted to ICG
+        if goods_issue.posted_to_icg:
+            logger.info(f"Goods issue {goods_issue.issue_number} already posted to ICG")
+            return
+        
+        # Validate goods issue has line items
+        if not goods_issue.line_items.exists():
+            raise ICGTransferError(f"Goods issue {goods_issue.issue_number} has no line items")
+        
+        # Validate source store has required ICG identifiers
+        if not goods_issue.source_store.icg_warehouse_code:
+            raise ICGTransferError(f"Source store {goods_issue.source_store.store_name} missing ICG warehouse code")
+        
+        # Initialize ICG service
+        try:
+            icg_service = ICGTransferService()
+        except Exception as e:
+            logger.error(f"Failed to initialize ICG service: {e}")
+            raise RetryableError(f"ICG service initialization failed: {e}")
+        
+        # Prepare goods issue data for ICG
+        line_items_data = []
+        for line_item in goods_issue.line_items.all():
+            if not line_item.product_id:
+                raise ICGTransferError(f"Line item missing product ID: {line_item}")
+            
+            if line_item.quantity_issued <= 0:
+                raise ICGTransferError(f"Invalid quantity for line item: {line_item}")
+            
+            item_data = {
+                'product_id': line_item.product_id,
+                'quantity_issued': float(line_item.quantity_issued),
+                'unit_price': float(line_item.sales_order_line_item.unit_price),
+                'product_name': line_item.product_name,
+                'unit_of_measurement': line_item.sales_order_line_item.unit_of_measurement
+            }
+            line_items_data.append(item_data)
+        
+        goods_issue_data = {
+            'issue_number': goods_issue.issue_number,
+            'source_store_id': goods_issue.source_store.icg_warehouse_code,
+            'destination_store_id': goods_issue.sales_order.destination_store.icg_warehouse_code,
+            'sales_order_id': goods_issue.sales_order.sales_order_id,
+            'created_date': goods_issue.created_date.strftime("%Y-%m-%d"),
+            'created_by': goods_issue.created_by.username,
+            'line_items': line_items_data
+        }
+        
+        # Reduce inventory at source store
+        logger.info(f"Reducing ICG inventory for goods issue {goods_issue.issue_number}")
+        try:
+            response = icg_service.reduce_inventory_for_goods_issue(goods_issue_data)
+        except ICGConnectionError as e:
+            logger.error(f"ICG connection error: {e}")
+            raise RetryableError(f"ICG connection failed: {e}")
+        except ICGInventoryError as e:
+            logger.error(f"ICG inventory error: {e}")
+            raise ICGTransferError(f"ICG inventory operation failed: {e}")
+        except Exception as e:
+            logger.error(f"ICG reduce_inventory_for_goods_issue failed: {e}")
+            raise RetryableError(f"ICG inventory reduction failed: {e}")
+        
+        # Validate response
+        if not response or not response.get('success'):
+            logger.error(f"ICG inventory reduction failed: {response}")
+            raise RetryableError("ICG returned failure for inventory reduction")
+        
+        # Update goods issue as posted to ICG
+        goods_issue.posted_to_icg = True
+        goods_issue.metadata.update({
+            'icg_transaction_id': response.get('transaction_id'),
+            'icg_posted_date': timezone.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'icg_response': response,
+            'total_value_reduced': response.get('total_value_reduced')
+        })
+        goods_issue.save()
+        
+        logger.info(f"Goods issue {goods_issue.issue_number} successfully posted to ICG")
         
     except GoodsIssueNote.DoesNotExist:
         logger.error(f"Goods issue with ID {goods_issue_id} not found")
+        raise ICGTransferError(f"Goods issue with ID {goods_issue_id} not found")
+    except (ICGTransferError, RetryableError):
+        # Re-raise these specific exceptions for proper handling
+        raise
     except Exception as e:
-        logger.error(f"Error posting goods issue {goods_issue_id} to ICG: {e}")
+        logger.error(f"Unexpected error posting goods issue {goods_issue_id} to ICG: {e}")
+        raise ICGTransferError(f"Unexpected error: {e}")
 
 
 @retry_on_failure(max_retries=3, delay=5)
@@ -194,23 +282,110 @@ def post_goods_issue_to_sap(goods_issue_id: int):
         raise SAPIntegrationError(f"Unexpected error: {e}")
 
 
+@retry_on_failure(max_retries=3, delay=5)
 def update_transfer_receipt_inventory(receipt_id: int):
     """
     Async task to update ICG inventory for transfer receipt
-    This will be implemented when ICG integration is added
+    Placeholder implementation with proper error handling structure
     """
+    from .icg_service import ICGTransferService, ICGTransferError, ICGConnectionError, ICGInventoryError
+    
     try:
         receipt = TransferReceiptNote.objects.get(id=receipt_id)
         logger.info(f"Processing ICG inventory update for receipt {receipt.receipt_number}")
         
-        # Placeholder for ICG integration
-        # This will be implemented in task 4.3
-        logger.warning("ICG integration not yet implemented")
+        # Skip if already posted to ICG
+        if receipt.posted_to_icg:
+            logger.info(f"Transfer receipt {receipt.receipt_number} already posted to ICG")
+            return
+        
+        # Validate receipt has line items
+        if not receipt.line_items.exists():
+            raise ICGTransferError(f"Transfer receipt {receipt.receipt_number} has no line items")
+        
+        # Validate destination store has required ICG identifiers
+        if not receipt.destination_store.icg_warehouse_code:
+            raise ICGTransferError(f"Destination store {receipt.destination_store.store_name} missing ICG warehouse code")
+        
+        # Initialize ICG service
+        try:
+            icg_service = ICGTransferService()
+        except Exception as e:
+            logger.error(f"Failed to initialize ICG service: {e}")
+            raise RetryableError(f"ICG service initialization failed: {e}")
+        
+        # Prepare receipt data for ICG
+        line_items_data = []
+        for line_item in receipt.line_items.all():
+            gi_line_item = line_item.goods_issue_line_item
+            so_line_item = gi_line_item.sales_order_line_item
+            
+            if not gi_line_item.product_id:
+                raise ICGTransferError(f"Line item missing product ID: {line_item}")
+            
+            if line_item.quantity_received <= 0:
+                raise ICGTransferError(f"Invalid quantity for line item: {line_item}")
+            
+            item_data = {
+                'product_id': gi_line_item.product_id,
+                'quantity_received': float(line_item.quantity_received),
+                'unit_price': float(so_line_item.unit_price),
+                'product_name': gi_line_item.product_name,
+                'unit_of_measurement': so_line_item.unit_of_measurement
+            }
+            line_items_data.append(item_data)
+        
+        receipt_data = {
+            'receipt_number': receipt.receipt_number,
+            'destination_store_id': receipt.destination_store.icg_warehouse_code,
+            'source_store_id': receipt.goods_issue.source_store.icg_warehouse_code,
+            'goods_issue_number': receipt.goods_issue.issue_number,
+            'sales_order_id': receipt.goods_issue.sales_order.sales_order_id,
+            'created_date': receipt.created_date.strftime("%Y-%m-%d"),
+            'created_by': receipt.created_by.username,
+            'line_items': line_items_data
+        }
+        
+        # Increase inventory at destination store
+        logger.info(f"Increasing ICG inventory for transfer receipt {receipt.receipt_number}")
+        try:
+            response = icg_service.increase_inventory_for_transfer_receipt(receipt_data)
+        except ICGConnectionError as e:
+            logger.error(f"ICG connection error: {e}")
+            raise RetryableError(f"ICG connection failed: {e}")
+        except ICGInventoryError as e:
+            logger.error(f"ICG inventory error: {e}")
+            raise ICGTransferError(f"ICG inventory operation failed: {e}")
+        except Exception as e:
+            logger.error(f"ICG increase_inventory_for_transfer_receipt failed: {e}")
+            raise RetryableError(f"ICG inventory increase failed: {e}")
+        
+        # Validate response
+        if not response or not response.get('success'):
+            logger.error(f"ICG inventory increase failed: {response}")
+            raise RetryableError("ICG returned failure for inventory increase")
+        
+        # Update receipt as posted to ICG
+        receipt.posted_to_icg = True
+        receipt.metadata.update({
+            'icg_transaction_id': response.get('transaction_id'),
+            'icg_posted_date': timezone.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'icg_response': response,
+            'total_value_added': response.get('total_value_added')
+        })
+        receipt.save()
+        
+        logger.info(f"Transfer receipt {receipt.receipt_number} successfully posted to ICG")
         
     except TransferReceiptNote.DoesNotExist:
         logger.error(f"Transfer receipt with ID {receipt_id} not found")
+        raise ICGTransferError(f"Transfer receipt with ID {receipt_id} not found")
+    except (ICGTransferError, RetryableError):
+        # Re-raise these specific exceptions for proper handling
+        raise
     except Exception as e:
-        logger.error(f"Error updating inventory for receipt {receipt_id}: {e}")
+        logger.error(f"Unexpected error updating inventory for receipt {receipt_id}: {e}")
+        raise ICGTransferError(f"Unexpected error: {e}")
 
 
 @retry_on_failure(max_retries=3, delay=5)
