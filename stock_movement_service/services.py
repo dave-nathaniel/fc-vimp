@@ -33,8 +33,7 @@ class SalesOrderService:
         try:
             # This would be implemented to call SAP ByD REST API
             # For now, returning mock data for the sample sales orders
-            mock_data = self._get_mock_sales_order(sales_order_id)
-            return mock_data
+            return self.byd_rest.get_sales_order_by_id(sales_order_id)
         except Exception as e:
             logging.error(f"Error fetching sales order {sales_order_id}: {e}")
             return None
