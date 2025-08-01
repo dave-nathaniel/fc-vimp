@@ -312,7 +312,7 @@ class RESTServices:
 			Fetch a sales order from SAP ByD by ID
 		'''
 		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khsalesorder/SalesOrderCollection?$format=json"
-					  f"&$expand=Item,BuyerParty,SellerParty&$filter=ID eq '{sales_order_id}'")
+					  f"&$expand=BuyerParty/BuyerPartyName,SalesUnitParty/SalesUnitPartyName,PricingTerms,Item/ItemProduct,Item/ItemScheduleLine,Item&$filter=ID eq '{sales_order_id}'")
 		
 		try:
 			response = self.__get__(action_url)
