@@ -4,6 +4,7 @@ from django.db.utils import IntegrityError
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db.models import Sum
 from django_q.tasks import async_task
+from django.utils import timezone
 
 from core_service.models import CustomUser
 from egrn_service.models import Store
@@ -77,16 +78,21 @@ class SalesOrder(models.Model):
         Create a sales order from SAP ByD data
         """
         # Validate required fields
-        required_fields = ["ObjectID", "ID", "TotalNetAmount"]
+        required_fields = ["ObjectID", "ID"]
         for field in required_fields:
             if field not in so_data:
                 raise ValidationError(f"Required field '{field}' missing from sales order data")
+        
+        # Use TotalNetAmount if present, else fallback to NetAmount
+        total_net_amount = so_data.get("TotalNetAmount") or so_data.get("NetAmount")
+        if total_net_amount is None:
+            raise ValidationError("Required field 'TotalNetAmount' or 'NetAmount' missing from sales order data")
         
         # Create new sales order instance
         sales_order = cls()
         sales_order.object_id = so_data["ObjectID"]
         sales_order.sales_order_id = int(so_data["ID"])
-        sales_order.total_net_amount = float(so_data["TotalNetAmount"])
+        sales_order.total_net_amount = float(total_net_amount)
         
         # Handle date conversion
         if "LastChangeDateTime" in so_data:
@@ -94,15 +100,14 @@ class SalesOrder(models.Model):
         elif "CreationDateTime" in so_data:
             sales_order.order_date = to_python_time(so_data["CreationDateTime"])
         else:
-            from django.utils import timezone
             sales_order.order_date = timezone.now().date()
         
         # Get source and destination stores from SAP ByD data
-        # Map SellerParty to source store and BuyerParty to destination store
-        seller_party = so_data.get("SellerParty", {})
+        # Map SalesUnitParty to source store and BuyerParty to destination store
+        sales_unit_party = so_data.get("SalesUnitParty", {})
         buyer_party = so_data.get("BuyerParty", {})
         
-        source_store_code = seller_party.get("PartyID") if seller_party else None
+        source_store_code = sales_unit_party.get("PartyID") if sales_unit_party else None
         dest_store_code = buyer_party.get("PartyID") if buyer_party else None
         
         if not source_store_code or not dest_store_code:
@@ -174,10 +179,21 @@ class SalesOrder(models.Model):
         so_line_item.sales_order = self
         so_line_item.object_id = line_item["ObjectID"]
         so_line_item.product_name = line_item["Description"]
-        so_line_item.product_id = line_item["ProductID"]
+        # Extract ProductID from ItemProduct if present
+        item_product = line_item.get("ItemProduct", {})
+        so_line_item.product_id = item_product.get("ProductID") if item_product else line_item.get("ProductID")
         so_line_item.quantity = float(line_item["Quantity"])
-        so_line_item.unit_price = line_item["ListUnitPriceAmount"]
-        so_line_item.unit_of_measurement = line_item["QuantityUnitCodeText"]
+        # Use NetAmount as unit_price if ListUnitPriceAmount is missing
+        unit_price = line_item.get("ListUnitPriceAmount")
+        if unit_price is None:
+            # Fallback: try NetAmount/Quantity if NetAmount is present
+            net_amount = line_item.get("NetAmount")
+            if net_amount is not None and float(line_item["Quantity"]) != 0:
+                unit_price = float(net_amount) / float(line_item["Quantity"])
+            else:
+                unit_price = 0.0
+        so_line_item.unit_price = float(unit_price)
+        so_line_item.unit_of_measurement = line_item.get("QuantityUnitCodeText", "")
         so_line_item.metadata = line_item
         so_line_item.save()
     
@@ -551,6 +567,230 @@ class TransferReceiptLineItem(models.Model):
         verbose_name_plural = "Transfer Receipt Line Items"
 
 
+class InboundDelivery(models.Model):
+    """
+    Represents an inbound delivery notification from SAP ByD for warehouse-to-store transfers
+    """
+    DELIVERY_STATUS_CHOICES = [
+        ('1', 'Open'),
+        ('2', 'In Process'),
+        ('3', 'Completed'),
+        ('4', 'Cancelled')
+    ]
+    
+    object_id = models.CharField(max_length=32, unique=True)
+    delivery_id = models.CharField(max_length=50, unique=True)
+    source_location_id = models.CharField(max_length=50, help_text="Warehouse/Location ID from SAP ByD")
+    source_location_name = models.CharField(max_length=100, blank=True, help_text="Warehouse/Location name")
+    destination_store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='inbound_deliveries')
+    delivery_date = models.DateField()
+    delivery_status_code = models.CharField(max_length=1, choices=DELIVERY_STATUS_CHOICES, default='1')
+    delivery_type_code = models.CharField(max_length=10, blank=True, help_text="SAP ByD delivery type code")
+    sales_order_reference = models.CharField(max_length=50, null=True, blank=True)
+    metadata = models.JSONField(default=dict)
+    created_date = models.DateTimeField(auto_now_add=True)
+    
+    @property
+    def delivery_status(self):
+        """
+        Get delivery status display
+        """
+        return dict(self.DELIVERY_STATUS_CHOICES).get(self.delivery_status_code, 'Unknown')
+    
+    @property
+    def total_quantity_expected(self):
+        """
+        Calculate total quantity expected from all line items
+        """
+        return sum(item.quantity_expected for item in self.line_items.all())
+    
+    @property
+    def total_quantity_received(self):
+        """
+        Calculate total quantity already received
+        """
+        return sum(item.quantity_received for item in self.line_items.all())
+    
+    @property
+    def is_fully_received(self):
+        """
+        Check if delivery is fully received
+        """
+        total_expected = self.total_quantity_expected
+        if total_expected == 0:
+            return False  # Cannot be fully received if there's nothing expected
+        return self.total_quantity_received >= total_expected
+    
+    @classmethod
+    def create_from_byd_data(cls, delivery_data):
+        """
+        Create an inbound delivery from SAP ByD data (warehouse-to-store)
+        """
+        # Validate required fields
+        required_fields = ["ObjectID", "ID"]
+        for field in required_fields:
+            if field not in delivery_data:
+                raise ValidationError(f"Required field '{field}' missing from delivery data")
+        
+        # Create new delivery instance
+        delivery = cls()
+        delivery.object_id = delivery_data["ObjectID"]
+        delivery.delivery_id = delivery_data["ID"]
+        delivery.delivery_status_code = delivery_data.get("DeliveryProcessingStatusCode", "1")
+        delivery.delivery_type_code = delivery_data.get("DeliveryTypeCode", "")
+        
+        # Handle date conversion - use shipping period or creation date
+        if "ShippingPeriod" in delivery_data and delivery_data["ShippingPeriod"]:
+            shipping_period = delivery_data["ShippingPeriod"]
+            if "StartDateTime" in shipping_period:
+                delivery_datetime = to_python_time(shipping_period["StartDateTime"])
+                delivery.delivery_date = delivery_datetime.date() if hasattr(delivery_datetime, 'date') else delivery_datetime
+            else:
+                delivery.delivery_date = timezone.now().date()
+        elif "CreationDateTime" in delivery_data:
+            creation_datetime = to_python_time(delivery_data["CreationDateTime"])
+            delivery.delivery_date = creation_datetime.date() if hasattr(creation_datetime, 'date') else creation_datetime
+        else:
+            delivery.delivery_date = timezone.now().date()
+        
+        # Extract warehouse location information (source)
+        ship_from_location = delivery_data.get("ShipFromLocation", {})
+        if ship_from_location:
+            delivery.source_location_id = ship_from_location.get("LocationID", "")
+            # You might want to add logic to get location name from a mapping or API
+            delivery.source_location_name = f"Warehouse {delivery.source_location_id}"
+        
+        # Extract destination store information
+        product_recipient_party = delivery_data.get("ProductRecipientParty", {})
+        if not product_recipient_party:
+            raise ValidationError("ProductRecipientParty (destination store) information missing from delivery")
+        
+        dest_store_code = product_recipient_party.get("PartyID")
+        if not dest_store_code:
+            raise ValidationError("Destination store PartyID missing from delivery")
+        
+        try:
+            delivery.destination_store = cls._find_store_by_identifier(dest_store_code)
+        except Store.DoesNotExist:
+            raise ValidationError(f"Destination store not found for delivery {delivery.delivery_id}: {dest_store_code}")
+        
+        # Store sales order reference if available
+        delivery.sales_order_reference = delivery_data.get("SalesOrderID")
+        
+        # Store metadata
+        delivery.metadata = delivery_data
+        
+        try:
+            delivery.save()
+            
+            # Create line items
+            if "Item" in delivery_data:
+                delivery.__create_line_items__(delivery_data["Item"])
+            
+            logger.info(f"Created delivery {delivery.delivery_id} from warehouse {delivery.source_location_id} to store {delivery.destination_store.store_name}")
+            return delivery
+            
+        except IntegrityError as e:
+            logger.error(f"Error creating delivery {delivery.delivery_id}: {e}")
+            raise ValidationError(f"Error creating delivery: {e}")
+    
+    @staticmethod
+    def _find_store_by_identifier(identifier):
+        """
+        Find store by various identifier fields
+        """
+        try:
+            # First try by byd_cost_center_code (most common for SAP ByD)
+            return Store.objects.get(byd_cost_center_code=identifier)
+        except Store.DoesNotExist:
+            try:
+                # Try by icg_warehouse_code
+                return Store.objects.get(icg_warehouse_code=identifier)
+            except Store.DoesNotExist:
+                try:
+                    # Try by store name
+                    return Store.objects.get(store_name=identifier)
+                except Store.DoesNotExist:
+                    try:
+                        # Try by metadata fields
+                        return Store.objects.get(metadata__store_code=identifier)
+                    except Store.DoesNotExist:
+                        raise Store.DoesNotExist(f"Store not found with identifier: {identifier}")
+    
+    def __create_line_items__(self, line_items_data):
+        """
+        Create line items for this delivery from SAP ByD outbound delivery data
+        """
+        for item_data in line_items_data:
+            line_item = InboundDeliveryLineItem()
+            line_item.delivery = self
+            line_item.object_id = item_data.get("ObjectID", "")
+            line_item.product_id = item_data.get("ProductID", "")
+            
+            # For product name, try to get from ProductDescription or construct from ProductID
+            line_item.product_name = item_data.get("ProductDescription", item_data.get("ProductID", "Unknown Product"))
+            
+            # Extract quantity from ItemDeliveryQuantity
+            item_delivery_quantity = item_data.get("ItemDeliveryQuantity", {})
+            if item_delivery_quantity:
+                quantity = item_delivery_quantity.get("Quantity", "0")
+                unit_code = item_delivery_quantity.get("UnitCode", "")
+                unit_text = item_delivery_quantity.get("UnitCodeText", unit_code)
+            else:
+                # Fallback to direct quantity field
+                quantity = item_data.get("Quantity", "0")
+                unit_code = item_data.get("QuantityUnitCode", "")
+                unit_text = unit_code
+            
+            line_item.quantity_expected = float(quantity)
+            line_item.unit_of_measurement = unit_text if unit_text else unit_code
+            line_item.metadata = item_data
+            line_item.save()
+    
+    def __str__(self):
+        return f"Delivery {self.delivery_id} - Warehouse {self.source_location_id} to {self.destination_store.store_name}"
+    
+    class Meta:
+        verbose_name = "Inbound Delivery"
+        verbose_name_plural = "Inbound Deliveries"
+
+
+class InboundDeliveryLineItem(models.Model):
+    """
+    Individual line items for inbound deliveries
+    """
+    delivery = models.ForeignKey(InboundDelivery, on_delete=models.CASCADE, related_name='line_items')
+    object_id = models.CharField(max_length=32)
+    product_id = models.CharField(max_length=32)
+    product_name = models.CharField(max_length=100)
+    quantity_expected = models.DecimalField(max_digits=15, decimal_places=3)
+    quantity_received = models.DecimalField(max_digits=15, decimal_places=3, default=0)
+    unit_of_measurement = models.CharField(max_length=32)
+    metadata = models.JSONField(default=dict)
+    
+    @property
+    def quantity_outstanding(self):
+        """
+        Calculate outstanding quantity to be received
+        """
+        from decimal import Decimal
+        return self.quantity_expected - Decimal(str(self.quantity_received))
+    
+    @property
+    def is_fully_received(self):
+        """
+        Check if line item is fully received
+        """
+        return self.quantity_received >= self.quantity_expected
+    
+    def __str__(self):
+        return f"{self.product_name} - {self.quantity_expected} {self.unit_of_measurement}"
+    
+    class Meta:
+        verbose_name = "Inbound Delivery Line Item"
+        verbose_name_plural = "Inbound Delivery Line Items"
+
+
 class StoreAuthorization(models.Model):
     """
     Links users to authorized stores with roles
@@ -566,11 +806,11 @@ class StoreAuthorization(models.Model):
     store = models.ForeignKey(Store, on_delete=models.CASCADE, related_name='authorized_users')
     role = models.CharField(max_length=50, choices=STORE_ROLE_CHOICES)
     created_date = models.DateTimeField(auto_now_add=True)
-    
+
     class Meta:
         unique_together = ('user', 'store')
         verbose_name = "Store Authorization"
         verbose_name_plural = "Store Authorizations"
-    
+
     def __str__(self):
         return f"{self.user.username} - {self.store.store_name} ({self.role})"

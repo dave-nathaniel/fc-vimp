@@ -4,7 +4,8 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from .models import (
     SalesOrder, SalesOrderLineItem,
     GoodsIssueNote, GoodsIssueLineItem,
-    TransferReceiptNote, TransferReceiptLineItem
+    TransferReceiptNote, TransferReceiptLineItem,
+    InboundDelivery, InboundDeliveryLineItem
 )
 from .services import AuthorizationService
 from .validators import (
@@ -400,4 +401,130 @@ class TransferReceiptNoteCreateSerializer(serializers.ModelSerializer):
                 **item_data
             )
         
-        return transfer_receipt 
+        return transfer_receipt
+
+
+class InboundDeliveryLineItemSerializer(serializers.ModelSerializer):
+    # Computed fields
+    quantity_outstanding = serializers.ReadOnlyField()
+    is_fully_received = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = InboundDeliveryLineItem
+        fields = [
+            'id', 'object_id', 'product_id', 'product_name',
+            'quantity_expected', 'quantity_received', 'unit_of_measurement',
+            'quantity_outstanding', 'is_fully_received', 'metadata'
+        ]
+
+
+class InboundDeliverySerializer(serializers.ModelSerializer):
+    line_items = InboundDeliveryLineItemSerializer(many=True, read_only=True)
+    
+    # Computed fields
+    delivery_status = serializers.ReadOnlyField()
+    total_quantity_expected = serializers.ReadOnlyField()
+    total_quantity_received = serializers.ReadOnlyField()
+    is_fully_received = serializers.ReadOnlyField()
+    
+    # Store and location details
+    destination_store_name = serializers.CharField(source='destination_store.store_name', read_only=True)
+    
+    class Meta:
+        model = InboundDelivery
+        fields = [
+            'id', 'object_id', 'delivery_id', 'source_location_id', 'source_location_name',
+            'destination_store', 'delivery_date', 'delivery_status_code', 'delivery_status',
+            'delivery_type_code', 'sales_order_reference', 'total_quantity_expected', 
+            'total_quantity_received', 'is_fully_received', 'destination_store_name',
+            'line_items', 'metadata', 'created_date'
+        ]
+
+
+class DeliveryReceiptLineItemSerializer(serializers.ModelSerializer):
+    """Serializer for receiving goods from a delivery line item"""
+    
+    # Read-only fields from the delivery line item
+    product_id = serializers.CharField(source='delivery_line_item.product_id', read_only=True)
+    product_name = serializers.CharField(source='delivery_line_item.product_name', read_only=True)
+    quantity_expected = serializers.DecimalField(
+        source='delivery_line_item.quantity_expected',
+        max_digits=15, decimal_places=3, read_only=True
+    )
+    unit_of_measurement = serializers.CharField(
+        source='delivery_line_item.unit_of_measurement', read_only=True
+    )
+    
+    # Field for entering received quantity
+    delivery_line_item = serializers.PrimaryKeyRelatedField(queryset=InboundDeliveryLineItem.objects.all())
+    quantity_received = serializers.DecimalField(max_digits=15, decimal_places=3)
+    
+    class Meta:
+        model = InboundDeliveryLineItem
+        fields = [
+            'delivery_line_item', 'product_id', 'product_name',
+            'quantity_expected', 'quantity_received', 'unit_of_measurement'
+        ]
+    
+    def validate_quantity_received(self, value):
+        """Validate that received quantity is valid"""
+        if value <= 0:
+            raise serializers.ValidationError("Quantity received must be greater than 0")
+        return value
+    
+    def validate(self, attrs):
+        """Validate the entire line item"""
+        delivery_line_item = attrs.get('delivery_line_item')
+        quantity_received = attrs.get('quantity_received')
+        
+        if delivery_line_item and quantity_received:
+            # Check if receiving this quantity would exceed the expected quantity
+            current_received = delivery_line_item.quantity_received
+            total_received = current_received + quantity_received
+            
+            if total_received > delivery_line_item.quantity_expected:
+                raise serializers.ValidationError({
+                    'quantity_received': f'Total received quantity ({total_received}) would exceed expected quantity ({delivery_line_item.quantity_expected})'
+                })
+        
+        return attrs
+
+
+class DeliveryReceiptSerializer(serializers.Serializer):
+    """Serializer for creating a receipt from an inbound delivery"""
+    delivery = serializers.PrimaryKeyRelatedField(queryset=InboundDelivery.objects.all())
+    line_items = DeliveryReceiptLineItemSerializer(many=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    
+    def validate_line_items(self, value):
+        """Validate line items for the delivery receipt"""
+        if not value:
+            raise serializers.ValidationError("At least one line item is required")
+        
+        # Check that all line items belong to the same delivery
+        deliveries = set()
+        for item in value:
+            delivery_line_item = item.get('delivery_line_item')
+            if delivery_line_item:
+                deliveries.add(delivery_line_item.delivery.id)
+        
+        if len(deliveries) > 1:
+            raise serializers.ValidationError("All line items must belong to the same delivery")
+        
+        return value
+    
+    def validate(self, attrs):
+        """Validate the entire delivery receipt"""
+        delivery = attrs.get('delivery')
+        line_items = attrs.get('line_items', [])
+        
+        if delivery and line_items:
+            # Ensure all line items belong to this delivery
+            for item in line_items:
+                delivery_line_item = item.get('delivery_line_item')
+                if delivery_line_item and delivery_line_item.delivery != delivery:
+                    raise serializers.ValidationError(
+                        "All line items must belong to the specified delivery"
+                    )
+        
+        return attrs 

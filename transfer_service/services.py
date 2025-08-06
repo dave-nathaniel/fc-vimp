@@ -25,21 +25,23 @@ class AuthorizationService:
         return Store.objects.filter(authorized_users__user=user)
     
     @staticmethod
-    def validate_store_access(user: CustomUser, store_id: str) -> bool:
+    def validate_store_access(user: CustomUser, byd_cost_center_code: str) -> bool:
         """
         Validate if a user has access to a specific store
         """
+        store = Store.objects.get(byd_cost_center_code=byd_cost_center_code)
         return StoreAuthorization.objects.filter(
             user=user, 
-            store_id=store_id
+            store=store
         ).exists()
     
     @staticmethod
-    def validate_store_access_with_role(user: CustomUser, store_id: str, required_roles: list = None) -> bool:
+    def validate_store_access_with_role(user: CustomUser, byd_cost_center_code: str, required_roles: list = None) -> bool:
         """
         Validate if a user has access to a specific store with required role
         """
-        query = StoreAuthorization.objects.filter(user=user, store_id=store_id)
+        store = Store.objects.get(byd_cost_center_code=byd_cost_center_code)
+        query = StoreAuthorization.objects.filter(user=user, store=store)
         
         if required_roles:
             query = query.filter(role__in=required_roles)
@@ -47,12 +49,13 @@ class AuthorizationService:
         return query.exists()
     
     @staticmethod
-    def get_user_store_role(user: CustomUser, store_id: str) -> str:
+    def get_user_store_role(user: CustomUser, byd_cost_center_code: str) -> str:
         """
         Get user's role for a specific store
         """
         try:
-            auth = StoreAuthorization.objects.get(user=user, store_id=store_id)
+            store = Store.objects.get(byd_cost_center_code=byd_cost_center_code)
+            auth = StoreAuthorization.objects.get(user=user, store=store)
             return auth.role
         except StoreAuthorization.DoesNotExist:
             return None
@@ -125,14 +128,14 @@ class SalesOrderService:
             logger.error(f"Error fetching sales order {sales_order_id}: {str(e)}")
             raise
     
-    def get_store_sales_orders(self, store_id: str) -> list:
+    def get_store_sales_orders(self, byd_cost_center_code: str) -> list:
         """
         Get sales orders for a specific store
         """
         try:
-            return self.byd_rest.get_store_sales_orders(store_id)
+            return self.byd_rest.get_store_sales_orders(byd_cost_center_code)
         except Exception as e:
-            logger.error(f"Error fetching sales orders for store {store_id}: {str(e)}")
+            logger.error(f"Error fetching sales orders for store {byd_cost_center_code}: {str(e)}")
             raise
     
     def update_sales_order_status(self, sales_order_id: str, status: str) -> bool:
@@ -192,7 +195,7 @@ class GoodsIssueService:
         raise NotImplementedError("Goods issue creation not yet implemented")
     
     @staticmethod
-    def validate_inventory_availability(store_id: str, items: list) -> bool:
+    def validate_inventory_availability(byd_cost_center_code: str, items: list) -> bool:
         """
         Validate inventory availability at source store
         This is a placeholder for ICG integration
@@ -200,10 +203,10 @@ class GoodsIssueService:
         from .validators import InventoryValidator
         
         # Use the validator for basic validation
-        InventoryValidator.validate_inventory_availability(store_id, items)
+        InventoryValidator.validate_inventory_availability(byd_cost_center_code, items)
         
         # Placeholder for actual ICG inventory check
-        logger.info(f"Validating inventory availability for store {store_id}")
+        logger.info(f"Validating inventory availability for store {byd_cost_center_code}")
         
         # In real implementation, this would:
         # 1. Call ICG API to get current inventory levels
@@ -299,6 +302,98 @@ class GoodsIssueService:
         """
         # Placeholder for SAP ByD integration
         raise NotImplementedError("SAP ByD posting not yet implemented")
+
+
+class DeliveryService:
+    """
+    Service for managing inbound delivery operations
+    """
+    
+    def __init__(self):
+        from byd_service.rest import RESTServices
+        self.byd_rest = RESTServices()
+    
+    def search_deliveries_by_id(self, delivery_id: str, user_byd_cost_center_codes: list) -> dict:
+        """
+        Search for deliveries by ID across local database and SAP ByD
+        """
+        from .models import InboundDelivery
+        
+        results = {
+            'local': [],
+            'sap_byd': []
+        }
+        
+        # Search local database first
+        local_deliveries = InboundDelivery.objects.filter(
+            delivery_id__icontains=delivery_id,
+            destination_store__byd_cost_center_code__in=user_byd_cost_center_codes
+        )
+        
+        for delivery in local_deliveries:
+            results['local'].append(delivery)
+        
+        # If no local results, search SAP ByD
+        if not results['local']:
+            for byd_cost_center_code in user_byd_cost_center_codes:
+                try:
+                    byd_deliveries = self.byd_rest.search_deliveries_by_store(byd_cost_center_code)
+                    matching_deliveries = [
+                        d for d in byd_deliveries 
+                        if delivery_id.lower() in d.get('ID', '').lower()
+                    ]
+                    results['sap_byd'].extend(matching_deliveries)
+                except Exception as e:
+                    logger.warning(f"Error searching SAP ByD for store {byd_cost_center_code}: {e}")
+                    continue
+        
+        return results
+    
+    def fetch_and_create_delivery(self, delivery_id: str):
+        """
+        Fetch delivery from SAP ByD and create local record
+        """
+        from .models import InboundDelivery
+        
+        try:
+            delivery_data = self.byd_rest.get_delivery_by_id(delivery_id)
+            if not delivery_data:
+                raise ValidationError(f"Delivery {delivery_id} not found in SAP ByD")
+            
+            return InboundDelivery.create_from_byd_data(delivery_data)
+        except Exception as e:
+            logger.error(f"Error fetching delivery {delivery_id}: {e}")
+            raise
+    
+    def validate_delivery_receipt(self, delivery, line_items_data, user):
+        """
+        Validate delivery receipt creation
+        """
+        # Check delivery status
+        if delivery.delivery_status_code not in ['1', '2']:
+            raise ValidationError(f"Cannot receive from delivery in status: {delivery.delivery_status}")
+        
+        # Check user authorization
+        if not AuthorizationService.validate_store_access(user, delivery.destination_store.byd_cost_center_code):
+            raise ValidationError("User not authorized for this delivery's destination store")
+        
+        # Validate line items
+        for item_data in line_items_data:
+            delivery_line_item = item_data.get('delivery_line_item')
+            quantity_received = item_data.get('quantity_received', 0)
+            
+            if not delivery_line_item or delivery_line_item.delivery != delivery:
+                raise ValidationError("Invalid delivery line item")
+            
+            if quantity_received <= 0:
+                raise ValidationError("Quantity received must be greater than 0")
+            
+            # Check if receiving would exceed expected quantity
+            total_received = delivery_line_item.quantity_received + quantity_received
+            if total_received > delivery_line_item.quantity_expected:
+                raise ValidationError(
+                    f"Total received quantity ({total_received}) would exceed expected quantity ({delivery_line_item.quantity_expected}) for product {delivery_line_item.product_name}"
+                )
 
 
 class TransferReceiptService:

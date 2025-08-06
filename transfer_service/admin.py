@@ -3,6 +3,7 @@ from .models import (
     SalesOrder, SalesOrderLineItem,
     GoodsIssueNote, GoodsIssueLineItem,
     TransferReceiptNote, TransferReceiptLineItem,
+    InboundDelivery, InboundDeliveryLineItem,
     StoreAuthorization
 )
 
@@ -48,6 +49,21 @@ class TransferReceiptNoteAdmin(admin.ModelAdmin):
     search_fields = ('receipt_number', 'goods_issue__issue_number')
     readonly_fields = ('receipt_number', 'created_date')
     inlines = [TransferReceiptLineItemInline]
+
+
+class InboundDeliveryLineItemInline(admin.TabularInline):
+    model = InboundDeliveryLineItem
+    extra = 0
+    readonly_fields = ('object_id', 'product_id', 'product_name', 'quantity_expected', 'quantity_received', 'unit_of_measurement')
+
+
+@admin.register(InboundDelivery)
+class InboundDeliveryAdmin(admin.ModelAdmin):
+    list_display = ('delivery_id', 'source_location_name', 'destination_store', 'delivery_date', 'delivery_status_code', 'delivery_type_code', 'is_fully_received')
+    list_filter = ('delivery_status_code', 'delivery_type_code', 'delivery_date', 'destination_store', 'source_location_id')
+    search_fields = ('delivery_id', 'object_id', 'sales_order_reference', 'source_location_id', 'source_location_name')
+    readonly_fields = ('object_id', 'delivery_id', 'delivery_date', 'created_date', 'total_quantity_expected', 'total_quantity_received')
+    inlines = [InboundDeliveryLineItemInline]
 
 
 @admin.register(StoreAuthorization)

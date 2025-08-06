@@ -111,7 +111,7 @@ class SalesOrderCreationTest(TestCase):
             "TotalNetAmount": "1500.00",
             "LastChangeDateTime": "/Date(1704067200000)/",  # 2024-01-01
             "DeliveryStatusCode": "1",
-            "SellerParty": {
+            "SalesUnitParty": {
                 "PartyID": "SELLER123",
                 "PartyName": "Source Store"
             },
@@ -122,18 +122,18 @@ class SalesOrderCreationTest(TestCase):
             "Item": [
                 {
                     "ObjectID": "ITEM001",
-                    "ProductID": "PROD001",
                     "Description": "Test Product 1",
                     "Quantity": "10.000",
-                    "ListUnitPriceAmount": "50.00",
+                    "ItemProduct": {"ProductID": "PROD001"},
+                    "NetAmount": "500.00",
                     "QuantityUnitCodeText": "EA"
                 },
                 {
                     "ObjectID": "ITEM002",
-                    "ProductID": "PROD002", 
                     "Description": "Test Product 2",
                     "Quantity": "5.000",
-                    "ListUnitPriceAmount": "200.00",
+                    "ItemProduct": {"ProductID": "PROD002"},
+                    "NetAmount": "1000.00",
                     "QuantityUnitCodeText": "EA"
                 }
             ]
@@ -191,7 +191,7 @@ class SalesOrderCreationTest(TestCase):
     def test_create_sales_order_store_not_found(self):
         """Test sales order creation fails when stores are not found"""
         data = self.sample_sap_data.copy()
-        data["SellerParty"]["PartyID"] = "NONEXISTENT"
+        data["SalesUnitParty"]["PartyID"] = "NONEXISTENT"
         
         with self.assertRaises(ValidationError) as context:
             SalesOrder.create_sales_order(data)
@@ -330,15 +330,15 @@ class SalesOrderServiceTest(TestCase):
             "ID": "12345",
             "TotalNetAmount": "1500.00",
             "LastChangeDateTime": "/Date(1704067200000)/",
-            "SellerParty": {"PartyID": "SELLER123"},
+            "SalesUnitParty": {"PartyID": "SELLER123"},
             "BuyerParty": {"PartyID": "BUYER456"},
             "Item": [
                 {
                     "ObjectID": "ITEM001",
-                    "ProductID": "PROD001",
                     "Description": "Test Product",
                     "Quantity": "10.000",
-                    "ListUnitPriceAmount": "50.00",
+                    "ItemProduct": {"ProductID": "PROD001"},
+                    "NetAmount": "500.00",
                     "QuantityUnitCodeText": "EA"
                 }
             ]

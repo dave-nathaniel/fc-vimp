@@ -8,6 +8,8 @@ from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework import status
 import logging
+from egrn_service.models import Store
+from .models import StoreAuthorization
 
 logger = logging.getLogger(__name__)
 
@@ -789,12 +791,10 @@ class StoreAuthorizationValidator(TransferDataValidator):
     """
     
     @classmethod
-    def validate_store_access(cls, user, store_id, required_roles=None):
+    def validate_store_access(cls, user, byd_cost_center_code, required_roles=None):
         """
         Validate user has access to a specific store
         """
-        from .models import StoreAuthorization
-        
         field_errors = {}
         validation_errors = []
         
@@ -805,13 +805,8 @@ class StoreAuthorizationValidator(TransferDataValidator):
             validation_errors.append("User must be authenticated")
         
         # Validate store_id
-        if not store_id:
-            field_errors["store_id"] = ["Store ID is required"]
-        else:
-            try:
-                FieldValidator.validate_positive_integer(store_id, "store_id")
-            except ValidationError as e:
-                field_errors.update(e.error_dict)
+        if not byd_cost_center_code:
+            field_errors["byd_cost_center_code"] = ["ByD Cost Center Code is required"]
         
         # Validate required_roles if provided
         if required_roles is not None:
@@ -829,18 +824,19 @@ class StoreAuthorizationValidator(TransferDataValidator):
         
         # Check if user has authorization for the store
         try:
+            store = Store.objects.get(byd_cost_center_code=byd_cost_center_code)
             authorization = StoreAuthorization.objects.filter(
                 user=user,
-                store_id=store_id
+                store=store
             ).first()
             
             if not authorization:
-                raise ValidationError(f"User '{user.username}' is not authorized for store {store_id}")
+                raise ValidationError(f"User '{user.username}' is not authorized for store {store.store_name}")
             
             # Check role requirements if specified
             if required_roles and authorization.role not in required_roles:
                 raise ValidationError(
-                    f"User '{user.username}' does not have required role for store {store_id}. "
+                    f"User '{user.username}' does not have required role for store {store.store_name}. "
                     f"Required: {', '.join(required_roles)}, Current: {authorization.role}"
                 )
             
@@ -857,8 +853,6 @@ class StoreAuthorizationValidator(TransferDataValidator):
         """
         Validate store authorization creation data
         """
-        from .models import StoreAuthorization
-        
         field_errors = {}
         validation_errors = []
         
