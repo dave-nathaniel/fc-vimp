@@ -85,6 +85,9 @@ class RESTServices:
 		}
 		headers.update(self.auth_headers)
 		return self.session.post(*args, **kwargs, headers=headers, auth=self.auth)
+	
+	def get_store_by_params(self, **kwargs):
+		action_url = f"{self.endpoint}"
 
 	def get_vendor_by_id(self, vendor_id, id_type='email'):
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=10"
@@ -312,7 +315,7 @@ class RESTServices:
 			Fetch a sales order from SAP ByD by ID
 		'''
 		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khsalesorder/SalesOrderCollection?$format=json"
-					  f"&$expand=Item,BuyerParty,SellerParty&$filter=ID eq '{sales_order_id}'")
+					  f"&$expand=BuyerParty/BuyerPartyName,SalesUnitParty/SalesUnitPartyName,PricingTerms,Item/ItemProduct,Item/ItemScheduleLine,Item&$filter=ID eq '{sales_order_id}'")
 		
 		try:
 			response = self.__get__(action_url)
@@ -346,6 +349,52 @@ class RESTServices:
 				return []
 		except Exception as e:
 			logger.error(f"Error fetching sales orders for store {store_id}: {str(e)}")
+			raise
+	
+	def get_delivery_by_id(self, delivery_id: str) -> dict:
+		'''
+			Fetch an outbound delivery (warehouse-to-store) from SAP ByD by ID
+		'''
+		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khoutbounddelivery/OutboundDeliveryCollection?$format=json"
+					  f"&$expand=Item/ItemDeliveryQuantity,ProductRecipientParty/ProductRecipientDisplayName,"
+					  f"ShipFromLocation,ShippingPeriod,ArrivalPeriod"
+					  f"&$filter=ID eq '{delivery_id}'")
+		
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				results = response_json["d"]["results"]
+				return results[0] if results else None
+			else:
+				logger.error(f"Failed to fetch delivery {delivery_id}: {response.text}")
+				return None
+		except Exception as e:
+			logger.error(f"Error fetching delivery {delivery_id}: {str(e)}")
+			raise
+	
+	def search_deliveries_by_store(self, store_id: str, status: str = None) -> list:
+		'''
+			Search for outbound deliveries (warehouse-to-store) assigned to a specific store
+		'''
+		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khoutbounddelivery/OutboundDeliveryCollection?$format=json"
+					  f"&$expand=Item/ItemDeliveryQuantity,ProductRecipientParty/ProductRecipientDisplayName,"
+					  f"ShipFromLocation,ShippingPeriod,ArrivalPeriod"
+					  f"&$filter=ProductRecipientParty/PartyID eq '{store_id}' and DeliveryTypeCode eq 'STOD'")
+		
+		if status:
+			action_url += f" and DeliveryProcessingStatusCode eq '{status}'"
+		
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				return response_json["d"]["results"]
+			else:
+				logger.error(f"Failed to fetch deliveries for store {store_id}: {response.text}")
+				return []
+		except Exception as e:
+			logger.error(f"Error fetching deliveries for store {store_id}: {str(e)}")
 			raise
 	
 	def update_sales_order_status(self, sales_order_id: str, status: str) -> bool:

@@ -18,7 +18,7 @@ urlpatterns = [
     path('api/v1/', include('api_service.urls')),
     path('egrn/v1/', include('egrn_service.urls')),
     path('approvals/v1/', include('approval_service.urls')),
-    path('stock-movement/v1/', include('stock_movement_service.urls')),
+    path('transfers/v1/', include('transfer_service.urls')),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

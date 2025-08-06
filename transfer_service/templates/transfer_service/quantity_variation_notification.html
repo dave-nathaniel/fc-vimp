@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quantity Variation Alert</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            background-color: #dc3545;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            border-radius: 5px 5px 0 0;
+        }
+        .content {
+            background-color: #f9f9f9;
+            padding: 20px;
+            border: 1px solid #ddd;
+        }
+        .alert-section {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }
+        .info-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: white;
+            border-radius: 5px;
+            border-left: 4px solid #dc3545;
+        }
+        .info-row {
+            display: flex;
+            margin-bottom: 10px;
+        }
+        .info-label {
+            font-weight: bold;
+            width: 150px;
+            color: #555;
+        }
+        .info-value {
+            flex: 1;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+            background-color: white;
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #dc3545;
+            color: white;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+        .variation-row {
+            background-color: #f8d7da !important;
+            color: #721c24;
+        }
+        .footer {
+            background-color: #333;
+            color: white;
+            padding: 15px;
+            text-align: center;
+            border-radius: 0 0 5px 5px;
+            font-size: 12px;
+        }
+        .total-row {
+            font-weight: bold;
+            background-color: #e8f4f8 !important;
+        }
+        .variation-indicator {
+            font-weight: bold;
+            color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚠️ Quantity Variation Alert</h1>
+        <p>TR-{{ transfer_receipt.receipt_number }}</p>
+    </div>
+    
+    <div class="content">
+        <div class="alert-section">
+            <h3>🚨 Attention Required</h3>
+            <p><strong>Quantity variations have been detected</strong> in the transfer receipt below. Some received quantities differ from the issued quantities.</p>
+            <p>Please review the discrepancies and investigate the cause. This may require inventory adjustments or further investigation.</p>
+        </div>
+
+        <div class="info-section">
+            <h3>Transfer Information</h3>
+            <div class="info-row">
+                <span class="info-label">Sales Order:</span>
+                <span class="info-value">SO-{{ sales_order.sales_order_id }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Goods Issue:</span>
+                <span class="info-value">GI-{{ goods_issue.issue_number }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Transfer Receipt:</span>
+                <span class="info-value">TR-{{ transfer_receipt.receipt_number }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Receipt Date:</span>
+                <span class="info-value">{{ transfer_receipt.created_date|date:"F d, Y" }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">Received By:</span>
+                <span class="info-value">{{ created_by.get_full_name|default:created_by.username }}</span>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <h3>Store Information</h3>
+            <div class="info-row">
+                <span class="info-label">From Store:</span>
+                <span class="info-value">{{ source_store.store_name }}</span>
+            </div>
+            <div class="info-row">
+                <span class="info-label">To Store:</span>
+                <span class="info-value">{{ destination_store.store_name }}</span>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <h3>Quantity Variations Detail</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Product ID</th>
+                        <th>Product Name</th>
+                        <th>Qty Issued</th>
+                        <th>Qty Received</th>
+                        <th>Variation</th>
+                        <th>Unit Price</th>
+                        <th>Value Impact</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in line_items %}
+                    {% if item.quantity_received != item.goods_issue_line_item.quantity_issued %}
+                    <tr class="variation-row">
+                        <td>{{ item.product_id }}</td>
+                        <td>{{ item.product_name }}</td>
+                        <td>{{ item.goods_issue_line_item.quantity_issued }} {{ item.goods_issue_line_item.sales_order_line_item.unit_of_measurement }}</td>
+                        <td>{{ item.quantity_received }} {{ item.goods_issue_line_item.sales_order_line_item.unit_of_measurement }}</td>
+                        <td class="variation-indicator">
+                            {% widthratio item.quantity_received item.goods_issue_line_item.quantity_issued 1 %}
+                            {% if item.quantity_received > item.goods_issue_line_item.quantity_issued %}
+                                (+{{ item.quantity_received|floatformat:3|add:"-"|add:item.goods_issue_line_item.quantity_issued|floatformat:3 }})
+                            {% else %}
+                                ({{ item.quantity_received|floatformat:3|add:"-"|add:item.goods_issue_line_item.quantity_issued|floatformat:3 }})
+                            {% endif %}
+                        </td>
+                        <td>${{ item.goods_issue_line_item.sales_order_line_item.unit_price|floatformat:2 }}</td>
+                        <td class="variation-indicator">
+                            {% if item.quantity_received > item.goods_issue_line_item.quantity_issued %}
+                                +${% widthratio item.quantity_received|add:"-"|add:item.goods_issue_line_item.quantity_issued item.goods_issue_line_item.sales_order_line_item.unit_price 1 %}
+                            {% else %}
+                                -${% widthratio item.goods_issue_line_item.quantity_issued|add:"-"|add:item.quantity_received item.goods_issue_line_item.sales_order_line_item.unit_price 1 %}
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endif %}
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+
+        <div class="info-section">
+            <h3>Required Actions</h3>
+            <ul>
+                <li><strong>Investigate Discrepancies:</strong> Determine the cause of quantity variations (damage, loss, counting errors, etc.)</li>
+                <li><strong>Document Findings:</strong> Record the reason for variations in the system or incident reports</li>
+                <li><strong>Inventory Adjustments:</strong> Make necessary inventory adjustments if required</li>
+                <li><strong>Process Improvements:</strong> Consider process improvements to prevent future variations</li>
+                <li><strong>Follow Up:</strong> Ensure all stakeholders are informed of the resolution</li>
+            </ul>
+        </div>
+    </div>
+    
+    <div class="footer">
+        <p>This is an automated alert from the VIMP Transfer System</p>
+        <p>Food Concepts PLC - Vendor Invoice Management Platform</p>
+    </div>
+</body>
+</html>
