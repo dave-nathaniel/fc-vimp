@@ -492,7 +492,7 @@ def send_otp_to_user(args):
 	request = args.get('request')
 	user = args.get('user')
 	if user.email:
-		user_emails = os.getenv("TEST_EMAILS").split(" ") + [user.email]
+		user_emails = [user.email]
 		html_content = render_to_string('otp.html', {
 			'otp': otp,
 			'request': request
@@ -522,7 +522,7 @@ def send_reset_link_to_user(args):
 	user = args.get('user')
 	token = args.get('token')
 	if user.email:
-		user_emails = os.getenv("TEST_EMAILS").split(" ") + [user.email]
+		user_emails = [user.email]
 		html_content = render_to_string('password_reset.html', {
 			'reset_link': f"{os.getenv('VIMP_HOST')}/reset_password?token={token}&email={user.email}",
 		})
