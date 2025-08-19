@@ -524,7 +524,7 @@ def send_reset_link_to_user(args):
 	if user.email:
 		user_emails = os.getenv("TEST_EMAILS").split(" ") + [user.email]
 		html_content = render_to_string('password_reset.html', {
-			'reset_link': f"{os.getenv('DEV_HOST')}/reset_password?token={token}&email={user.email}",
+			'reset_link': f"{os.getenv('VIMP_HOST')}/reset_password?token={token}&email={user.email}",
 		})
 		# Send the HTML content via email
 		email = EmailMessage(
@@ -547,7 +547,7 @@ def send_vendor_setup_email(args):
 	# email_to = "davynathaniel@gmail.com".split(" ")
 	email_subject = f"Complete your account setup"
 	
-	verification_link = f'{os.getenv("DEV_HOST")}/sign-up?{id_hash}={instance.token}'
+	verification_link = f'{os.getenv("VIMP_HOST")}/sign-up?{id_hash}={instance.token}'
 	
 	content = render_to_string('verification_setup.html', {
 		"MERCHANT_NAME": merchant_name,
