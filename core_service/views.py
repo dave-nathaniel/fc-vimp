@@ -39,7 +39,7 @@ def login_user(request):
 		# Generate a secret key for the user.
 		users_secret = pyotp.random_base32()
 		# Generate a TOTP object using the secret key.
-		otp = pyotp.TOTP(users_secret, interval=120).now()
+		otp = pyotp.TOTP(users_secret, interval=600).now()
 		# Encrypt the secret with the generated OTP and save to the user's profile.
 		user.secret = user.make_secret(key=otp, secret=users_secret)
 		user.save()
