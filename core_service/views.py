@@ -77,7 +77,7 @@ def verify_otp(request):
 			# Decrypt the secret key using the provided OTP code.
 			users_secret = user.get_secret(key=otp_code)
 			# Verify the OTP code using the decrypted secret key.
-			otp_obj = pyotp.TOTP(users_secret, interval=120)
+			otp_obj = pyotp.TOTP(users_secret, interval=600)
 			# If the OTP code is valid:
 			if otp_obj.verify(otp_code):
 				# Remove the secret key from the user's profile
