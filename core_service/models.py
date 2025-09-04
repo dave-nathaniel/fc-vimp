@@ -1,11 +1,10 @@
 import os
 import logging
-
 import pyotp
 import hashlib, random
 from PIL import Image, ImageDraw, ImageFont
 from django_q.tasks import async_task
-from django.contrib.auth.hashers import make_password
+from django.contrib.auth.hashers import make_password, is_password_usable
 from django.db import models
 from django.contrib.auth.models import AbstractUser
 from django.conf import settings
@@ -40,8 +39,8 @@ class CustomUser(AbstractUser):
 			raise ValueError(f"Unable to decode hash {self.secret}")
 	
 	def save(self, *args, **kwargs):
-		# Ensure the password is hashed before saving
-		if self.pk is None or not self.password.startswith('pbkdf2_sha256$'):
+		# Only hash the password if it's a new instance and the password isn't already hashed
+		if self.pk is None and not is_password_usable(self.password):
 			self.password = make_password(self.password)
 		super().save(*args, **kwargs)
 	
