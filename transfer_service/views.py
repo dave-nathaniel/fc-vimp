@@ -4,7 +4,7 @@ from rest_framework.decorators import api_view, authentication_classes
 from rest_framework.exceptions import PermissionDenied
 from byd_service.rest import RESTServices
 from overrides.authenticate import CombinedAuthentication
-from overrides.rest_framework import APIResponse
+from overrides.rest_framework import APIResponse, CustomPagination
 from django.core.mail import EmailMessage
 from django.template.loader import render_to_string
 from django.db import transaction
@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 def get_inbound_deliveries(request):
     """
     List inbound deliveries for the authenticated user's authorized stores
-    Supports searching by delivery ID
+    Supports searching by delivery ID and pagination
     """
     try:
         user = request.user
@@ -49,11 +49,19 @@ def get_inbound_deliveries(request):
         status_filter = request.query_params.get('status')
         if status_filter:
             queryset = queryset.filter(delivery_status_code=status_filter)
+            
+        # Order queryset
+        queryset = queryset.order_by('-created_date')
+        
+        # Apply pagination
+        paginator = CustomPagination()
+        paginated_queryset = paginator.paginate_queryset(queryset, request)
+        serializer = InboundDeliverySerializer(paginated_queryset, many=True)
         
         return APIResponse(
             status=status.HTTP_200_OK,
             message='Inbound deliveries fetched successfully',
-            data=InboundDeliverySerializer(queryset.order_by('-created_date'), many=True).data
+            data=paginator.get_paginated_response(serializer.data).data
         )
     except Exception as e:
         logger.error(f"Error fetching inbound deliveries: {e}")
@@ -168,13 +176,17 @@ def search_deliveries(request):
                     logger.warning(f"Error searching deliveries for store {byd_cost_center_code}: {e}")
                     continue
         
+        # Apply pagination to the results
+        paginator = CustomPagination()
+        paginated_results = paginator.paginate_queryset(results, request)
+        
         return APIResponse(
             status=status.HTTP_200_OK,
             message='Deliveries fetched successfully',
-            data={
-                'results': results,
+            data=paginator.get_paginated_response({
+                'results': paginated_results,
                 'total_count': len(results)
-            }
+            }).data
         )
         
     except Exception as e:
