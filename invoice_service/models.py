@@ -233,7 +233,7 @@ class InvoiceLineItem(models.Model):
 		return float(self.po_line_item.delivered_quantity) - invoiced
 		
 	def clean(self, ):
-		if self.quantity < 1:
+		if self.quantity < 0.00:
 			raise ValidationError("Invoice quantity must be greater than 0")
 		if float(self.quantity) > self.get_invoiceable_quantity():
 			raise ValidationError(f"Invoice quantity exceeds the outstanding invoiceable quantity ({self.get_invoiceable_quantity()})")
