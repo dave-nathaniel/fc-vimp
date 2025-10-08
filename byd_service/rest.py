@@ -208,6 +208,9 @@ class RESTServices:
 		calculate_tax = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/CalculateTaxAmount?ObjectID="
 		try:
 			self.refresh_csrf_token()
+			# Limit invoice description to 40 chars per ByD's rule
+			invoice_data["InvoiceDescription"] = invoice_data["InvoiceDescription"][:40] or "Inv Frm eGRN Sys"
+			
 			response = self.__post__(action_url, json=invoice_data)
 			if response.status_code == 201:
 				response_data = response.json()
