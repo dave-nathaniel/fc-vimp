@@ -360,7 +360,7 @@ def create_invoice_on_byd(invoice: Invoice):
 		cache.set(cache_key, True, timeout=300)  # 5 minutes timeout
 		
 		payload = {
-			# "Inv_Integration_KUT": "YES",
+			"Inv_Integration_KUT": "YES",
 			"TypeCode": "004",
 			"DataOriginTypeCode": "1",
 			"ItemsGrossAmountIndicator": True,
