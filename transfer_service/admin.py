@@ -1,40 +1,10 @@
 from django.contrib import admin
+from unfold.admin import ModelAdmin
 from .models import (
-    SalesOrder, SalesOrderLineItem,
-    GoodsIssueNote, GoodsIssueLineItem,
-    TransferReceiptNote, TransferReceiptLineItem,
     InboundDelivery, InboundDeliveryLineItem,
+    TransferReceiptNote, TransferReceiptLineItem,
     StoreAuthorization
 )
-
-
-class SalesOrderLineItemInline(admin.TabularInline):
-    model = SalesOrderLineItem
-    extra = 0
-    readonly_fields = ('object_id', 'product_id', 'product_name', 'quantity', 'unit_price', 'unit_of_measurement')
-
-
-@admin.register(SalesOrder)
-class SalesOrderAdmin(admin.ModelAdmin):
-    list_display = ('sales_order_id', 'source_store', 'destination_store', 'total_net_amount', 'order_date', 'delivery_status_code')
-    list_filter = ('delivery_status_code', 'order_date', 'source_store', 'destination_store')
-    search_fields = ('sales_order_id', 'object_id')
-    readonly_fields = ('object_id', 'sales_order_id', 'total_net_amount', 'order_date', 'created_date')
-    inlines = [SalesOrderLineItemInline]
-
-
-class GoodsIssueLineItemInline(admin.TabularInline):
-    model = GoodsIssueLineItem
-    extra = 0
-
-
-@admin.register(GoodsIssueNote)
-class GoodsIssueNoteAdmin(admin.ModelAdmin):
-    list_display = ('issue_number', 'sales_order', 'source_store', 'created_date', 'created_by', 'posted_to_icg', 'posted_to_sap')
-    list_filter = ('posted_to_icg', 'posted_to_sap', 'created_date', 'source_store')
-    search_fields = ('issue_number', 'sales_order__sales_order_id')
-    readonly_fields = ('issue_number', 'created_date')
-    inlines = [GoodsIssueLineItemInline]
 
 
 class TransferReceiptLineItemInline(admin.TabularInline):
@@ -43,10 +13,10 @@ class TransferReceiptLineItemInline(admin.TabularInline):
 
 
 @admin.register(TransferReceiptNote)
-class TransferReceiptNoteAdmin(admin.ModelAdmin):
-    list_display = ('receipt_number', 'goods_issue', 'destination_store', 'created_date', 'created_by', 'posted_to_icg')
-    list_filter = ('posted_to_icg', 'created_date', 'destination_store')
-    search_fields = ('receipt_number', 'goods_issue__issue_number')
+class TransferReceiptNoteAdmin(ModelAdmin):
+    list_display = ('receipt_number', 'inbound_delivery', 'created_date', 'created_by', 'posted_to_icg')
+    list_filter = ('posted_to_icg', 'created_date', 'inbound_delivery__destination_store')
+    search_fields = ('receipt_number', 'inbound_delivery__delivery_id')
     readonly_fields = ('receipt_number', 'created_date')
     inlines = [TransferReceiptLineItemInline]
 
@@ -58,7 +28,7 @@ class InboundDeliveryLineItemInline(admin.TabularInline):
 
 
 @admin.register(InboundDelivery)
-class InboundDeliveryAdmin(admin.ModelAdmin):
+class InboundDeliveryAdmin(ModelAdmin):
     list_display = ('delivery_id', 'source_location_name', 'destination_store', 'delivery_date', 'delivery_status_code', 'delivery_type_code', 'is_fully_received')
     list_filter = ('delivery_status_code', 'delivery_type_code', 'delivery_date', 'destination_store', 'source_location_id')
     search_fields = ('delivery_id', 'object_id', 'sales_order_reference', 'source_location_id', 'source_location_name')
@@ -67,7 +37,7 @@ class InboundDeliveryAdmin(admin.ModelAdmin):
 
 
 @admin.register(StoreAuthorization)
-class StoreAuthorizationAdmin(admin.ModelAdmin):
+class StoreAuthorizationAdmin(ModelAdmin):
     list_display = ('user', 'store', 'role', 'created_date')
     list_filter = ('role', 'created_date', 'store')
     search_fields = ('user__username', 'user__email', 'store__store_name')

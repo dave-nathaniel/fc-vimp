@@ -125,15 +125,15 @@
             <div class="info-grid">
                 <div class="info-item">
                     <strong>Delivery ID:</strong><br>
-                    {{ delivery.delivery_id }}
+                    {{ delivery.inbound_delivery.delivery_id }}
                 </div>
                 <div class="info-item">
                     <strong>Delivery Date:</strong><br>
-                    {{ delivery.delivery_date|date:"F d, Y" }}
+                    {{ delivery.inbound_delivery.delivery_date|date:"F d, Y" }}
                 </div>
                 <div class="info-item">
                     <strong>Source Warehouse:</strong><br>
-                    {{ delivery.source_location_name }} ({{ delivery.source_location_id }})
+                    {{ delivery.inbound_delivery.source_location_name }} ({{ delivery.inbound_delivery.source_location_id }})
                 </div>
                 <div class="info-item">
                     <strong>Destination Store:</strong><br>
@@ -142,7 +142,7 @@
             </div>
             {% if delivery.sales_order_reference %}
             <div class="info-item">
-                <strong>Sales Order Reference:</strong> {{ delivery.sales_order_reference }}
+                <strong>Sales Order Reference:</strong> {{ delivery.inbound_delivery.sales_order_reference }}
             </div>
             {% endif %}
         </div>
@@ -176,14 +176,14 @@
                 {% for item in received_items %}
                 <tr>
                     <td>
-                        <strong>{{ item.product_name }}</strong><br>
-                        <small>{{ item.product_id }}</small>
+                        <strong>{{ item.inbound_delivery_line_item.product_name }}</strong><br>
+                        <small>{{ item.inbound_delivery_line_item.product_id }}</small>
                     </td>
-                    <td>{{ item.quantity_received }}</td>
-                    <td>{{ item.total_received }}</td>
-                    <td>{{ item.quantity_expected }}</td>
+                    <td>{{ item.inbound_delivery_line_item.quantity_received }}</td>
+                    <td>{{ item.inbound_delivery_line_item.total_received }}</td>
+                    <td>{{ item.inbound_delivery_line_item.quantity_expected }}</td>
                     <td>
-                        {% if item.total_received >= item.quantity_expected %}
+                        {% if item.inbound_delivery_line_item.total_received >= item.inbound_delivery_line_item.quantity_expected %}
                             <span class="status-badge status-completed">Complete</span>
                         {% else %}
                             <span class="status-badge status-partial">Partial</span>
