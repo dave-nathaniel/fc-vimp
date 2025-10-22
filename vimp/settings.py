@@ -193,14 +193,18 @@ SIMPLE_JWT = {
 
 MIDDLEWARE = [
 	'django.middleware.security.SecurityMiddleware',
+	'django.middleware.gzip.GZipMiddleware',  # Compress responses
+	'core_service.middleware.PerformanceMonitoringMiddleware',  # Performance tracking
+	'core_service.middleware.RequestOptimizationMiddleware',  # Request optimization
 	'django.contrib.sessions.middleware.SessionMiddleware',
+	'corsheaders.middleware.CorsMiddleware',
 	'django.middleware.common.CommonMiddleware',
 	'django.middleware.csrf.CsrfViewMiddleware',
 	'django.contrib.auth.middleware.AuthenticationMiddleware',
 	'django.contrib.messages.middleware.MessageMiddleware',
 	'django.middleware.clickjacking.XFrameOptionsMiddleware',
-	'corsheaders.middleware.CorsMiddleware',
-]
+	'core_service.middleware.APIResponseOptimizationMiddleware',  # API optimization
+] + (['core_service.middleware.DatabaseQueryOptimizationMiddleware'] if DEBUG else [])  # Query optimization in debug only
 
 ROOT_URLCONF = 'vimp.urls'
 
@@ -235,6 +239,12 @@ DATABASES = {
 		'PASSWORD': os.getenv('DB_PASSWORD'),
 		'HOST': os.getenv('DB_HOST'),
 		'PORT': os.getenv('DB_PORT'),
+		'OPTIONS': {
+			'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+			'charset': 'utf8mb4',
+		},
+		'CONN_MAX_AGE': 600,  # 10 minutes connection reuse
+		'CONN_HEALTH_CHECKS': True,  # Validate connections before use
 	}
 }
 
@@ -312,3 +322,56 @@ STATIC_ROOT = os.path.join(BASE_DIR, STATIC_URL)
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Performance Optimizations
+if not DEBUG:
+    # Production performance settings
+    ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',')
+    
+    # Security settings for production
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    X_FRAME_OPTIONS = 'DENY'
+    
+    # Session optimization
+    SESSION_COOKIE_AGE = 3600  # 1 hour
+    SESSION_SAVE_EVERY_REQUEST = False
+    
+    # File upload settings
+    FILE_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
+    DATA_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
+
+# REST Framework Performance Settings
+REST_FRAMEWORK.update({
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ] if not DEBUG else [
+        'rest_framework.renderers.JSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',
+    ],
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle'
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/hour',
+        'user': '1000/hour'
+    }
+})
+
+# Logging optimization for production
+if not DEBUG:
+    LOGGING['handlers']['file'] = {
+        'level': 'WARNING',
+        'class': 'logging.handlers.RotatingFileHandler',
+        'filename': 'logs/vimp.log',
+        'maxBytes': 1024*1024*10,  # 10MB
+        'backupCount': 5,
+        'formatter': 'verbose'
+    }
+    LOGGING['loggers']['django']['handlers'] = ['file']
+    LOGGING['loggers']['vimp'] = {
+        'handlers': ['file'],
+        'level': 'WARNING',
+        'propagate': False,
+    }

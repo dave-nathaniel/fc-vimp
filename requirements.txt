@@ -62,3 +62,4 @@ openpyxl==3.1.5
 django-redis==5.4.0
 django-cachalot==2.6.1
 hiredis==2.2.3
+psutil==5.9.8
