@@ -251,19 +251,24 @@ DATABASES = {
 # Redis Cache Configuration
 CACHES = {
 	'default': {
-		'BACKEND': 'django_redis.cache.RedisCache',
-		'LOCATION': os.getenv('REDIS_URL', 'redis://localhost:6379/1'),
-		'OPTIONS': {
-			'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-			'PARSER_CLASS': 'redis.connection.HiredisParser',
-			'CONNECTION_POOL_KWARGS': {
-				'max_connections': 50,
-				'retry_on_timeout': True,
-			},
-		},
-		'KEY_PREFIX': 'vimp',
-		'TIMEOUT': 300,  # Default timeout: 5 minutes
-	}
+          'BACKEND': 'django_redis.cache.RedisCache',
+          'LOCATION': 'redis://127.0.0.1:6379/1',
+          'OPTIONS': {
+              'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+              'CONNECTION_POOL_KWARGS': {
+                  'max_connections': 50,
+                  'retry_on_timeout': True,
+                  'socket_keepalive': True,
+                  'socket_keepalive_options': {},
+                  'health_check_interval': 30,
+              },
+              'COMPRESSOR': 'django_redis.compressors.zlib.ZlibCompressor',
+              'SERIALIZER': 'django_redis.serializers.pickle.PickleSerializer',
+          },
+          'TIMEOUT': 300,
+          'KEY_PREFIX': 'vimp_prod',
+          'VERSION': 1,
+      }
 }
 
 # Session and Cache Configuration
