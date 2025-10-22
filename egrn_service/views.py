@@ -165,12 +165,18 @@ def create_grn(request, ):
 def get_all_grns(request, ):
 	try:
 		user_stores = Store.objects.filter(store_email=request.user.email)
-		# Get all GRNs sorted by creation date in descending order
-		grns = GoodsReceivedNote.objects.filter(
+		# Get all GRNs with optimized queries to reduce database hits
+		grns = GoodsReceivedNote.objects.select_related(
+			'purchase_order',
+			'purchase_order__vendor'
+		).prefetch_related(
+			'line_items__purchase_order_line_item__delivery_store'
+		).filter(
 			line_items__purchase_order_line_item__delivery_store__in=user_stores
-		)
-		if grns:
-			# Paginate the results
+		).distinct()
+		
+		if grns.exists():
+			# Paginate the results - now only fetches the requested page from database
 			paginated = paginator.paginate_queryset(grns, request, order_by='-id')
 			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
 			grn_serializer = GoodsReceivedNoteSerializer(paginated, many=True, context={'request':request})
@@ -197,18 +203,10 @@ def filter_grns(request, ):
 			- 'end_date': Filter GRNs by end date
 			- 'vendor_internal_id': Filter GRNs by vendor internal ID (from ByD)
 	'''
-	# These are filters that we can use directly on the queryset
+	# Build all filters at database level for efficient querying
 	django_filters = {}
-	# These are filters that we need to manually apply on the queryset after fetching the base queryset
-	custom_filters = {
-		'delivery_status_code': None,
-		'invoice_status_code': None,
-	}
 	
 	for key in request.query_params:
-		# Remove unnecessary filter keys
-		if key in custom_filters.keys():
-			custom_filters[key] = request.query_params.get(key)
 		# Convert the filter to the appropriate data type or the appropriate field name
 		if key == 'date_created':
 			django_filters['created'] = request.query_params.get(key)
@@ -220,6 +218,12 @@ def filter_grns(request, ):
 			django_filters[f'purchase_order__{key}'] = request.query_params.get(key)
 		if key == 'vendor_internal_id':
 			django_filters['purchase_order__vendor__byd_internal_id'] = request.query_params.get(key)
+		# Move delivery_status_code filtering to database level
+		if key == 'delivery_status_code':
+			django_filters['purchase_order__delivery_status_code'] = request.query_params.get(key)
+		# Move invoice_status_code filtering to database level (assuming it's a field on GRN model)
+		if key == 'invoice_status_code':
+			django_filters['invoice_status_code'] = request.query_params.get(key)
 		if key == 'delivery_stores':
 			filter_stores = request.query_params.get(key)
 			# Split the store names and build a Q object for icontains lookup
@@ -234,26 +238,26 @@ def filter_grns(request, ):
 	try:
 		# Extract and remove the custom Q object if present
 		store_name_q = django_filters.pop('__custom_store_name_q', None)
-		# Apply filters to get the base queryset
-		grns = GoodsReceivedNote.objects.filter(**django_filters)
+		
+		# Apply optimized queries with all filters at database level
+		grns = GoodsReceivedNote.objects.select_related(
+			'purchase_order',
+			'purchase_order__vendor'
+		).prefetch_related(
+			'line_items__purchase_order_line_item__delivery_store'
+		).filter(**django_filters)
+		
 		if store_name_q:
 			grns = grns.filter(store_name_q)
-		grns = grns.order_by('-id')
+		
+		# Ensure distinct results and proper ordering
+		grns = grns.distinct().order_by('-id')
+		
 		if grns.exists():
-			# Paginate the results
+			# Paginate the results - now much more efficient as all filtering is at DB level
 			paginated = paginator.paginate_queryset(grns, request)
 			# Serialize the paginated queryset
 			serialized_data = GoodsReceivedNoteSerializer(paginated, many=True, context={'request': request}).data
-			# Apply custom filtering after serialization (since 'delivery_status_code' comes from the serializer)
-			if custom_filters:
-				# Use only custom filters that are not None
-				custom_filters = {k: v for k, v in custom_filters.items() if v is not None}
-				if 'delivery_status_code' in custom_filters:
-					# Filter based on serialized data
-					serialized_data = [grn for grn in serialized_data if grn.get('purchase_order', {}).get('delivery_status_code') == custom_filters.get('delivery_status_code')]
-				if 'invoice_status_code' in custom_filters:
-					# Filter based on serialized data
-					serialized_data = [grn for grn in serialized_data if grn.get('invoice_status_code') == custom_filters.get('invoice_status_code')]
 			
 			# Return the filtered, paginated response
 			return paginator.get_paginated_response(serialized_data)
@@ -270,10 +274,15 @@ def get_vendors_grns(request, ):
 	'''
 	try:
 		po_id = request.query_params.get('po_id')
-		grns = GoodsReceivedNote.objects.filter(purchase_order__vendor=request.user.vendor_profile)
+		grns = GoodsReceivedNote.objects.select_related(
+			'purchase_order',
+			'purchase_order__vendor'
+		).prefetch_related(
+			'line_items__purchase_order_line_item__delivery_store'
+		).filter(purchase_order__vendor=request.user.vendor_profile)
 		# If the request params contain po_id, filter by po_id
 		grns = grns.filter(purchase_order__po_id=po_id) if po_id else grns
-		if grns:
+		if grns.exists():
 			# Paginate the results
 			paginated = paginator.paginate_queryset(grns, request, order_by='-id')
 			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
@@ -362,37 +371,63 @@ def weighted_average(request):
 	
 	try:
 		if request.query_params.get('product_id'):
-			products = map(lambda x: x.strip(), request.query_params.get('product_id').split(','))
+			products = [x.strip() for x in request.query_params.get('product_id').split(',') if x.strip()]
 		else:
-			products = GoodsReceivedLineItem.objects.order_by('purchase_order_line_item__product_id').values_list('purchase_order_line_item__product_id', flat=True).distinct()
-			
-		for product_id in products:
-			product_config = ProductConfiguration.objects.filter(product_id=product_id).first()
+			# Optimize distinct product query
+			products = GoodsReceivedLineItem.objects.select_related(
+				'purchase_order_line_item'
+			).values_list('purchase_order_line_item__product_id', flat=True).distinct()
+		
+		# Optimize product config queries by fetching all at once
+		product_configs = {
+			pc.product_id: pc for pc in 
+			ProductConfiguration.objects.filter(product_id__in=products)
+		}
+		
+		# Apply date filter at the queryset level if provided
+		date_filter = {}
+		if request.query_params.get('date'):
+			try:
+				date_filter['date_received__lte'] = datetime.strptime(
+					request.query_params.get('date'),
+					'%Y-%m-%d'
+				)
+			except ValueError:
+				return APIResponse("Invalid date format. Use YYYY-MM-DD.", status.HTTP_400_BAD_REQUEST)
+		
+		# Fetch all relevant line items with optimized query
+		base_queryset = GoodsReceivedLineItem.objects.select_related(
+			'purchase_order_line_item__delivery_store'
+		).filter(
+			purchase_order_line_item__product_id__in=products,
+			**date_filter
+		).order_by('purchase_order_line_item__product_id', 'date_received')
+		
+		# Group line items by product to avoid multiple queries
+		from itertools import groupby
+		line_items_by_product = groupby(
+			base_queryset, 
+			key=lambda x: x.purchase_order_line_item.product_id
+		)
+		
+		for product_id, line_items_group in line_items_by_product:
+			line_items_list = list(line_items_group)
+			if not line_items_list:
+				continue
+				
+			# Get product config data efficiently
+			product_config = product_configs.get(product_id)
 			cumulative_quantity, cumulative_cost = 0, 0
-			if hasattr(product_config, 'metadata') and product_config.metadata:
+			if product_config and hasattr(product_config, 'metadata') and product_config.metadata:
 				cumulative_quantity = product_config.metadata.get('inital_quantity', 0)
 				cumulative_cost = product_config.metadata.get('initial_cost', 0) * cumulative_quantity
 			
-			# Get all orders for the current product and order by date received
-			orders_for_product = GoodsReceivedLineItem.objects.filter(purchase_order_line_item__product_id=product_id).order_by('date_received')
-			# If a date was supplied in the request, filter for only orders on or before that date
-			if request.query_params.get('date'):
-				orders_for_product = orders_for_product.filter(
-					date_received__lte=datetime.strptime(
-						request.query_params.get('date'),
-						'%Y-%m-%d'
-					)
-				)
-				# If no orders were found for the given date, continue to the next product
-				if not orders_for_product:
-					continue
-			
 			# Calculate and add the WAC for the current product to the results list
 			products_wac.append(
-				calculate_wac(orders_for_product, cumulative_quantity, cumulative_cost)
-			) if orders_for_product else None
+				calculate_wac(line_items_list, cumulative_quantity, cumulative_cost)
+			)
 			
-		# # Paginate the results
+		# Paginate the results
 		paginated = paginator.paginate_queryset(products_wac, request)
 		paginated_data = paginator.get_paginated_response(paginated).data
 		return APIResponse("Weighted Averages Calculated", status.HTTP_200_OK, data=paginated_data)

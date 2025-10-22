@@ -21,8 +21,14 @@ class VendorInvoiceView(APIView):
 	permission_classes = (IsAuthenticated,)
 	
 	def get(self, request):
-		# Get all invoices for the authenticated vendor
-		invoices = Invoice.objects.filter(purchase_order__vendor=request.user.vendor_profile)
+		# Get all invoices for the authenticated vendor with optimized queries
+		invoices = Invoice.objects.select_related(
+			'purchase_order',
+			'purchase_order__vendor',
+			'grn'
+		).prefetch_related(
+			'invoice_line_items__grn_line_item__purchase_order_line_item__delivery_store'
+		).filter(purchase_order__vendor=request.user.vendor_profile)
 		paginated = paginator.paginate_queryset(invoices, request, order_by='-date_created')
 		invoices_serializer = InvoiceSerializer(paginated, many=True, context={'request':request})
 		# Return the paginated response with the serialized GoodsReceivedNote instances

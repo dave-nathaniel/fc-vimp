@@ -22,29 +22,58 @@ class APIResponse(Response):
 class CustomPagination(PageNumberPagination):
 	page_query_param = "page"
 	page_size_query_param = "size"
-	max_page_size  = 30
+	page_size = 15  # Default page size from settings
+	max_page_size = 100  # Increased from 30 for better flexibility
 
 	def paginate_queryset(self, queryset, request, view=None, order_by=None):
-		# Sort the queryset based on the 'order_by' query parameter, always show latest records first
-		queryset = queryset.order_by(order_by) if order_by else queryset
-		# Get 'limit' and 'offset' from request query parameters
+		# Apply ordering to queryset for consistent pagination
+		if order_by:
+			queryset = queryset.order_by(order_by)
+		elif not queryset.ordered:
+			# Ensure queryset is ordered for consistent pagination
+			queryset = queryset.order_by('id')
+		
+		# Use parent method which efficiently applies LIMIT/OFFSET at database level
+		page_size = self.get_page_size(request)
+		if not page_size:
+			return None
+
+		paginator = self.django_paginator_class(queryset, page_size)
+		page_number = self.get_page_number(request, paginator)
+
+		try:
+			# This efficiently fetches only the requested page from database
+			self.page = paginator.page(page_number)
+		except Exception as exc:
+			msg = self.get_invalid_page_message(request, page_number, paginator)
+			raise serializers.ValidationError(msg)
+
+		if paginator.num_pages > 1 and self.template is not None:
+			self.display_page_controls = True
+
+		self.request = request
+		return list(self.page)
+
+	def get_page_size(self, request):
+		# Support both 'size' and 'limit' query parameters for backward compatibility
+		if self.page_size_query_param:
+			page_size = request.query_params.get(self.page_size_query_param)
+			if page_size:
+				try:
+					page_size = int(page_size)
+					if page_size > 0:
+						return min(page_size, self.max_page_size)
+				except (KeyError, ValueError):
+					pass
+		
+		# Also check for 'limit' parameter for backward compatibility
 		limit = request.query_params.get('limit')
-		offset = request.query_params.get('offset')
-
 		if limit:
-			limit = int(limit)
-			# Validate limit is within min and max limits
-			if limit > self.max_limit:
-				raise serializers.ValidationError({"limit": ["Limit should be less than or equal to {0}".format(self.max_limit)]})
-			elif limit < self.min_limit:
-				raise serializers.ValidationError({"limit": ["Limit should be greater than or equal to {0}".format(self.min_limit)]})
+			try:
+				limit = int(limit)
+				if limit > 0:
+					return min(limit, self.max_page_size)
+			except (KeyError, ValueError):
+				pass
 
-		if offset:
-			offset = int(offset)
-			# Validate offset is within min and max offsets
-			if offset > self.max_offset:
-				raise serializers.ValidationError({"offset": ["Offset should be less than or equal to {0}".format(self.max_offset)]})
-			elif offset < self.min_offset:
-				raise serializers.ValidationError({"offset": ["Offset should be greater than or equal to {0}".format(self.min_offset)]})
-
-		return super(CustomPagination, self).paginate_queryset(queryset, request, view)
+		return self.page_size
