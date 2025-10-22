@@ -26,12 +26,15 @@ class CustomPagination(PageNumberPagination):
 	max_page_size = 100  # Increased from 30 for better flexibility
 
 	def paginate_queryset(self, queryset, request, view=None, order_by=None):
-		# Apply ordering to queryset for consistent pagination
-		if order_by:
-			queryset = queryset.order_by(order_by)
-		elif not queryset.ordered:
-			# Ensure queryset is ordered for consistent pagination
-			queryset = queryset.order_by('id')
+		# Handle both QuerySets and regular lists
+		if hasattr(queryset, 'order_by'):
+			# This is a Django QuerySet
+			if order_by:
+				queryset = queryset.order_by(order_by)
+			elif hasattr(queryset, 'ordered') and not queryset.ordered:
+				# Ensure queryset is ordered for consistent pagination
+				queryset = queryset.order_by('id')
+		# For regular lists, we don't need to apply ordering
 		
 		# Use parent method which efficiently applies LIMIT/OFFSET at database level
 		page_size = self.get_page_size(request)
