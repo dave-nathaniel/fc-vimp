@@ -207,17 +207,11 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 			CacheManager.TIMEOUT_MEDIUM
 		)
 		
-		# Build optimized base queryset with signature prefetching
-		signature_prefetch = Prefetch(
-			'signatures',
-			queryset=Signature.objects.select_related('signer').order_by('-date_signed'),
-			to_attr='prefetched_signatures'
-		)
-		
 		# Get content type for signatures
 		content_type = ContentType.objects.get_for_model(signable_class)
 		
 		# Build base queryset with efficient joins
+		# Note: Cannot prefetch signatures since they're related via generic foreign key
 		base_queryset = signable_class.objects.select_related().annotate(
 			user_has_signed=Exists(
 				Signature.objects.filter(
@@ -226,7 +220,7 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 					signer=request.user
 				)
 			)
-		).prefetch_related(signature_prefetch)
+		)
 		
 		# Apply status filters at database level
 		if status_filter == "pending":
@@ -250,9 +244,12 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 		if verdict_filter:
 			verdict_bool = bool(int(verdict_filter))
 			base_queryset = base_queryset.filter(
-				signatures__signer=request.user,
-				signatures__accepted=verdict_bool
-			).distinct()
+				id__in=Signature.objects.filter(
+					signable_type=content_type,
+					signer=request.user,
+					accepted=verdict_bool
+				).values_list('signable_id', flat=True)
+			)
 		
 		# Order the queryset
 		signables_queryset = base_queryset.order_by(order_by)
