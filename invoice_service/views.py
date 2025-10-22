@@ -7,6 +7,7 @@ from rest_framework.views import APIView
 from egrn_service.models import GoodsReceivedNote, GoodsReceivedLineItem
 from overrides.rest_framework import APIResponse
 from overrides.rest_framework import CustomPagination
+from core_service.cache_utils import CacheManager, get_or_set_cache, CachedPagination
 from .models import Invoice
 from .serializers import InvoiceSerializer, InvoiceLineItemSerializer
 
@@ -21,6 +22,12 @@ class VendorInvoiceView(APIView):
 	permission_classes = (IsAuthenticated,)
 	
 	def get(self, request):
+		# Generate cache key for this vendor's invoice query
+		page = request.query_params.get('page', '1')
+		page_size = request.query_params.get('size', '15')
+		vendor_id = request.user.vendor_profile.id
+		cache_key_suffix = f"vendor_invoices_{vendor_id}_page_{page}_size_{page_size}"
+		
 		# Get all invoices for the authenticated vendor with optimized queries
 		invoices = Invoice.objects.select_related(
 			'purchase_order',
@@ -29,6 +36,10 @@ class VendorInvoiceView(APIView):
 		).prefetch_related(
 			'invoice_line_items__grn_line_item__purchase_order_line_item__delivery_store'
 		).filter(purchase_order__vendor=request.user.vendor_profile)
+		
+		# Cache the total count for pagination
+		total_count = CachedPagination.cache_page_count(invoices, cache_key_suffix)
+		
 		paginated = paginator.paginate_queryset(invoices, request, order_by='-date_created')
 		invoices_serializer = InvoiceSerializer(paginated, many=True, context={'request':request})
 		# Return the paginated response with the serialized GoodsReceivedNote instances

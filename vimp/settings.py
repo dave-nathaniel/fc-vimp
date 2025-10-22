@@ -60,6 +60,7 @@ INSTALLED_APPS = [
 	'corsheaders',
 	'jsoneditor',
 	'django_q',
+	'cachalot',
 
 	'core_service',
 	'egrn_service',
@@ -236,6 +237,34 @@ DATABASES = {
 		'PORT': os.getenv('DB_PORT'),
 	}
 }
+
+# Redis Cache Configuration
+CACHES = {
+	'default': {
+		'BACKEND': 'django_redis.cache.RedisCache',
+		'LOCATION': os.getenv('REDIS_URL', 'redis://localhost:6379/1'),
+		'OPTIONS': {
+			'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+			'PARSER_CLASS': 'redis.connection.HiredisParser',
+			'CONNECTION_POOL_KWARGS': {
+				'max_connections': 50,
+				'retry_on_timeout': True,
+			},
+		},
+		'KEY_PREFIX': 'vimp',
+		'TIMEOUT': 300,  # Default timeout: 5 minutes
+	}
+}
+
+# Session and Cache Configuration
+SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+SESSION_CACHE_ALIAS = 'default'
+
+# Cachalot Configuration for ORM query caching
+CACHALOT_ENABLED = True
+CACHALOT_TIMEOUT = 300  # 5 minutes default timeout
+CACHALOT_CACHE = 'default'
+CACHALOT_DATABASES = ['default']
 
 CELERY_BROKER_URL = "memory://localhost"
 

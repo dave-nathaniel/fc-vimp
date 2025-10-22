@@ -13,6 +13,10 @@ from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
+from core_service.cache_utils import (
+    cache_result, CacheManager, get_or_set_cache, 
+    invalidate_user_cache, CachedPagination
+)
 
 from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem, ProductConfiguration, Store
 from .serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer, PurchaseOrderSerializer
@@ -164,7 +168,24 @@ def create_grn(request, ):
 @authentication_classes([CombinedAuthentication])
 def get_all_grns(request, ):
 	try:
-		user_stores = Store.objects.filter(store_email=request.user.email)
+		# Cache user stores lookup
+		user_stores_key = CacheManager.get_user_cache_key(
+			request.user, "stores", request.user.email
+		)
+		user_stores = get_or_set_cache(
+			user_stores_key,
+			lambda: list(Store.objects.filter(store_email=request.user.email)),
+			CacheManager.TIMEOUT_LONG
+		)
+		
+		if not user_stores:
+			return APIResponse(f"No stores found for user: {request.user.email}", status.HTTP_404_NOT_FOUND)
+		
+		# Generate cache key for this user's GRN query
+		page = request.query_params.get('page', '1')
+		page_size = request.query_params.get('size', '15')
+		cache_key_suffix = f"all_grns_user_{request.user.id}_page_{page}_size_{page_size}"
+		
 		# Get all GRNs with optimized queries to reduce database hits
 		grns = GoodsReceivedNote.objects.select_related(
 			'purchase_order',
@@ -176,6 +197,9 @@ def get_all_grns(request, ):
 		).distinct()
 		
 		if grns.exists():
+			# Cache the total count for pagination
+			total_count = CachedPagination.cache_page_count(grns, cache_key_suffix)
+			
 			# Paginate the results - now only fetches the requested page from database
 			paginated = paginator.paginate_queryset(grns, request, order_by='-id')
 			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
@@ -313,9 +337,15 @@ def get_grn(request, grn_number):
 
 @api_view(['GET'])
 @authentication_classes([CombinedAuthentication,])
+@cache_result(
+	timeout=CacheManager.TIMEOUT_MEDIUM,
+	key_prefix=CacheManager.PREFIX_WAC,
+	user_specific=True
+)
 def weighted_average(request):
 	'''
 		Get the weighted average cost for all products or for a specific product, with a history of purchases.
+		Results are cached for 30 minutes to improve performance.
 	'''
 	def calculate_wac(product_line_items, cumulative_quantity, cumulative_cost):
 		# Dictionary to store results grouped by product_id

@@ -59,3 +59,6 @@ wcwidth==0.2.13
 zeep==4.3.1
 pandas==2.3.1
 openpyxl==3.1.5
+django-redis==5.4.0
+django-cachalot==2.6.1
+hiredis==2.2.3
