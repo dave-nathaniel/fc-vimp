@@ -16,6 +16,7 @@ class InvoiceLineItemSerializer(serializers.ModelSerializer):
 	def to_representation(self, instance):
 		serialized = super().to_representation(instance)
 		grn_line_item = GoodsReceivedLineItemSerializer(instance.grn_line_item).data
+		grn_line_item['purchase_order_line_item'].pop('metadata')
 		serialized['grn_line_item'] = grn_line_item
 		return serialized
 	
@@ -66,6 +67,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
 		serialized = super().to_representation(instance)
 		grn = GoodsReceivedNoteSerializer(instance.grn).data
 		grn.pop('grn_line_items')
+		serialized['vendor'].pop('byd_metadata')
 		serialized['grn'] = grn
 		
 		return serialized
