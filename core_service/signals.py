@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 # Import models for signal handlers
 from egrn_service.models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, Store
 from invoice_service.models import Invoice
+from approval_service.models import Signature, Keystore
 
 
 @receiver([post_save, post_delete], sender=GoodsReceivedNote)
@@ -178,6 +179,49 @@ def warm_user_cache(user):
     except Exception as e:
         logger.error(f"Error warming cache for user {user.id}: {e}")
         return False
+
+
+@receiver([post_save, post_delete], sender=Signature)
+def invalidate_signature_cache(sender, instance, **kwargs):
+    """
+    Invalidate cache when Signature is created, updated, or deleted.
+    
+    This affects:
+    - User signable listings
+    - Signature tracking
+    - Approval workflow caches
+    """
+    try:
+        # Invalidate all approval-related caches
+        CacheManager.invalidate_pattern("*signable*")
+        CacheManager.invalidate_pattern("*signature*")
+        CacheManager.invalidate_pattern("*track_signable*")
+        
+        # Invalidate user-specific caches
+        if hasattr(instance, 'signer'):
+            invalidate_user_cache(instance.signer.id, "signables")
+            invalidate_user_cache(instance.signer.id, "permissions")
+        
+        logger.info(f"Invalidated cache for Signature {instance.id}")
+        
+    except Exception as e:
+        logger.error(f"Error invalidating Signature cache: {e}")
+
+
+@receiver([post_save, post_delete], sender=Keystore)
+def invalidate_keystore_cache(sender, instance, **kwargs):
+    """
+    Invalidate cache when Keystore is created, updated, or deleted.
+    """
+    try:
+        # Invalidate user's keystore cache
+        if hasattr(instance, 'user'):
+            invalidate_user_cache(instance.user.id, "keystore")
+        
+        logger.info(f"Invalidated cache for Keystore {instance.id}")
+        
+    except Exception as e:
+        logger.error(f"Error invalidating Keystore cache: {e}")
 
 
 def warm_vendor_cache(vendor):
