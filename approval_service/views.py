@@ -31,9 +31,9 @@ def get_signable_class(target_class: str) -> object:
 		signable_class_mapping = {
 			'invoice': {
 				"class": Invoice,
-				"app_label": "invoice_service", 
+				"app_label": "invoice_service",
 				"serializer": InvoiceSerializer,
-				"order_by": "-date_created"
+				"order_by": "date_created"  # Default: oldest first (ascending)
 			}
 		}
 		return signable_class_mapping.get(target_class, False)
@@ -182,14 +182,17 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 	signable_class = target.get("class")
 	signable_app_label = target.get("app_label")
 	signable_serializer = target.get("serializer")
-	order_by = target.get("order_by")
+
+	# Allow query parameter override for ordering (default: oldest first)
+	# Examples: ?order_by=-date_created (newest first), ?order_by=id (by ID)
+	order_by = request.query_params.get('order_by', target.get("order_by"))
 	
 	try:
 		# Create cache key for this specific request
 		page = request.query_params.get('page', '1')
 		page_size = request.query_params.get('size', '15')
 		verdict_filter = request.GET.get("approved", "")
-		cache_key = f"user_signables_{request.user.id}_{target_class}_{status_filter}_page_{page}_size_{page_size}_approved_{verdict_filter}"
+		cache_key = f"user_signables_{request.user.id}_{target_class}_{status_filter}_page_{page}_size_{page_size}_approved_{verdict_filter}_order_{order_by}"
 		
 		# Try to get cached data first
 		cached_data = cache.get(cache_key)
@@ -255,7 +258,7 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 		signables_queryset = base_queryset.order_by(order_by)
 		
 		# Cache pagination count
-		cache_key_suffix = f"{target_class}_{status_filter}_user_{request.user.id}_page_{page}_size_{page_size}"
+		cache_key_suffix = f"{target_class}_{status_filter}_user_{request.user.id}_page_{page}_size_{page_size}_order_{order_by}"
 		if verdict_filter:
 			cache_key_suffix += f"_approved_{verdict_filter}"
 		
@@ -299,14 +302,16 @@ def get_signable_view(request, target_class, status_filter="all"):
 	
 	signable_class = target.get("class")
 	signable_serializer = target.get("serializer")
-	order_by = target.get("order_by")
-	
+
+	# Allow query parameter override for ordering (default: oldest first)
+	order_by = request.query_params.get('order_by', target.get("order_by"))
+
 	try:
 		# Create cache key for this specific request
 		page = request.query_params.get('page', '1')
 		page_size = request.query_params.get('size', '15')
 		verdict_filter = request.GET.get("approved", "")
-		cache_key = f"all_signables_{target_class}_{status_filter}_page_{page}_size_{page_size}_approved_{verdict_filter}"
+		cache_key = f"all_signables_{target_class}_{status_filter}_page_{page}_size_{page_size}_approved_{verdict_filter}_order_{order_by}"
 		
 		# Try to get cached data first
 		cached_data = cache.get(cache_key)
@@ -341,7 +346,7 @@ def get_signable_view(request, target_class, status_filter="all"):
 		signables_queryset = signables_queryset.order_by(order_by)
 		
 		# Cache pagination count
-		cache_key_suffix = f"{target_class}_{status_filter}_all_page_{page}_size_{page_size}"
+		cache_key_suffix = f"{target_class}_{status_filter}_all_page_{page}_size_{page_size}_order_{order_by}"
 		if verdict_filter:
 			cache_key_suffix += f"_approved_{verdict_filter}"
 		
