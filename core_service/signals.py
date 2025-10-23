@@ -85,18 +85,27 @@ def invalidate_grn_line_item_cache(sender, instance, **kwargs):
 def invalidate_invoice_cache(sender, instance, **kwargs):
     """
     Invalidate cache when Invoice is created, updated, or deleted.
+
+    This affects:
+    - Invoice listings
+    - Approval workflow for invoices
+    - Count caches
+    - Vendor-specific caches
     """
     try:
-        # Invalidate all invoice-related count caches
-        CacheManager.invalidate_pattern("count:*invoice*")
-        
+        # Invalidate all invoice-related caches
+        CacheManager.invalidate_pattern("*invoice*")
+
+        # Invalidate count caches
+        CacheManager.invalidate_pattern("count:*")
+
         # Invalidate vendor-specific invoice caches
         if hasattr(instance, 'purchase_order') and instance.purchase_order.vendor:
             vendor_id = instance.purchase_order.vendor.id
             invalidate_vendor_cache(vendor_id, "invoice")
-            
+
         logger.info(f"Invalidated cache for Invoice {instance.id}")
-        
+
     except Exception as e:
         logger.error(f"Error invalidating Invoice cache: {e}")
 
@@ -185,25 +194,29 @@ def warm_user_cache(user):
 def invalidate_signature_cache(sender, instance, **kwargs):
     """
     Invalidate cache when Signature is created, updated, or deleted.
-    
+
     This affects:
     - User signable listings
     - Signature tracking
     - Approval workflow caches
+    - Pagination count caches
     """
     try:
         # Invalidate all approval-related caches
         CacheManager.invalidate_pattern("*signable*")
         CacheManager.invalidate_pattern("*signature*")
         CacheManager.invalidate_pattern("*track_signable*")
-        
+
+        # Invalidate count caches (critical for pagination)
+        CacheManager.invalidate_pattern("count:*")
+
         # Invalidate user-specific caches
         if hasattr(instance, 'signer'):
             invalidate_user_cache(instance.signer.id, "signables")
             invalidate_user_cache(instance.signer.id, "permissions")
-        
+
         logger.info(f"Invalidated cache for Signature {instance.id}")
-        
+
     except Exception as e:
         logger.error(f"Error invalidating Signature cache: {e}")
 

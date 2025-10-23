@@ -93,19 +93,44 @@ class CacheManager:
     def invalidate_pattern(pattern: str) -> int:
         """
         Invalidate all cache keys matching a pattern.
-        
+
         Args:
             pattern: Pattern to match (e.g., 'user_123_*')
-            
+
         Returns:
             int: Number of keys invalidated
         """
         try:
-            # Get Redis client
-            redis_client = cache._cache.get_client(None)
-            keys = redis_client.keys(f"{settings.CACHES['default']['KEY_PREFIX']}:*{pattern}*")
+            # Import django_redis helper to get raw Redis client
+            from django_redis import get_redis_connection
+
+            # Get Redis client using the correct method for django-redis
+            redis_client = get_redis_connection('default')
+
+            # Build the full pattern including key prefix
+            key_prefix = settings.CACHES['default'].get('KEY_PREFIX', '')
+            if key_prefix:
+                full_pattern = f"{key_prefix}:*{pattern}*"
+            else:
+                full_pattern = f"*{pattern}*"
+
+            # Get all matching keys
+            keys = redis_client.keys(full_pattern)
             if keys:
-                return redis_client.delete(*keys)
+                # Delete all matching keys
+                deleted_count = redis_client.delete(*keys)
+                logger.info(f"Invalidated {deleted_count} cache keys matching pattern: {pattern}")
+                return deleted_count
+            return 0
+        except ImportError:
+            # Fallback if django_redis is not available
+            logger.warning(f"django_redis not available, using cache.delete_pattern fallback")
+            try:
+                # Try using cache.delete_pattern if available
+                if hasattr(cache, 'delete_pattern'):
+                    return cache.delete_pattern(f"*{pattern}*")
+            except Exception as fallback_error:
+                logger.warning(f"Fallback cache invalidation also failed: {fallback_error}")
             return 0
         except Exception as e:
             logger.warning(f"Failed to invalidate cache pattern {pattern}: {e}")
