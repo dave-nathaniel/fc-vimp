@@ -17,6 +17,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+def _increment_cache_counter(counter_attr: str) -> None:
+    """Increment a simple counter attribute on the django cache object for instrumentation."""
+    try:
+        setattr(cache, counter_attr, getattr(cache, counter_attr, 0) + 1)
+    except Exception:
+        # Never fail normal request flow due to instrumentation
+        pass
+
 class CacheManager:
     """
     Centralized cache management with intelligent key generation and invalidation.
@@ -27,6 +35,10 @@ class CacheManager:
     TIMEOUT_MEDIUM = 1800    # 30 minutes
     TIMEOUT_LONG = 3600      # 1 hour
     TIMEOUT_DAILY = 86400    # 24 hours
+    TIMEOUT_WEEKLY = 604800   # 1 week
+    TIMEOUT_MONTHLY = 2592000 # 1 month
+    TIMEOUT_YEARLY = 31536000 # 1 year
+    TIMEOUT_FOREVER = None   # Cache till it is invalidated
     
     # Cache key prefixes
     PREFIX_QUERY = "query"
@@ -35,6 +47,14 @@ class CacheManager:
     PREFIX_USER = "user"
     PREFIX_VENDOR = "vendor"
     PREFIX_WAC = "wac"  # Weighted Average Cost
+    PREFIX_SIGNABLE = "signable"
+    PREFIX_PO = "po"
+    PREFIX_PO_LINE_ITEM = "po_line_item"
+    PREFIX_GRN = "grn"
+    PREFIX_GRN_LINE_ITEM = "grn_line_item"
+    PREFIX_INVOICE = "invoice"
+    PREFIX_INVOICE_LINE_ITEM = "invoice_line_item"
+    
     
     @staticmethod
     def generate_cache_key(prefix: str, *args, **kwargs) -> str:
@@ -178,10 +198,12 @@ def cache_result(timeout: int = CacheManager.TIMEOUT_MEDIUM,
             result = cache.get(cache_key)
             if result is not None:
                 logger.debug(f"Cache hit for key: {cache_key}")
+                _increment_cache_counter('_cache_hits')
                 return result
             
             # Execute function and cache result
             logger.debug(f"Cache miss for key: {cache_key}")
+            _increment_cache_counter('_cache_misses')
             result = func(*args, **kwargs)
             cache.set(cache_key, result, timeout)
             
@@ -207,10 +229,12 @@ def cache_queryset_count(queryset: QuerySet, cache_key: str,
     count = cache.get(cache_key)
     if count is not None:
         logger.debug(f"Count cache hit for key: {cache_key}")
+        _increment_cache_counter('_cache_hits')
         return count
     
     # Calculate count and cache it
     logger.debug(f"Count cache miss for key: {cache_key}")
+    _increment_cache_counter('_cache_misses')
     count = queryset.count()
     cache.set(cache_key, count, timeout)
     
@@ -237,10 +261,12 @@ def get_or_set_cache(key: str, callable_obj: Callable,
     result = cache.get(key)
     if result is not None:
         logger.debug(f"Cache hit for key: {key}")
+        _increment_cache_counter('_cache_hits')
         return result
     
     # Execute function and cache result
     logger.debug(f"Cache miss for key: {key}")
+    _increment_cache_counter('_cache_misses')
     result = callable_obj(*args, **kwargs)
     cache.set(key, result, timeout)
     
@@ -308,6 +334,7 @@ class CachedPagination:
         
         total_count = cache.get(count_key)
         if total_count is not None:
+            _increment_cache_counter('_cache_hits')
             return (total_count + page_size - 1) // page_size  # Ceiling division
         
         return None

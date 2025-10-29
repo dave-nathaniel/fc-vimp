@@ -125,8 +125,22 @@ REST_FRAMEWORK = {
 	'DEFAULT_PERMISSION_CLASSES': (
 		'rest_framework.permissions.IsAuthenticated',
 	),
-	'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-	'PAGE_SIZE': 15
+	'DEFAULT_PAGINATION_CLASS': 'overrides.rest_framework.CustomPagination',
+	'PAGE_SIZE': 15,
+	'DEFAULT_RENDERER_CLASSES': [
+		'rest_framework.renderers.JSONRenderer',
+	] if not DEBUG else [
+		'rest_framework.renderers.JSONRenderer',
+		'rest_framework.renderers.BrowsableAPIRenderer',
+	],
+	'DEFAULT_THROTTLE_CLASSES': [
+		'rest_framework.throttling.AnonRateThrottle',
+		'rest_framework.throttling.UserRateThrottle'
+	],
+	'DEFAULT_THROTTLE_RATES': {
+		'anon': '100/hour',
+		'user': '1000/hour'
+	}
 }
 
 AUTHENTICATION_BACKENDS = (
@@ -152,6 +166,7 @@ AUTH_ADFS = {
 	],
 }
 
+# Logging Configuration
 LOGGING = {
 	'version': 1,
 	'disable_existing_loggers': False,
@@ -163,7 +178,8 @@ LOGGING = {
 	'handlers': {
 		'console': {
 			'class': 'logging.StreamHandler',
-			'formatter': 'verbose'
+			'formatter': 'verbose',
+			'level': 'DEBUG',
 		},
 	},
 	'loggers': {
@@ -173,6 +189,40 @@ LOGGING = {
 		},
 	},
 }
+
+if not DEBUG:
+	# Production performance settings
+	ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',')
+	
+	# Security settings for production
+	SECURE_BROWSER_XSS_FILTER = True
+	SECURE_CONTENT_TYPE_NOSNIFF = True
+	X_FRAME_OPTIONS = 'DENY'
+	
+	# Session optimization
+	SESSION_COOKIE_AGE = 3600  # 1 hour
+	SESSION_SAVE_EVERY_REQUEST = False
+	
+	# File upload settings
+	FILE_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
+	DATA_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
+
+	# Logging optimization for production
+	LOGGING['handlers']['file'] = {
+		'level': 'WARNING',
+		'class': 'logging.handlers.RotatingFileHandler',
+		'filename': 'logs/vimp.log',
+		'maxBytes': 1024*1024*10,  # 10MB
+		'backupCount': 5,
+		'formatter': 'verbose'
+	}
+	LOGGING['loggers']['django']['handlers'] = ['file']
+	LOGGING['loggers']['vimp'] = {
+		'handlers': ['file'],
+		'level': 'WARNING',
+		'propagate': False,
+	}
+
 
 SIMPLE_JWT = {
 	'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
@@ -245,30 +295,43 @@ DATABASES = {
 		},
 		'CONN_MAX_AGE': 600,  # 10 minutes connection reuse
 		'CONN_HEALTH_CHECKS': True,  # Validate connections before use
-	}
+	},
+	# postgres cache
+	# 'postgres': {
+	# 	'ENGINE': 'django.db.backends.postgresql',
+	# 	'NAME': os.getenv('PG_DB_NAME', 'django-cache'),
+	# 	'USER': os.getenv('PG_DB_USER', 'postgres'),
+	# 	'PASSWORD': os.getenv('PG_DB_PASSWORD', 'postgres'),
+	# 	'HOST': os.getenv('PG_DB_HOST', 'localhost'),
+	# 	'PORT': os.getenv('PG_DB_PORT', '5432'),
+	# }
 }
 
 # Redis Cache Configuration
 CACHES = {
 	'default': {
-          'BACKEND': 'django_redis.cache.RedisCache',
-          'LOCATION': 'redis://127.0.0.1:6379/1',
-          'OPTIONS': {
-              'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-              'CONNECTION_POOL_KWARGS': {
-                  'max_connections': 50,
-                  'retry_on_timeout': True,
-                  'socket_keepalive': True,
-                  'socket_keepalive_options': {},
-                  'health_check_interval': 30,
-              },
-              'COMPRESSOR': 'django_redis.compressors.zlib.ZlibCompressor',
-              'SERIALIZER': 'django_redis.serializers.pickle.PickleSerializer',
-          },
-          'TIMEOUT': 300,
-          'KEY_PREFIX': 'vimp_prod',
-          'VERSION': 1,
-      }
+		'BACKEND': 'django_redis.cache.RedisCache',
+		'LOCATION': os.getenv('REDIS_URL', 'redis://127.0.0.1:6379'),
+		'OPTIONS': {
+			'CLIENT_CLASS': 'django_redis.client.DefaultClient',
+			'CONNECTION_POOL_KWARGS': {
+				'max_connections': 50,
+				'retry_on_timeout': True,
+				'socket_keepalive': True,
+				'socket_keepalive_options': {},
+				'health_check_interval': 30,
+			},
+			'COMPRESSOR': 'django_redis.compressors.zlib.ZlibCompressor',
+			'SERIALIZER': 'django_redis.serializers.pickle.PickleSerializer',
+		},
+		'TIMEOUT': 300,
+		'KEY_PREFIX': 'vimp_prod',
+		'VERSION': 1,
+	},
+	# "memcached": {
+	# 	"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache",
+	# 	"LOCATION": "127.0.0.1:11211",
+	# }
 }
 
 # Session and Cache Configuration
@@ -327,56 +390,3 @@ STATIC_ROOT = os.path.join(BASE_DIR, STATIC_URL)
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
-
-# Performance Optimizations
-if not DEBUG:
-    # Production performance settings
-    ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',')
-    
-    # Security settings for production
-    SECURE_BROWSER_XSS_FILTER = True
-    SECURE_CONTENT_TYPE_NOSNIFF = True
-    X_FRAME_OPTIONS = 'DENY'
-    
-    # Session optimization
-    SESSION_COOKIE_AGE = 3600  # 1 hour
-    SESSION_SAVE_EVERY_REQUEST = False
-    
-    # File upload settings
-    FILE_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
-    DATA_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
-
-# REST Framework Performance Settings
-REST_FRAMEWORK.update({
-    'DEFAULT_RENDERER_CLASSES': [
-        'rest_framework.renderers.JSONRenderer',
-    ] if not DEBUG else [
-        'rest_framework.renderers.JSONRenderer',
-        'rest_framework.renderers.BrowsableAPIRenderer',
-    ],
-    'DEFAULT_THROTTLE_CLASSES': [
-        'rest_framework.throttling.AnonRateThrottle',
-        'rest_framework.throttling.UserRateThrottle'
-    ],
-    'DEFAULT_THROTTLE_RATES': {
-        'anon': '100/hour',
-        'user': '1000/hour'
-    }
-})
-
-# Logging optimization for production
-if not DEBUG:
-    LOGGING['handlers']['file'] = {
-        'level': 'WARNING',
-        'class': 'logging.handlers.RotatingFileHandler',
-        'filename': 'logs/vimp.log',
-        'maxBytes': 1024*1024*10,  # 10MB
-        'backupCount': 5,
-        'formatter': 'verbose'
-    }
-    LOGGING['loggers']['django']['handlers'] = ['file']
-    LOGGING['loggers']['vimp'] = {
-        'handlers': ['file'],
-        'level': 'WARNING',
-        'propagate': False,
-    }

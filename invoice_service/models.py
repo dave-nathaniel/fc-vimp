@@ -4,37 +4,42 @@ from django.db.models import Sum
 from egrn_service.models import PurchaseOrder, PurchaseOrderLineItem, GoodsReceivedLineItem, GoodsReceivedNote
 from approval_service.models import Signable, Workflow
 
+import json
+from decimal import Decimal
+
 from django_q.tasks import async_task
 
+
+WORKFLOW_RULES = {
+	# Internal Control reviews and approves all Invoices.
+	"level_1": {
+		"roles": ("accounts_payable", "line_manager", "internal_control"),
+		"comment": "Line Manager reviews and approves Invoice less than or equal to N3Million.",
+	},
+	"level_2": {
+		"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance"),
+		"comment": "Head of Finance /Snr Manager Finance approves Invoice from N3Million Naira to N5 Million.",
+	},
+	"level_3": {
+		"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance", "head_of_finance"),
+		"comment": "Head of Finance /Snr Manager Finance approves Invoice from N5Million Naira to N10 Million.",
+	},
+	"level_4": {
+		"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance", "head_of_finance", "dmd_ss"),
+		"comment": "DMD SS approves invoices from N10Million to 100Million",
+	},
+	"level_5": {
+		"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance", "head_of_finance", "dmd_ss", "md"),
+		"comment": "MD approves PO/DPs from N100Million",
+	}
+}
 
 # Create your models here.
 class InvoiceWorkflow(Workflow):
 	'''
 		Supporting class for the Invoice workflow. A subclass of the Workflow class.
 	'''
-	sign_rules = {
-		# Internal Control reviews and approves all Invoices.
-		"level_1": {
-			"roles": ("accounts_payable", "line_manager", "internal_control"),
-			"comment": "Line Manager reviews and approves Invoice less than or equal to N3Million.",
-		},
-		"level_2": {
-			"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance"),
-			"comment": "Head of Finance /Snr Manager Finance approves Invoice from N3Million Naira to N5 Million.",
-		},
-		"level_3": {
-			"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance", "head_of_finance"),
-			"comment": "Head of Finance /Snr Manager Finance approves Invoice from N5Million Naira to N10 Million.",
-		},
-		"level_4": {
-			"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance", "head_of_finance", "dmd_ss"),
-			"comment": "DMD SS approves invoices from N10Million to 100Million",
-		},
-		"level_5": {
-			"roles": ("accounts_payable", "line_manager", "internal_control", "snr_manager_finance", "head_of_finance", "dmd_ss", "md"),
-			"comment": "MD approves PO/DPs from N100Million",
-		},
-	}
+	sign_rules = WORKFLOW_RULES
 	
 	def __init__(self, invoice):
 		self.name = "Invoice Workflow"
@@ -111,10 +116,29 @@ class Invoice(Signable):
 		return self.invoice_line_items.model._meta.get_fields()
 	
 	def __get_line_item_attrs__(self):
-		# Get the line item fields excluding the surcharges field, we can't directly "get" the ManyToMany surcharges field
-		line_item_fields = [field for field in self.__get_line_item_fields__() if field.name not in ['surcharges']]
-		return [[(lambda x, y: getattr(x, y))(line_item, field.name) for field in line_item_fields] for line_item in
-				self.invoice_line_items.all()]
+		"""
+		Optimized method to get line item attributes for identity hashing.
+		Returns only the essential fields needed for hash calculation.
+		"""
+		# Fetch line items in a single query with select_related for efficiency
+		line_items = self.invoice_line_items.select_related('po_line_item', 'grn_line_item').order_by('id')
+
+		# print(self.invoice_line_items.all())
+		# Build a list of essential attributes per line item
+		# Only include immutable/essential fields for the hash
+		line_item_data = []
+		for item in line_items:
+			line_item_data.append({
+				'id': item.id,
+				'po_line_item_id': item.po_line_item_id,
+				'grn_line_item_id': item.grn_line_item_id if item.grn_line_item else None,
+				'quantity': str(item.quantity),
+				'net_total': str(item.net_total),
+				'gross_total': str(item.gross_total),
+				'tax_amount': str(item.tax_amount),
+			})
+
+		return line_item_data
 	
 	def on_workflow_start(self) -> bool:
 		from .serializers import InvoiceSerializer
@@ -149,27 +173,51 @@ class Invoice(Signable):
 		return True
 	
 	def set_identity(self):
-		invoice_values = {
+		"""
+		Optimized method to calculate identity hash for the invoice.
+		Uses a single aggregation query and JSON serialization for consistency.
+		"""
+
+		# Single optimized query to get all aggregated values at once
+		aggregates = self.invoice_line_items.aggregate(
+			gross_total=Sum('gross_total'),
+			tax_amount=Sum('tax_amount'),
+			net_total=Sum('net_total')
+		)
+
+		# Convert Decimal to string for JSON serialization
+		def decimal_to_str(obj):
+			if isinstance(obj, Decimal):
+				return str(obj)
+			return obj
+
+		# Build invoice data dictionary with explicit ordering
+		invoice_data = {
 			'id': self.id,
-			'external_document_id': self.external_document_id,
-			'description': self.description,
-			'due_date': self.due_date,
-			'payment_terms': self.payment_terms,
-			'payment_reason': self.payment_reason,
-			'date_created': self.date_created,
-			'gross_total': self.gross_total,
-			'total_tax_amount': self.total_tax_amount,
-			'net_total': self.net_total,
-			'signatories': self.signatories
+			'external_document_id': self.external_document_id or '',
+			'description': self.description or '',
+			'due_date': self.due_date.isoformat() if self.due_date else '',
+			'payment_terms': self.payment_terms or '',
+			'payment_reason': self.payment_reason or '',
+			'date_created': self.date_created.isoformat() if self.date_created else '',
+			'gross_total': decimal_to_str(aggregates['gross_total']),
+			'total_tax_amount': decimal_to_str(aggregates['tax_amount']),
+			'net_total': decimal_to_str(aggregates['net_total']),
+			'signatories': self.signatories if isinstance(self.signatories, list) else []
 		}
-		line_item_attrs = self.__get_line_item_attrs__()
-		# Convert values to strings
-		combined_line_item_values = ''.join([''.join([str(i) for i in item]) for item in line_item_attrs])
-		invoice_values = ''.join([str(i) for i in invoice_values.values()])
-		# Concatenate the line item values to the invoice values
-		identity_data = invoice_values + combined_line_item_values
-		# Set the identity_data property, to be hashed and used as a seal
-		self.identity_data = identity_data.replace(' ', '')
+
+		# Get line item data (already optimized)
+		line_items_data = self.__get_line_item_attrs__()
+
+		# Combine into a single data structure
+		identity_dict = {
+			'invoice': invoice_data,
+			'line_items': line_items_data
+		}
+
+		# Convert to JSON string with sorted keys for consistency
+		# This ensures the same data always produces the same hash
+		self.identity_data = json.dumps(identity_dict, sort_keys=True, separators=(',', ':'))
 	
 	def set_signatories(self):
 		# The workflow object. This is a custom workflow that is defined for the invoice model

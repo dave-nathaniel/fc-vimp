@@ -1,6 +1,7 @@
 from rest_framework.response import Response
 from rest_framework import pagination, serializers
 from rest_framework.pagination import PageNumberPagination
+from core_service.cache_utils import CachedPagination
 
 class APIResponse(Response):
 	def __init__(self, message: object, status: object, **kwargs: object) -> object:
@@ -42,6 +43,19 @@ class CustomPagination(PageNumberPagination):
 			return None
 
 		paginator = self.django_paginator_class(queryset, page_size)
+
+		# Compute and cache true total count for the queryset/list
+		try:
+			if hasattr(queryset, 'count'):
+				# Build a cache key suffix tied to request path and query params
+				cache_key_suffix = f"{request.path}_qs_{request.query_params.urlencode()}"
+				self.total_count = CachedPagination.cache_page_count(queryset, cache_key_suffix)
+			else:
+				# For plain lists, use full length
+				self.total_count = len(queryset)
+		except Exception:
+			# Fallback to paginator's native count on any failure
+			self.total_count = getattr(getattr(paginator, 'object_list', None), 'count', None) or getattr(paginator, 'count', None) or 0
 		page_number = self.get_page_number(request, paginator)
 
 		try:
@@ -56,6 +70,19 @@ class CustomPagination(PageNumberPagination):
 
 		self.request = request
 		return list(self.page)
+
+	def get_paginated_response(self, data):
+		# Ensure we return the true total count if it was computed
+		count = getattr(self, 'total_count', None)
+		if count is None:
+			count = getattr(getattr(self, 'page', None), 'paginator', None)
+			count = getattr(count, 'count', 0)
+		return Response({
+			'count': count,
+			'next': self.get_next_link(),
+			'previous': self.get_previous_link(),
+			'results': data
+		})
 
 	def get_page_size(self, request):
 		# Support both 'size' and 'limit' query parameters for backward compatibility

@@ -337,11 +337,6 @@ def get_grn(request, grn_number):
 
 @api_view(['GET'])
 @authentication_classes([CombinedAuthentication,])
-@cache_result(
-	timeout=CacheManager.TIMEOUT_MEDIUM,
-	key_prefix=CacheManager.PREFIX_WAC,
-	user_specific=True
-)
 def weighted_average(request):
 	'''
 		Get the weighted average cost for all products or for a specific product, with a history of purchases.
