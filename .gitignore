@@ -1,12 +1,13 @@
-.env
-*.pyc
 __pycache__/
 .idea/
 .vscode/
 .kiro/
 .claude/
+
 MISC/
 
+.env
+*.pyc
 *.md
 
 keytest.html
