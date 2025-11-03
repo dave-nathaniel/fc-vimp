@@ -45,14 +45,15 @@ class InvoiceSerializer(serializers.ModelSerializer):
 		invoice = Invoice.objects.create(**validated_data)
 		return invoice
 	
+	# Prefer values pre-annotated on the queryset to avoid per-row aggregates
 	def get_gross_total(self, obj):
-		return obj.gross_total
-	
+		return getattr(obj, 'gross_total_annotated', obj.gross_total)
+
 	def get_total_tax_amount(self, obj):
-		return obj.total_tax_amount
+		return getattr(obj, 'total_tax_amount_annotated', obj.total_tax_amount)
 
 	def get_net_total(self, obj):
-		return obj.net_total
+		return getattr(obj, 'net_total_annotated', obj.net_total)
 	
 	def get_workflow(self, obj):
 		# Prefer prefetched signatures passed in via context to avoid N+1 queries
@@ -150,12 +151,18 @@ class GoodsReceivedLineItemBriefSerializer(serializers.ModelSerializer):
 		]
 
 
+# --- Optimised version ---
+
 class GoodsReceivedNoteBriefSerializer(serializers.ModelSerializer):
-	"""Lightweight GRN serializer with a compact purchase order representation."""
+	"""Lightweight GRN serializer that avoids per-line SQL aggregates."""
+	# lightweight PO representation
 	purchase_order = serializers.SerializerMethodField()
-	# Keep stores minimal via existing StoreSerializer; it's usually small
 	stores = StoreSerializer(many=True, read_only=True)
 	total_value_received = serializers.FloatField(source='total_net_value_received')
+	# compute quantities & status efficiently
+	invoiced_quantity = serializers.SerializerMethodField()
+	invoice_status_code = serializers.SerializerMethodField()
+	invoice_status_text = serializers.SerializerMethodField()
 
 	def get_purchase_order(self, obj):
 		po = obj.purchase_order
@@ -169,6 +176,44 @@ class GoodsReceivedNoteBriefSerializer(serializers.ModelSerializer):
 			'delivery_status_text': po.delivery_status[1] if getattr(po, 'delivery_status', None) else None,
 			'delivery_completed': True if getattr(po, 'delivery_status', None) and po.delivery_status[0] == '3' else False,
 		}
+
+	def _prefetched_line_items(self, obj):
+		"""Return prefetched GRN line items if available, else fallback to DB."""
+		return getattr(obj, '_prefetched_objects_cache', {}).get('line_items') or obj.line_items.all()
+
+	def get_invoiced_quantity(self, obj):
+		# Sum quantities from prefetched invoice_items to avoid per-line aggregates
+		total = 0
+		for grn_li in self._prefetched_line_items(obj):
+			inv_items = getattr(grn_li, '_prefetched_objects_cache', {}).get('invoice_items') or grn_li.invoice_items.all()
+			for inv in inv_items:
+				total += float(inv.quantity)
+		return total
+
+	def get_invoice_status_code(self, obj):
+		completed = all(self._grn_line_item_is_fully_invoiced(li) for li in self._prefetched_line_items(obj))
+		in_process = any(self._grn_line_item_has_any_invoice(li) for li in self._prefetched_line_items(obj))
+		if completed:
+			return '3'
+		elif in_process:
+			return '2'
+		return '1'
+
+	def get_invoice_status_text(self, obj):
+		code = self.get_invoice_status_code(obj)
+		return {
+			'1': 'Not Started',
+			'2': 'In Process',
+			'3': 'Finished',
+		}.get(code, '')
+
+	def _grn_line_item_is_fully_invoiced(self, li):
+		inv_items = getattr(li, '_prefetched_objects_cache', {}).get('invoice_items') or li.invoice_items.all()
+		return sum(float(inv.quantity) for inv in inv_items) >= float(li.quantity_received)
+
+	def _grn_line_item_has_any_invoice(self, li):
+		inv_items = getattr(li, '_prefetched_objects_cache', {}).get('invoice_items') or li.invoice_items.all()
+		return bool(inv_items)
 
 	class Meta:
 		model = GoodsReceivedNote

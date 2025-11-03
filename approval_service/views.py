@@ -6,7 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 from invoice_service.serializers import InvoiceSerializer
 from django.core.exceptions import ObjectDoesNotExist, ValidationError
-from django.db.models import Q, Prefetch, Count, Exists, OuterRef, Value, Subquery, IntegerField, QuerySet
+from django.db.models import Q, Prefetch, Count, Exists, OuterRef, Value, Subquery, IntegerField, QuerySet, Sum
 from functools import reduce
 import operator
 from rest_framework.request import Request
@@ -65,9 +65,7 @@ def make_request_signable_queryset_key(
 		"signable_queryset",
 		str(signable_class._meta),
 		status_filter,
-		verdict_filter or "any",
-		request.query_params.get('page', '1'),
-		request.query_params.get('size', '15'),
+		verdict_filter or "",
 		order_by,
 	)
 
@@ -251,7 +249,7 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 		page_size = request.query_params.get('size', '15')
 		verdict_filter = request.query_params.get("approved", "")
 
-		# Get user permissions efficiently (cached)
+		# Get user permissions efficiently
 		related_permissions = sorted(
 			list(
 				set(
@@ -260,50 +258,73 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 			)
 		)
 
-		# Build a stable, user-specific cache key for the full paginated payload
-		request_queryset_key = make_request_signable_queryset_key(
-			request,
-			signable_class,
-			status_filter,
-			verdict_filter,
-			order_by,
-			related_permissions,
+		# Compute the relevant permissions for the user's role (intersection with target signatories)
+		relevant_permissions = sorted(
+			list(set(target.get("signatories")) & set(related_permissions))
 		)
-
-		# Fast path: return cached payload if available
-		cached_payload = cache.get(request_queryset_key)
-		if cached_payload is not None:
-			return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=cached_payload)
 
 		# Get the relevant permissions
-		relevant_permissions = get_or_set_cache(
-			CacheManager.generate_cache_key("user_permissions", request.user.id,signable_app_label),
-			lambda: sorted(
-				list(set(target.get("signatories")) 
-				& set(related_permissions))
-			),
-			CacheManager.TIMEOUT_LONG
-		)
+		# relevant_permissions = get_or_set_cache(
+		# 	CacheManager.generate_cache_key("user_permissions", request.user.id,signable_app_label),
+		# 	lambda: sorted(
+		# 		list(set(target.get("signatories")) 
+		# 		& set(related_permissions))
+		# 	),
+		# 	CacheManager.TIMEOUT_LONG
+		# )
 
 		# Cache the queryset builder function
-		base_queryset_cache_key = make_base_signable_queryset_key(signable_class, relevant_permissions)
-		base_queryset = get_or_set_cache(
-			base_queryset_cache_key, 
-			lambda: make_base_signable_queryset(signable_class, relevant_permissions),
-			CacheManager.TIMEOUT_LONG
-		)
+		# base_queryset_cache_key = make_base_signable_queryset_key(signable_class, relevant_permissions)
+		# base_queryset = get_or_set_cache(
+		# 	base_queryset_cache_key, 
+		# 	lambda: make_base_signable_queryset(signable_class, relevant_permissions),
+		# 	CacheManager.TIMEOUT_LONG
+		# )
 
 		# Get content type for signatures
 		content_type = ContentType.objects.get_for_model(signable_class)
-		signables_queryset = base_queryset.annotate(
+		# signables_queryset = base_queryset.annotate(
+		# 	user_has_signed=Exists(
+		# 		Signature.objects.filter(
+		# 			signable_type=content_type,
+		# 			signable_id=OuterRef('pk'),
+		# 			signer=request.user
+		# 		)
+		# 	)
+		# )
+		signables_queryset = signable_class.objects.select_related(
+			'purchase_order',
+			'purchase_order__vendor',  # vendor directly via PO (needed for vendor serializer)
+			'grn',
+			'grn__purchase_order',
+			'grn__purchase_order__vendor',
+		).prefetch_related(
+			'invoice_line_items',
+			'invoice_line_items__po_line_item',
+			'invoice_line_items__grn_line_item',
+			'grn__purchase_order__line_items',
+			'grn__purchase_order__line_items__delivery_store',
+			'grn__purchase_order__line_items__grn_line_item',
+			# Prefetch GRN line items and their delivery stores to support GRN.stores property
+			'grn__line_items',
+			'grn__line_items__purchase_order_line_item__delivery_store',
+			'grn__line_items__invoice_items',
+		).filter(
+			signatories__contains=relevant_permissions
+		).annotate(
+			gross_total_annotated=Sum('invoice_line_items__gross_total'),
+			total_tax_amount_annotated=Sum('invoice_line_items__tax_amount'),
+			net_total_annotated=Sum('invoice_line_items__net_total'),
 			user_has_signed=Exists(
 				Signature.objects.filter(
 					signable_type=content_type,
 					signable_id=OuterRef('pk'),
-					signer=request.user
+					metadata__acting_as__in=relevant_permissions
 				)
 			)
 		)
+
+		# signables_queryset = signables_queryset
 
 		# Apply status filters at database level
 		if status_filter == "pending":
@@ -311,11 +332,12 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 			signables_queryset = signables_queryset.filter(
 				current_pending_signatory__in=relevant_permissions
 			)
+			# Status: pending
 		elif status_filter == "completed":
 			signables_queryset = signables_queryset.filter(
 				user_has_signed=True
 			)
-		
+			# Status: completed
 		
 		# Apply approval filter if provided
 		if verdict_filter:
@@ -326,16 +348,14 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 			signables_queryset = signables_queryset.filter(
 				id__in=signatures_queryset.values_list('signable_id', flat=True)
 			)
+			# Verdict filter applied
 		
 		# Order the queryset
 		signables_queryset = signables_queryset.order_by(order_by)
 
 		# Fast path for count-only requests (e.g., size=1) to avoid heavy serialization
-		if page_size == '1' or page_size == 1:
-			cache_key_suffix = f"user_{request.user.id}_{target_class}_{status_filter}_approved_{verdict_filter or 'any'}_order_{order_by}"
-			total_count = CachedPagination.cache_page_count(signables_queryset, cache_key_suffix)
-			paginated_data = {'count': total_count, 'next': None, 'previous': None, 'results': []}
-			cache.set(request_queryset_key, paginated_data, CacheManager.TIMEOUT_SHORT)
+		if page == '1' and page_size == '1':
+			paginated_data = {'count': signables_queryset.count(), 'next': None, 'previous': None, 'results': []}
 			return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=paginated_data)
 		
 		# Paginate efficiently - CustomPagination now automatically computes and caches the true count
@@ -360,9 +380,6 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 		
 		# Build paginated payload
 		paginated_data = paginator.get_paginated_response(serialized_signables).data
-		
-		# Cache the full paginated payload for consistent consumer experience
-		cache.set(request_queryset_key, paginated_data, CacheManager.TIMEOUT_MEDIUM)
 		
 		return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=paginated_data)
 		

@@ -45,17 +45,18 @@ class CustomPagination(PageNumberPagination):
 		paginator = self.django_paginator_class(queryset, page_size)
 
 		# Compute and cache true total count for the queryset/list
-		try:
-			if hasattr(queryset, 'count'):
-				# Build a cache key suffix tied to request path and query params
-				cache_key_suffix = f"{request.path}_qs_{request.query_params.urlencode()}"
-				self.total_count = CachedPagination.cache_page_count(queryset, cache_key_suffix)
-			else:
-				# For plain lists, use full length
-				self.total_count = len(queryset)
-		except Exception:
-			# Fallback to paginator's native count on any failure
-			self.total_count = getattr(getattr(paginator, 'object_list', None), 'count', None) or getattr(paginator, 'count', None) or 0
+		# try:
+		# 	if hasattr(queryset, 'count'):
+		# 		# Build a cache key suffix tied to request path and query params
+		# 		cache_key_suffix = f"{request.path}_qs_{request.query_params.urlencode()}"
+		# 		self.total_count = CachedPagination.cache_page_count(queryset, cache_key_suffix)
+		# 	else:
+		# 		# For plain lists, use full length
+		# 		self.total_count = len(queryset)
+		# except Exception:
+		# 	# Fallback to paginator's native count on any failure
+		# 	self.total_count = getattr(getattr(paginator, 'object_list', None), 'count', None) or getattr(paginator, 'count', None) or 0
+		
 		page_number = self.get_page_number(request, paginator)
 
 		try:

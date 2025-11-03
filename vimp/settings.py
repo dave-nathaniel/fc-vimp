@@ -343,6 +343,7 @@ CACHALOT_ENABLED = True
 CACHALOT_TIMEOUT = 300  # 5 minutes default timeout
 CACHALOT_CACHE = 'default'
 CACHALOT_DATABASES = ['default']
+CACHALOT_UNCACHABLE_APPS = ['invoice_service', 'approval_service']
 
 CELERY_BROKER_URL = "memory://localhost"
 
