@@ -6,6 +6,7 @@ from approval_service.models import Signable, Workflow
 
 import json
 from decimal import Decimal
+import hashlib
 
 from django_q.tasks import async_task
 
@@ -178,12 +179,20 @@ class Invoice(Signable):
 		Uses a single aggregation query and JSON serialization for consistency.
 		"""
 
-		# Single optimized query to get all aggregated values at once
-		aggregates = self.invoice_line_items.aggregate(
-			gross_total=Sum('gross_total'),
-			tax_amount=Sum('tax_amount'),
-			net_total=Sum('net_total')
-		)
+		# Prefer annotated values when the parent queryset supplied them, otherwise fallback to one aggregation query
+		if hasattr(self, 'gross_total_annotated') and self.gross_total_annotated is not None:
+			aggregates = {
+				'gross_total': self.gross_total_annotated,
+				'tax_amount': self.total_tax_amount_annotated,
+				'net_total': self.net_total_annotated,
+			}
+		else:
+			# Single optimized query to get all aggregated values at once
+			aggregates = self.invoice_line_items.aggregate(
+				gross_total=Sum('gross_total'),
+				tax_amount=Sum('tax_amount'),
+				net_total=Sum('net_total')
+			)
 
 		# Convert Decimal to string for JSON serialization
 		def decimal_to_str(obj):
@@ -206,18 +215,43 @@ class Invoice(Signable):
 			'signatories': self.signatories if isinstance(self.signatories, list) else []
 		}
 
-		# Get line item data (already optimized)
-		line_items_data = self.__get_line_item_attrs__()
+		# Fetch line item data using .values() to avoid full model instantiation
+		line_items_qs = (
+			self.invoice_line_items
+			.select_related('po_line_item', 'grn_line_item')
+			.values(
+				'id',
+				'po_line_item_id',
+				'grn_line_item_id',
+				'quantity',
+				'net_total',
+				'gross_total',
+				'tax_amount',
+			)
+			.order_by('id')
+		)
+		line_item_data = [
+			{
+				'id': li['id'],
+				'po_line_item_id': li['po_line_item_id'],
+				'grn_line_item_id': li['grn_line_item_id'],
+				'quantity': str(li['quantity']),
+				'net_total': str(li['net_total']),
+				'gross_total': str(li['gross_total']),
+				'tax_amount': str(li['tax_amount']),
+			}
+			for li in line_items_qs
+		]
 
 		# Combine into a single data structure
 		identity_dict = {
 			'invoice': invoice_data,
-			'line_items': line_items_data
+			'line_items': line_item_data
 		}
 
-		# Convert to JSON string with sorted keys for consistency
-		# This ensures the same data always produces the same hash
-		self.identity_data = json.dumps(identity_dict, sort_keys=True, separators=(',', ':'))
+		# Produce a deterministic hash of the identity dict without persisting the verbose JSON
+		identity_json = json.dumps(identity_dict, sort_keys=True, separators=(',', ':'))
+		self.identity_data = hashlib.sha256(identity_json.encode('utf-8')).hexdigest()
 	
 	def set_signatories(self):
 		# The workflow object. This is a custom workflow that is defined for the invoice model
