@@ -340,7 +340,7 @@ SESSION_CACHE_ALIAS = 'default'
 
 # Cachalot Configuration for ORM query caching
 CACHALOT_ENABLED = True
-CACHALOT_TIMEOUT = 300  # 5 minutes default timeout
+CACHALOT_TIMEOUT = 600  # 10 minutes default timeout
 CACHALOT_CACHE = 'default'
 CACHALOT_DATABASES = ['default']
 CACHALOT_UNCACHABLE_APPS = ['invoice_service', 'approval_service']
