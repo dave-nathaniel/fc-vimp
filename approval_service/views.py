@@ -474,6 +474,8 @@ def get_signable_summary_view(request, target_class):
 		)
 	
 	signable_serializer, signable_class = target.get("serializer"), target.get("class")
+
+	# Get the relevant permissions for the user's role
 	approval_utilities = ApprovalUtilities(target)
 
 	relevant_permissions = approval_utilities.get_relevant_permissions(request.user)
@@ -486,7 +488,8 @@ def get_signable_summary_view(request, target_class):
 	# Annotate whether the latest signature on each signable was accepted or rejected
 	latest_sig_sub = Signature.objects.filter(
 			signable_type=content_type,
-			signable_id=OuterRef('pk')
+			signable_id=OuterRef('pk'),
+			metadata__acting_as__in=relevant_permissions # Filter by the user's relevant permissions
 		).order_by('-date_signed').values('accepted')[:1]
 	summary_queryset = summary_queryset.annotate(
 		last_signature_accepted=Subquery(latest_sig_sub, output_field=BooleanField())
