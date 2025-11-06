@@ -567,6 +567,9 @@ def search_signables_view(request, target_class):
 			Q(description__icontains=q)
 			| Q(external_document_id__icontains=q)
 			| Q(payment_reason__icontains=q)
+			| Q(purchase_order__vendor__name__icontains=q)
+			| Q(purchase_order__vendor__internal_id__icontains=q)
+			| Q(purchase_order__vendor__email__icontains=q)
 		)
 	if po:
 		qs = qs.filter(purchase_order__po_id=po)
