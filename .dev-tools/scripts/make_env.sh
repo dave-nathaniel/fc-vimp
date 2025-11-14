@@ -24,6 +24,16 @@ fi
 # Create output file (will overwrite if exists)
 > "$OUTPUT_FILE"
 
+# Write a warning message that the .env should not be edited directly, instead use .overrides.env and .defaults.env
+echo "" >> "$OUTPUT_FILE"
+echo "# !!!! WARNING  !!!! " >> "$OUTPUT_FILE"
+echo "#   THE .ENV FILE SHOULD NOT BE EDITED DIRECTLY, INSTEAD USE .OVERRIDES.ENV AND .DEFAULTS.ENV TO OVERRIDE VARIABLES" >> "$OUTPUT_FILE"
+echo "#   TO EDIT THE .ENV FILE, EDIT THE .OVERRIDES.ENV AND .DEFAULTS.ENV FILES THEN RUN THIS SCRIPT" >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
+
 # Extract variable assignments from overrides file (if it exists)
 declare -A OVERRIDE_VARS
 if [ -f "$OVERRIDES_FILE" ]; then
