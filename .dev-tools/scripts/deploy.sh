@@ -18,7 +18,7 @@ NC='\033[0m' # No Color
 
 # Check if .defaults.env file exists
 if [ -f .defaults.env ]; then
-    ./.dev-tools/scripts/make_env.sh
+    bash ./.dev-tools/scripts/make_env.sh
 else
     echo -e "${RED}Error: .defaults.env not found!${NC}"
     echo "Please create a .defaults.env file in the root directory"
