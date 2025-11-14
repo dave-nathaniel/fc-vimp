@@ -31,37 +31,37 @@ if [ ! -f .env ]; then
 fi
 
 echo "Step 1: Stopping any existing containers..."
-docker-compose down
+docker compose down
 
 echo ""
 echo "Step 2: Building Docker images..."
-docker-compose build --no-cache
+docker compose build --no-cache
 
 echo ""
 echo "Step 3: Starting database and Redis services..."
-docker-compose up -d db redis
+docker compose up -d db redis
 
 echo "Waiting for database to be ready..."
 sleep 15
 
 echo ""
 echo "Step 4: Running database migrations..."
-docker-compose run --rm web python manage.py migrate
+docker compose run --rm web python manage.py migrate
 
 echo ""
 echo "Step 5: Collecting static files..."
-docker-compose run --rm web python manage.py collectstatic --noinput
+docker compose run --rm web python manage.py collectstatic --noinput
 
 echo ""
 echo "Step 6: Creating superuser (optional)..."
 read -p "Do you want to create a superuser? (y/n): " CREATE_SUPERUSER
 if [ "$CREATE_SUPERUSER" = "y" ]; then
-    docker-compose run --rm web python manage.py createsuperuser
+    docker compose run --rm web python manage.py createsuperuser
 fi
 
 echo ""
 echo "Step 7: Starting all services..."
-docker-compose up -d
+docker compose up -d
 
 echo ""
 echo -e "${GREEN}=================================================="
@@ -74,11 +74,11 @@ echo "  - Django Admin: http://localhost/admin"
 echo "  - Direct Django: http://localhost:8000"
 echo ""
 echo "Useful commands:"
-echo "  - View logs: docker-compose logs -f"
-echo "  - View specific service logs: docker-compose logs -f web"
-echo "  - Stop services: docker-compose down"
-echo "  - Restart services: docker-compose restart"
-echo "  - Run Django commands: docker-compose exec web python manage.py [command]"
+echo "  - View logs: docker compose logs -f"
+echo "  - View specific service logs: docker compose logs -f web"
+echo "  - Stop services: docker compose down"
+echo "  - Restart services: docker compose restart"
+echo "  - Run Django commands: docker compose exec web python manage.py [command]"
 echo ""
 echo -e "${YELLOW}Next steps:${NC}"
 echo "  1. Update nginx/conf.d/django.conf with your domain name"
