@@ -30,7 +30,7 @@ ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(
 
 CORS_ORIGIN_ALLOW_ALL = True
 
-# CSRF_TRUSTED_ORIGINS = ['localhost:3000', '20.101.63.100', "*.wajesmarthrms.website"]
+CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', default='').split(',')
 
 AUTH_USER_MODEL = 'core_service.CustomUser'
 
@@ -296,15 +296,6 @@ DATABASES = {
 		'CONN_MAX_AGE': 600,  # 10 minutes connection reuse
 		'CONN_HEALTH_CHECKS': True,  # Validate connections before use
 	},
-	# postgres cache
-	# 'postgres': {
-	# 	'ENGINE': 'django.db.backends.postgresql',
-	# 	'NAME': os.getenv('PG_DB_NAME', 'django-cache'),
-	# 	'USER': os.getenv('PG_DB_USER', 'postgres'),
-	# 	'PASSWORD': os.getenv('PG_DB_PASSWORD', 'postgres'),
-	# 	'HOST': os.getenv('PG_DB_HOST', 'localhost'),
-	# 	'PORT': os.getenv('PG_DB_PORT', '5432'),
-	# }
 }
 
 # Redis Cache Configuration
@@ -328,10 +319,6 @@ CACHES = {
 		'KEY_PREFIX': 'vimp_prod',
 		'VERSION': 1,
 	},
-	# "memcached": {
-	# 	"BACKEND": "django.core.cache.backends.memcached.PyMemcacheCache",
-	# 	"LOCATION": "127.0.0.1:11211",
-	# }
 }
 
 # Session and Cache Configuration
