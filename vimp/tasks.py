@@ -416,7 +416,7 @@ def notify_approval_required(signable):
 		Send an email notification to the users in the pending role who need to approve the given
 		signable object. The workflow data is modified for more straightforward rendering.
 	'''
-	portal_url = os.getenv('VIMP_PORTAL_URL')
+	portal_url = f'{os.getenv("VIMP_HOST")}/approval'
 	# Get the role of the current pending signatory
 	current_pending_signatory = signable.get('workflow')['pending_approval_from']
 	if not current_pending_signatory:
