@@ -12,24 +12,7 @@ def set_app_label(model_admin, app_label="app_settings"):
 	Override the app label of a model and ensure permissions are created for the new label.
 	"""
 	model_admin._meta.app_label = app_label  # Change the app label
-	# Ensure permissions are created for the new app_label
-	content_type, created = ContentType.objects.get_or_create(
-		model=model_admin._meta.model_name,
-		app_label=app_label
-	)
-	# Define the default Django model permissions 
-	default_permissions = ['add', 'change', 'delete', 'view']
-	# Create the default Django model permissions for the new app_label and model_name
-	for perm in default_permissions:
-		codename = f"{perm}_{model_admin._meta.model_name}"
-		permission, created = Permission.objects.get_or_create(
-			codename=codename,
-			content_type=content_type,
-			defaults={'name': f'Can {perm} {model_admin._meta.verbose_name}'}
-		)
-		if created:
-			print(f"Created permission: {permission}")
-
+	# Actual permission creation is handled in AppSettingsConfig.ready() via post_migrate.
 	return model_admin
 
 
