@@ -16,18 +16,13 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-# Check if .env file exists
-if [ ! -f .env ]; then
-    echo -e "${YELLOW}Warning: .env file not found!${NC}"
-    echo "Creating .env from .env.defaults..."
-    
-    if [ -f .defaults.env ]; then
-        ./.dev-tools/scripts/make_env.sh
-    else
-        echo -e "${RED}Error: .defaults.env not found!${NC}"
-        echo "Please create a .defaults.env file in the root directory"
-        exit 1
-    fi
+# Check if .defaults.env file exists
+if [ -f .defaults.env ]; then
+    ./.dev-tools/scripts/make_env.sh
+else
+    echo -e "${RED}Error: .defaults.env not found!${NC}"
+    echo "Please create a .defaults.env file in the root directory"
+    exit 1
 fi
 
 echo "Step 1: Stopping any existing containers..."
