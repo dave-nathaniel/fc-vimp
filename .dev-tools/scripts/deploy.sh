@@ -54,8 +54,14 @@ if [ "$CREATE_SUPERUSER" = "y" ]; then
     docker compose run --rm web python manage.py createsuperuser
 fi
 
+echo "Step 7: Syncing certbot path..."
+read -p "Do you want to sync certbot path? (y/n): " SYNC_CERTBOT_PATH
+if [ "$SYNC_CERTBOT_PATH" = "y" ]; then
+    sudo rsync -av /etc/letsencrypt/ ./certbot/conf/
+fi
+
 echo ""
-echo "Step 7: Starting all services..."
+echo "Step 8: Starting all services..."
 docker compose up -d
 
 echo ""
@@ -74,10 +80,4 @@ echo "  - View specific service logs: docker compose logs -f web"
 echo "  - Stop services: docker compose down"
 echo "  - Restart services: docker compose restart"
 echo "  - Run Django commands: docker compose exec web python manage.py [command]"
-echo ""
-echo -e "${YELLOW}Next steps:${NC}"
-echo "  1. Update nginx/conf.d/django.conf with your domain name"
-echo "  2. Configure SSL certificates for HTTPS"
-echo "  3. Review and adjust your .env file"
-echo "  4. Set up database backups"
 echo ""

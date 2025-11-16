@@ -26,17 +26,18 @@ SECRET_KEY = os.getenv('DJANGO_SECRET')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = bool(int(os.getenv('DEBUG', default="0")))
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
-
 CORS_ORIGIN_ALLOW_ALL = True
-
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
 CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', default='').split(',')
-
-AUTH_USER_MODEL = 'core_service.CustomUser'
 
 # Trust proxy headers (important for Docker/nginx setup)
 USE_X_FORWARDED_HOST = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+FORCE_SCRIPT_NAME = os.getenv("FORCE_SCRIPT_NAME", "")
+
+
+# Application definition
 
 # EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
@@ -49,7 +50,8 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_PASSWORD")
 USE_L10N = False
 USE_THOUSAND_SEPARATOR = True
 
-# Application definition
+AUTH_USER_MODEL = 'core_service.CustomUser'
+
 INSTALLED_APPS = [
 	'unfold',
 	'django.contrib.admin',
