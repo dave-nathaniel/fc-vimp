@@ -163,7 +163,8 @@ class GoodsReceivedNoteBriefSerializer(serializers.ModelSerializer):
 	invoiced_quantity = serializers.SerializerMethodField()
 	invoice_status_code = serializers.SerializerMethodField()
 	invoice_status_text = serializers.SerializerMethodField()
-
+	grn_line_items = GoodsReceivedLineItemBriefSerializer(many=True, read_only=True)
+	
 	def get_purchase_order(self, obj):
 		po = obj.purchase_order
 		return {
@@ -219,5 +220,5 @@ class GoodsReceivedNoteBriefSerializer(serializers.ModelSerializer):
 		model = GoodsReceivedNote
 		fields = [
 			'grn_number', 'created', 'total_value_received', 'invoiced_quantity', 'invoice_status_code',
-			'invoice_status_text', 'stores', 'purchase_order'
+			'invoice_status_text', 'stores', 'purchase_order', 'grn_line_items'
 		]
