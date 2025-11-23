@@ -39,8 +39,7 @@ FORCE_SCRIPT_NAME = os.getenv("FORCE_SCRIPT_NAME", "")
 
 # Application definition
 
-# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
 EMAIL_USE_TLS = True
 EMAIL_HOST = os.getenv("SMTP_HOST")
 EMAIL_PORT = os.getenv("SMTP_PORT")
