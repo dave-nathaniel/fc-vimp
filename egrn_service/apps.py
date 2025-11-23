@@ -25,4 +25,7 @@ class EgrnServiceConfig(AppConfig):
 	verbose_name = '2. Goods Receipt Note'
 	
 	def ready(self):
-		create_default_store(sender=self)
+		"""Delay default-store creation until after migrations are applied."""
+		from django.db.models.signals import post_migrate
+		# Connect signal only once
+		post_migrate.connect(create_default_store, sender=self)
