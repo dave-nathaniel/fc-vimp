@@ -24,7 +24,7 @@ class CustomPagination(PageNumberPagination):
 	page_query_param = "page"
 	page_size_query_param = "size"
 	page_size = 15  # Default page size from settings
-	max_page_size = 100  # Increased from 30 for better flexibility
+	max_page_size = 1000
 
 	def paginate_queryset(self, queryset, request, view=None, order_by=None):
 		# Handle both QuerySets and regular lists
@@ -93,7 +93,7 @@ class CustomPagination(PageNumberPagination):
 				try:
 					page_size = int(page_size)
 					if page_size > 0:
-						return min(page_size, self.max_page_size)
+						return page_size
 				except (KeyError, ValueError):
 					pass
 		
@@ -103,7 +103,7 @@ class CustomPagination(PageNumberPagination):
 			try:
 				limit = int(limit)
 				if limit > 0:
-					return min(limit, self.max_page_size)
+					return limit
 			except (KeyError, ValueError):
 				pass
 

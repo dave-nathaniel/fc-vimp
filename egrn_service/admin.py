@@ -3,6 +3,7 @@ from django.urls import path
 from django.shortcuts import render, redirect
 from django.contrib import messages
 from django.http import JsonResponse, HttpResponse
+import logging
 from django.utils.html import format_html
 from django.utils.safestring import mark_safe
 from unfold.admin import ModelAdmin
@@ -12,9 +13,25 @@ from django.db import models
 import random
 import string
 from datetime import datetime
-from .models import PurchaseOrder, PurchaseOrderLineItem, GoodsReceivedNote, GoodsReceivedLineItem
+from copy import deepcopy
+from decimal import Decimal
+import uuid
+from django_q.tasks import async_task
+from .models import (
+	PurchaseOrder, PurchaseOrderLineItem, GoodsReceivedNote,
+	GoodsReceivedLineItem, StockConsumptionRecord
+)
+from byd_service.rest import RESTServices
 from django.contrib.auth.decorators import user_passes_test
 from django.contrib.admin.views.decorators import staff_member_required
+
+
+def _get_latest_unit_price(product_id):
+	try:
+		line_item = PurchaseOrderLineItem.objects.filter(product_id=product_id).order_by('-id').first()
+		return float(line_item.unit_price) if line_item else 0.0
+	except Exception:
+		return 0.0
 
 
 class PurchaseOrderAdmin(ModelAdmin):
@@ -54,6 +71,9 @@ class PurchaseOrderLineItemAdmin(ModelAdmin):
 	]
 
 
+byd_rest_services = RESTServices()
+
+
 class GoodsReceivedNoteAdmin(ModelAdmin):
 	# Search fields: grn_number
 	search_fields = [
@@ -63,6 +83,64 @@ class GoodsReceivedNoteAdmin(ModelAdmin):
 		'purchase_order__vendor__byd_internal_id',
 		'purchase_order__po_id'
 	]
+	actions = ['nullify_grn']
+
+	def _build_cancel_payload(self, grn):
+		payload = grn.inbound_delivery_metadata.get('payload')
+		if not payload:
+			raise ValueError("Inbound delivery payload not available.")
+
+		cancel_payload = deepcopy(payload)
+		notification_id = grn.inbound_delivery_notification_id or str(grn.grn_number)
+		cancel_payload["ID"] = f"{notification_id}-CAN-{uuid.uuid4().hex[:4].upper()}"
+		cancel_payload["Item"] = []
+
+		for item in payload["Item"]:
+			cancel_item = deepcopy(item)
+			quantity = Decimal(cancel_item["ItemDeliveryQuantity"]["Quantity"])
+			cancel_item["ItemDeliveryQuantity"]["Quantity"] = str(-abs(quantity))
+			if "QuantityTypeCode" not in cancel_item["ItemDeliveryQuantity"]:
+				cancel_item["ItemDeliveryQuantity"]["QuantityTypeCode"] = cancel_item["ItemDeliveryQuantity"].get("UnitCode")
+			if cancel_item.get("ItemInboundDeliveryRequestReference"):
+				cancel_item["ItemInboundDeliveryRequestReference"]["ID"] = cancel_payload["ID"]
+			cancel_payload["Item"].append(cancel_item)
+
+		if "ItemInboundDeliveryRequestReference" in cancel_payload:
+			cancel_payload["ItemInboundDeliveryRequestReference"]["ID"] = cancel_payload["ID"]
+		return cancel_payload
+
+	def nullify_grn(self, request, queryset):
+		success_count = 0
+		error_messages = []
+		for grn in queryset:
+			if grn.is_nullified:
+				error_messages.append(f"GRN {grn.grn_number} already nullified.")
+				continue
+			try:
+				cancel_payload = self._build_cancel_payload(grn)
+				async_task(
+					'vimp.tasks.cancel_inbound_delivery_notification_on_byd',
+					grn.id,
+					cancel_payload,
+					q_options={
+						'task_name': f'Cancel-Inbound-Notif-{grn.grn_number}-ByD'
+					}
+				)
+				grn.inbound_delivery_metadata.setdefault("nullifications_pending", []).append({
+					"payload": cancel_payload,
+					"queued_at": datetime.utcnow().isoformat(),
+				})
+				grn.save(update_fields=['inbound_delivery_metadata'])
+				success_count += 1
+			except Exception as exc:
+				error_messages.append(f"GRN {grn.grn_number}: {exc}")
+
+		if success_count:
+			self.message_user(request, f"{success_count} GRN(s) cancellation queued.", level=messages.SUCCESS)
+		for msg in error_messages:
+			self.message_user(request, msg, level=messages.ERROR)
+
+	nullify_grn.short_description = "Nullify selected GRNs in ByD"
 
 
 class GoodsReceivedLineItemAdmin(ModelAdmin):
@@ -153,6 +231,7 @@ def process_bulk_inventory_update(request):
 		
 		# Process inventory items
 		inventory_items = []
+		consumption_records = []
 		for _, row in df.iterrows():
 			try:
 				from byd_service.goods_issue import format_inventory_item
@@ -167,6 +246,16 @@ def process_bulk_inventory_update(request):
 					unit_code=str(row['unit_code']),
 				)
 				inventory_items.append(item)
+				consumption_records.append({
+					"product_id": str(row['material_internal_id']),
+					"product_name": row.get('product_name') or "",
+					"quantity": float(row['quantity']),
+					"unit_cost": _get_latest_unit_price(str(row['material_internal_id'])),
+					"unit_of_measurement": str(row['unit_code']),
+					"cost_center": cost_center_id,
+					"external_item_id": str(row['external_item_id']),
+					"metadata": row.to_dict(),
+				})
 			except Exception as e:
 				return JsonResponse({'success': False, 'error': f'Error processing row {len(inventory_items) + 1}: {str(e)}'})
 		
@@ -186,6 +275,20 @@ def process_bulk_inventory_update(request):
 			success = post_goods_consumption_for_cost_center(**request_data)
 			
 			if success:
+				for record in consumption_records:
+					try:
+						StockConsumptionRecord.objects.create(
+							product_id=record["product_id"],
+							product_name=record["product_name"],
+							quantity=record["quantity"],
+							unit_cost=record["unit_cost"],
+							unit_of_measurement=record["unit_of_measurement"],
+							cost_center=record["cost_center"],
+							external_item_id=record["external_item_id"],
+							metadata=record["metadata"],
+						)
+					except Exception as e:
+						logging.error(f"Failed to persist stock consumption record: {e}")
 				messages.success(request, f'Successfully processed {len(inventory_items)} inventory items')
 				return JsonResponse({'success': True, 'message': f'Successfully processed {len(inventory_items)} inventory items'})
 			else:

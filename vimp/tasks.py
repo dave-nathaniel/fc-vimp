@@ -25,6 +25,7 @@ import byd_service.util as byd_util
 from byd_service.models import get_or_create_byd_posting_status
 
 import time
+from django.utils import timezone
 from django_q.tasks import async_task
 
 load_dotenv()
@@ -305,12 +306,28 @@ def create_inbound_delivery_notification_on_byd(grn: GoodsReceivedNote):
 		# Create the notification
 		response = rest_client.create_inbound_delivery_notification(payload)
 		object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+
+		grn.inbound_delivery_object_id = object_id
+		grn.inbound_delivery_notification_id = notification_id
+		grn.inbound_delivery_metadata = {
+			"payload": payload,
+			"create_response": response
+		}
+		grn.save(update_fields=[
+			'inbound_delivery_object_id',
+			'inbound_delivery_notification_id',
+			'inbound_delivery_metadata'
+		])
 		
 		# Add a delay before posting
 		time.sleep(5)
 		
 		# Post the notification
-		response = rest_client.post_delivery_notification(object_id)
+		post_response = rest_client.post_delivery_notification(object_id)
+		grn.inbound_delivery_metadata.update({
+			"post_response": post_response,
+		})
+		grn.save(update_fields=['inbound_delivery_metadata'])
 		
 		# Mark as success
 		status.mark_success(
@@ -488,6 +505,48 @@ def send_otp_to_user(args):
 	except ObjectDoesNotExist:
 		pass
 	return True
+
+
+def cancel_inbound_delivery_notification_on_byd(grn_id: int, cancel_payload: dict):
+	rest_client = byd_rest.RESTServices()
+	grn = GoodsReceivedNote.objects.get(id=grn_id)
+	status = get_or_create_byd_posting_status(
+		grn,
+		request_payload=cancel_payload,
+		task_name='vimp.tasks.cancel_inbound_delivery_notification_on_byd'
+	)
+
+	try:
+		response = rest_client.create_inbound_delivery_notification(cancel_payload)
+		object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+		if not object_id:
+			raise ValueError("ByD did not return ObjectID for cancellation.")
+
+		time.sleep(5)
+
+		post_response = rest_client.post_delivery_notification(object_id)
+
+		status.mark_success({
+			"object_id": object_id,
+			"post_response": post_response,
+		})
+
+		grn.inbound_delivery_metadata.setdefault("nullifications", []).append({
+			"payload": cancel_payload,
+			"create_response": response,
+			"post_response": post_response,
+			"posting_status_id": status.id,
+			"cancelled_on": timezone.now().isoformat(),
+		})
+		grn.save(update_fields=['inbound_delivery_metadata'])
+		grn.mark_nullified(reason="Admin-triggered nullification")
+
+		return True
+
+	except Exception as exc:
+		status.mark_failure(str(exc))
+		status.increment_retry()
+		raise
 
 
 def send_reset_link_to_user(args):

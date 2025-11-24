@@ -17,8 +17,13 @@ from core_service.cache_utils import (
     cache_result, CacheManager, get_or_set_cache, 
     invalidate_user_cache, CachedPagination
 )
+from collections import defaultdict
 
-from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem, ProductConfiguration, Store
+from .models import (
+	GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder,
+	PurchaseOrderLineItem, ProductConfiguration, Store,
+	StockConsumptionRecord
+)
 from .serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer, PurchaseOrderSerializer
 
 
@@ -342,56 +347,74 @@ def weighted_average(request):
 		Get the weighted average cost for all products or for a specific product, with a history of purchases.
 		Results are cached for 30 minutes to improve performance.
 	'''
-	def calculate_wac(product_line_items, cumulative_quantity, cumulative_cost):
+	def calculate_wac(events, product_name, product_id, cumulative_quantity, cumulative_cost):
 		# Dictionary to store results grouped by product_id
 		product_data = {
-			"product_id": product_line_items[0].purchase_order_line_item.product_id,
-			"product_name": product_line_items[0].purchase_order_line_item.product_name,
+			"product_id": product_id,
+			"product_name": product_name,
 			"starting_quantity": cumulative_quantity,
 			"starting_cost": cumulative_cost / cumulative_quantity if cumulative_quantity > 0 else 0,
 			"cumulative_quantity": cumulative_quantity,
 			"cumulative_cost": cumulative_cost,
-			"wac": 0,
+			"wac": round(cumulative_cost / cumulative_quantity, 2) if cumulative_quantity > 0 else 0,
 			"history": [],
 		}
 
-		for line_item in product_line_items:
-			purchase_quantity = line_item.quantity_received
-			purchase_cost = purchase_quantity * line_item.purchase_order_line_item.unit_price
-			
-			cumulative_quantity = product_data["cumulative_quantity"]
-			cumulative_cost = product_data["cumulative_cost"]
+		def safe_wac(quantity, cost):
+			return round(cost / quantity, 2) if quantity > 0 else 0
 
-			# Update cumulative values with new purchase
-			cumulative_quantity += purchase_quantity
-			cumulative_cost += purchase_cost
+		for event in events:
+			if event["type"] == "receive":
+				line_item = event["line_item"]
+				purchase_quantity = line_item.quantity_received
+				purchase_cost = purchase_quantity * line_item.purchase_order_line_item.unit_price
+				
+				product_data["cumulative_quantity"] += purchase_quantity
+				product_data["cumulative_cost"] += purchase_cost
+				product_data["wac"] = safe_wac(
+					product_data["cumulative_quantity"],
+					product_data["cumulative_cost"],
+				)
 
-			# Calculate new WAC for the product
-			new_wac = cumulative_cost / cumulative_quantity
+				product_data["history"].append({
+					"event": "receipt",
+					"date": line_item.date_received,
+					"store": line_item.purchase_order_line_item.delivery_store.store_name,
+					"purchase_quantity": purchase_quantity,
+					"purchase_price_per_unit": line_item.purchase_order_line_item.unit_price,
+					"purchase_cost": purchase_cost,
+					"cumulative_quantity": product_data["cumulative_quantity"],
+					"cumulative_cost": product_data["cumulative_cost"],
+					"wac": product_data["wac"],
+					"grn": GoodsReceivedLineItemSerializer(line_item).data,
+				})
+			else:
+				record = event["record"]
+				consumed_quantity = record.quantity
+				consumed_cost = record.total_cost
 
-			# Update product's current data
-			product_data.update({
-				"cumulative_quantity": cumulative_quantity,
-				"cumulative_cost": cumulative_cost,
-				"wac": round(new_wac, 2),
-			})
+				product_data["cumulative_quantity"] = max(product_data["cumulative_quantity"] - consumed_quantity, 0)
+				product_data["cumulative_cost"] = max(product_data["cumulative_cost"] - consumed_cost, 0)
+				product_data["wac"] = safe_wac(
+					product_data["cumulative_quantity"],
+					product_data["cumulative_cost"],
+				)
 
-			# Add history entry
-			product_data["history"].append({
-				"date": line_item.date_received,
-				"store": line_item.purchase_order_line_item.delivery_store.store_name,
-				"purchase_quantity": purchase_quantity,
-				"purchase_price_per_unit": purchase_cost / purchase_quantity,
-				"purchase_cost": purchase_cost,
-				"cumulative_quantity": cumulative_quantity,
-				"cumulative_cost": cumulative_cost,
-				"wac": round(new_wac, 2),
-				"grn": GoodsReceivedLineItemSerializer(line_item).data,
-			})
+				product_data["history"].append({
+					"event": "consumption",
+					"date": record.date_consumed,
+					"store": record.cost_center,
+					"consumed_quantity": consumed_quantity,
+					"consumption_unit_cost": record.unit_cost,
+					"consumption_cost": consumed_cost,
+					"cumulative_quantity": product_data["cumulative_quantity"],
+					"cumulative_cost": product_data["cumulative_cost"],
+					"wac": product_data["wac"],
+					"metadata": record.metadata,
+				})
 
-		# Convert defaultdict to a regular dict before returning
 		return product_data
-	
+
 	products_wac = []
 	
 	try:
@@ -408,6 +431,14 @@ def weighted_average(request):
 			pc.product_id: pc for pc in 
 			ProductConfiguration.objects.filter(product_id__in=products)
 		}
+
+		# Track stock consumption records per product
+		consumption_records_by_product = defaultdict(list)
+		consumption_queryset = StockConsumptionRecord.objects.filter(
+			product_id__in=products
+		).order_by('product_id', 'date_consumed')
+		for record in consumption_queryset:
+			consumption_records_by_product[record.product_id].append(record)
 		
 		# Apply date filter at the queryset level if provided
 		date_filter = {}
@@ -437,19 +468,43 @@ def weighted_average(request):
 		
 		for product_id, line_items_group in line_items_by_product:
 			line_items_list = list(line_items_group)
-			if not line_items_list:
+			if not line_items_list and not consumption_records_by_product.get(product_id):
 				continue
-				
+
 			# Get product config data efficiently
 			product_config = product_configs.get(product_id)
 			cumulative_quantity, cumulative_cost = 0, 0
 			if product_config and hasattr(product_config, 'metadata') and product_config.metadata:
 				cumulative_quantity = product_config.metadata.get('inital_quantity', 0)
 				cumulative_cost = product_config.metadata.get('initial_cost', 0) * cumulative_quantity
-			
-			# Calculate and add the WAC for the current product to the results list
+
+			events = []
+			for line_item in line_items_list:
+				events.append({
+					"type": "receive",
+					"date": line_item.date_received,
+					"line_item": line_item,
+					"product_id": product_id,
+				})
+			for record in consumption_records_by_product.get(product_id, []):
+				events.append({
+					"type": "consumption",
+					"date": record.date_consumed,
+					"record": record,
+					"product_id": product_id,
+				})
+
+			events.sort(key=lambda event: event["date"])
+
+			product_name = (
+				line_items_list[0].purchase_order_line_item.product_name
+				if line_items_list else
+				product_config.product_name if product_config else
+				product_id
+			)
+
 			products_wac.append(
-				calculate_wac(line_items_list, cumulative_quantity, cumulative_cost)
+				calculate_wac(events, product_name, product_id, cumulative_quantity, cumulative_cost)
 			)
 			
 		# Paginate the results
