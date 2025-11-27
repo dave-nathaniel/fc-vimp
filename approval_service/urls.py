@@ -1,5 +1,13 @@
 from django.urls import path
-from approval_service.views import sign_signable_view, get_user_signable_view, get_signable_view, track_signable_view, get_signable_summary_view, search_signables_view
+from approval_service.views import (
+	sign_signable_view,
+	get_user_signable_view,
+	get_signable_view,
+	track_signable_view,
+	get_signable_summary_view,
+	search_signables_view,
+	download_signables_excel_view,
+)
 
 
 urlpatterns = [
@@ -15,4 +23,6 @@ urlpatterns = [
 	path('summary/<str:target_class>', get_signable_summary_view),
 	# Search signables
 	path('search/<str:target_class>', search_signables_view),
+	# Download signables as Excel
+	path('download/<str:target_class>', download_signables_excel_view),
 ]

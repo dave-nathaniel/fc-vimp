@@ -1,17 +1,36 @@
+import operator
+import os
+from decimal import Decimal
+from functools import reduce
+from uuid import uuid4
+
+from django.conf import settings
 from django.contrib.contenttypes.models import ContentType
+from django.core.cache import cache
+from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.db.models import (
+	Q,
+	Prefetch,
+	Count,
+	Exists,
+	OuterRef,
+	Value,
+	Subquery,
+	IntegerField,
+	QuerySet,
+	Sum,
+	BooleanField,
+)
+from django.utils import timezone
 from django_auth_adfs.rest_framework import AdfsAccessTokenAuthentication
+from openpyxl import Workbook
 from rest_framework import status
 from rest_framework.decorators import permission_classes, authentication_classes, api_view
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.views import APIView
-from invoice_service.serializers import InvoiceSerializer
-from django.core.exceptions import ObjectDoesNotExist, ValidationError
-from django.db.models import Q, Prefetch, Count, Exists, OuterRef, Value, Subquery, IntegerField, QuerySet, Sum, BooleanField
-from functools import reduce
-import operator
 from rest_framework.request import Request
+from rest_framework.views import APIView
 
-from django.core.cache import cache
+from invoice_service.serializers import InvoiceSerializer
 
 # Import optimization utilities
 from core_service.cache_utils import (
@@ -21,13 +40,27 @@ from core_service.cache_utils import (
 
 from .models import Keystore, Signature
 from .serializers import SignatureSerializer
-from invoice_service.models import Invoice, WORKFLOW_RULES
+from invoice_service.models import Invoice, InvoiceLineItem, WORKFLOW_RULES
 from overrides.rest_framework import APIResponse, CustomPagination
 from collections import defaultdict
 from .utils import ApprovalUtilities
 
 
 paginator = CustomPagination()
+
+EXPORT_HEADERS = [
+	"DATE",
+	"VENDORS NAME",
+	"BYD ID",
+	"EXTERNAL ID",
+	"GRN",
+	"DESCRIPTION",
+	"AMOUNT",
+	"ITEMS",
+	"STORE",
+	"SENT BY",
+	"SIGNATORIES",
+]
 
 
 def get_signable_class(target_class: str) -> object:
@@ -540,92 +573,12 @@ def search_signables_view(request, target_class):
 	if not target:
 		return APIResponse(f"No signable object of type {target_class}.", status=status.HTTP_400_BAD_REQUEST)
 
-	signable_serializer, signable_class = target.get("serializer"), target.get("class")
-	relevant_permissions = sorted(list(set(target.get("signatories")) & set([
-		i.split(".")[1]
-		for i in request.user.get_all_permissions()
-		if i.startswith(f"{target.get('app_label')}.")
-	])))
-	content_type = ContentType.objects.get_for_model(signable_class)
-
-	qs = signable_class.objects.all()
-	# Restrict to signables for relevant roles
-	qs = qs.filter(signatories__contains=relevant_permissions)
-
-	# Query params
-	q = request.query_params.get("q", "").strip()
-	po = request.query_params.get("po", "").strip()
-	grn = request.query_params.get("grn", "").strip()
-	status_str = request.query_params.get("status", "all").strip().lower()
-	from_date = request.query_params.get("from_date")
-	to_date = request.query_params.get("to_date")
-	min_total = request.query_params.get("min_total")
-	max_total = request.query_params.get("max_total")
-
-	if q:
-		qs = qs.filter(
-			Q(description__icontains=q)
-			| Q(external_document_id__icontains=q)
-			| Q(payment_reason__icontains=q)
-			| Q(purchase_order__po_id__icontains=q)
-			| Q(purchase_order__vendor__user__first_name__icontains=q)
-			| Q(purchase_order__vendor__user__last_name__icontains=q)
-			| Q(purchase_order__vendor__user__email__icontains=q)
-			| Q(purchase_order__vendor__byd_internal_id__icontains=q)
-		)
-	if po:
-		qs = qs.filter(purchase_order__po_id=po)
-	if grn:
-		qs = qs.filter(grn__grn_number__icontains=grn) | qs.filter(grn__id=grn)
-	if from_date:
-		qs = qs.filter(date_created__date__gte=from_date)
-	if to_date:
-		qs = qs.filter(date_created__date__lte=to_date)
-	if min_total:
-		qs = qs.filter(net_total__gte=min_total)
-	if max_total:
-		qs = qs.filter(net_total__lte=max_total)
-
-	# Status logic
-	if status_str == "pending":
-		qs = qs.filter(current_pending_signatory__in=relevant_permissions)
-	elif status_str == "completed":
-		qs = qs.annotate(
-			user_has_signed=Exists(
-				Signature.objects.filter(
-					signable_type=content_type,
-					signable_id=OuterRef('pk'),
-					metadata__acting_as__in=relevant_permissions
-				)
-			)
-		).filter(user_has_signed=True)
-	elif status_str == "approved":
-		qs = qs.annotate(
-			last_signature_accepted=Subquery(
-				Signature.objects.filter(
-					signable_type=content_type,
-					signable_id=OuterRef('pk')
-				).order_by('-date_signed').values('accepted')[:1],
-				output_field=BooleanField(),
-			)
-		).filter(last_signature_accepted=True)
-	elif status_str == "declined":
-		qs = qs.annotate(
-			last_signature_accepted=Subquery(
-				Signature.objects.filter(
-					signable_type=content_type,
-					signable_id=OuterRef('pk')
-				).order_by('-date_signed').values('accepted')[:1],
-				output_field=BooleanField(),
-			)
-		).filter(last_signature_accepted=False)
-	# 'all' returns everything for the role
+	signable_serializer = target.get("serializer")
+	qs, content_type, relevant_permissions = _build_search_signables_queryset(request, target)
 
 	# Efficient select/prefetch based on existing logic
 	qs = qs.select_related('purchase_order','purchase_order__vendor','grn','grn__purchase_order','grn__purchase_order__vendor')\
 		.prefetch_related('invoice_line_items','invoice_line_items__po_line_item','invoice_line_items__grn_line_item','grn__line_items','grn__line_items__purchase_order_line_item__delivery_store','grn__line_items__invoice_items')
-
-	qs = qs.order_by(request.query_params.get('order_by','-date_created'))
 
 	# Pagination
 	page = int(request.query_params.get('page',1))
@@ -639,6 +592,339 @@ def search_signables_view(request, target_class):
 		status=status.HTTP_200_OK,
 		data={"count": total_count, "results": data}
 	)
+
+
+def _build_search_signables_queryset(request: Request, target: dict):
+	signable_class = target.get("class")
+	approval_utilities = ApprovalUtilities(target)
+	relevant_permissions = approval_utilities.get_relevant_permissions(request.user)
+	content_type = ContentType.objects.get_for_model(signable_class)
+
+	queryset = signable_class.objects.all().filter(signatories__contains=relevant_permissions)
+
+	q = request.query_params.get("q", "").strip()
+	po = request.query_params.get("po", "").strip()
+	grn = request.query_params.get("grn", "").strip()
+	status_str = request.query_params.get("status", "all").strip().lower()
+	from_date = request.query_params.get("from_date")
+	to_date = request.query_params.get("to_date")
+	min_total = request.query_params.get("min_total")
+	max_total = request.query_params.get("max_total")
+
+	if q:
+		queryset = queryset.filter(
+			Q(description__icontains=q)
+			| Q(external_document_id__icontains=q)
+			| Q(payment_reason__icontains=q)
+			| Q(purchase_order__po_id__icontains=q)
+			| Q(purchase_order__vendor__user__first_name__icontains=q)
+			| Q(purchase_order__vendor__user__last_name__icontains=q)
+			| Q(purchase_order__vendor__user__email__icontains=q)
+			| Q(purchase_order__vendor__byd_internal_id__icontains=q)
+		)
+	if po:
+		queryset = queryset.filter(purchase_order__po_id=po)
+	if grn:
+		queryset = queryset.filter(grn__grn_number__icontains=grn) | queryset.filter(grn__id=grn)
+	if from_date:
+		queryset = queryset.filter(date_created__date__gte=from_date)
+	if to_date:
+		queryset = queryset.filter(date_created__date__lte=to_date)
+	if min_total:
+		queryset = queryset.filter(net_total__gte=min_total)
+	if max_total:
+		queryset = queryset.filter(net_total__lte=max_total)
+
+	if status_str == "pending":
+		queryset = queryset.filter(current_pending_signatory__in=relevant_permissions)
+	elif status_str == "completed":
+		queryset = queryset.annotate(
+			user_has_signed=Exists(
+				Signature.objects.filter(
+					signable_type=content_type,
+					signable_id=OuterRef('pk'),
+					metadata__acting_as__in=relevant_permissions
+				)
+			)
+		).filter(user_has_signed=True)
+	elif status_str == "approved":
+		queryset = queryset.annotate(
+			last_signature_accepted=Subquery(
+				Signature.objects.filter(
+					signable_type=content_type,
+					signable_id=OuterRef('pk')
+				).order_by('-date_signed').values('accepted')[:1],
+				output_field=BooleanField(),
+			)
+		).filter(last_signature_accepted=True)
+	elif status_str == "declined":
+		queryset = queryset.annotate(
+			last_signature_accepted=Subquery(
+				Signature.objects.filter(
+					signable_type=content_type,
+					signable_id=OuterRef('pk')
+				).order_by('-date_signed').values('accepted')[:1],
+				output_field=BooleanField(),
+			)
+		).filter(last_signature_accepted=False)
+
+	order_by = request.query_params.get('order_by', '-date_created')
+	queryset = queryset.order_by(order_by)
+
+	return queryset, content_type, relevant_permissions
+
+
+@api_view(["GET"])
+@permission_classes([IsAuthenticated])
+@authentication_classes([AdfsAccessTokenAuthentication])
+def download_signables_excel_view(request, target_class):
+	target = get_signable_class(target_class)
+	if not target:
+		return APIResponse(
+			f"No signable object of type {target_class}.",
+			status=status.HTTP_400_BAD_REQUEST
+		)
+
+	if target.get("class") is not Invoice:
+		return APIResponse(
+			"Excel export is currently supported for invoices only.",
+			status=status.HTTP_400_BAD_REQUEST
+		)
+
+	try:
+		queryset, content_type, _ = _build_search_signables_queryset(request, target)
+		signable_ids = list(queryset.values_list('id', flat=True))
+
+		if not signable_ids:
+			return APIResponse(
+				"No records matched the provided filters.",
+				status=status.HTTP_200_OK,
+				data={
+					"download_url": None,
+					"row_count": 0
+				}
+			)
+
+		items_map, stores_map, amount_map = _collect_invoice_line_items(signable_ids)
+		latest_signature_map, signatures_map = _collect_invoice_signatures(content_type, signable_ids)
+
+		target_slug = target_class.lower().replace(" ", "_")
+		file_path, row_count = _write_invoice_export_file(
+			request,
+			queryset,
+			target_slug,
+			amount_map,
+			items_map,
+			stores_map,
+			latest_signature_map,
+			signatures_map,
+		)
+
+		download_url = _build_media_download_url(request, file_path)
+
+		return APIResponse(
+			"Download ready.",
+			status=status.HTTP_200_OK,
+			data={
+				"download_url": download_url,
+				"row_count": row_count,
+			}
+		)
+	except Exception as exc:
+		return APIResponse(
+			f"Internal Error: {exc}",
+			status=status.HTTP_500_INTERNAL_SERVER_ERROR
+		)
+
+
+def _collect_invoice_line_items(invoice_ids: list):
+	items_map = defaultdict(list)
+	stores_map = defaultdict(list)
+	amount_map = defaultdict(lambda: Decimal('0'))
+	seen_stores = defaultdict(set)
+
+	if not invoice_ids:
+		return items_map, stores_map, amount_map
+
+	line_items = InvoiceLineItem.objects.filter(invoice_id__in=invoice_ids).select_related(
+		'po_line_item__delivery_store'
+	).values(
+		'invoice_id',
+		'po_line_item__product_name',
+		'po_line_item__delivery_store__store_name',
+		'net_total',
+	)
+
+	for line_item in line_items.iterator(chunk_size=1000):
+		invoice_id = line_item['invoice_id']
+		product_name = line_item.get('po_line_item__product_name')
+		if product_name:
+			items_map[invoice_id].append(product_name)
+
+		store_name = line_item.get('po_line_item__delivery_store__store_name')
+		if store_name and store_name not in seen_stores[invoice_id]:
+			stores_map[invoice_id].append(store_name)
+			seen_stores[invoice_id].add(store_name)
+
+		line_amount = line_item.get('net_total') or Decimal('0')
+		amount_map[invoice_id] += line_amount
+
+	return items_map, stores_map, amount_map
+
+
+def _collect_invoice_signatures(content_type: ContentType, invoice_ids: list):
+	latest_signature_map = {}
+	signatures_map = defaultdict(list)
+
+	if not invoice_ids:
+		return latest_signature_map, signatures_map
+
+	signatures = Signature.objects.select_related('signer').filter(
+		signable_type=content_type,
+		signable_id__in=invoice_ids
+	).order_by('-date_signed')
+
+	for signature in signatures.iterator(chunk_size=500):
+		entry = _format_signature_entry(signature)
+		if signature.signable_id not in latest_signature_map:
+			latest_signature_map[signature.signable_id] = entry
+		signatures_map[signature.signable_id].append(entry)
+
+	return latest_signature_map, signatures_map
+
+
+def _write_invoice_export_file(
+	request: Request,
+	queryset: QuerySet,
+	target_slug: str,
+	amount_map: dict,
+	items_map: dict,
+	stores_map: dict,
+	latest_signature_map: dict,
+	signatures_map: dict,
+):
+	download_dir = _ensure_download_dir(target_slug)
+	user_identifier = getattr(request.user, 'id', None) or 'anonymous'
+	filename = f"{target_slug}_signables_{user_identifier}_{timezone.now().strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}.xlsx"
+	file_path = os.path.join(download_dir, filename)
+
+	workbook = Workbook(write_only=True)
+	worksheet = workbook.create_sheet(title="Signables")
+	worksheet.append(EXPORT_HEADERS)
+
+	row_count = 0
+	base_fields = (
+		'id',
+		'date_created',
+		'purchase_order__vendor__user__first_name',
+		'purchase_order__vendor__user__last_name',
+		'purchase_order__vendor__user__username',
+		'purchase_order__vendor__user__email',
+		'purchase_order__vendor__byd_internal_id',
+		'external_document_id',
+		'grn__grn_number',
+		'description',
+	)
+
+	for record in queryset.values(*base_fields).iterator(chunk_size=500):
+		worksheet.append(
+			_build_invoice_export_row(
+				record,
+				amount_map,
+				items_map,
+				stores_map,
+				latest_signature_map,
+				signatures_map,
+			)
+		)
+		row_count += 1
+
+	workbook.save(file_path)
+	workbook.close()
+	return file_path, row_count
+
+
+def _build_invoice_export_row(
+	record: dict,
+	amount_map: dict,
+	items_map: dict,
+	stores_map: dict,
+	latest_signature_map: dict,
+	signatures_map: dict,
+):
+	invoice_id = record.get('id')
+	amount_value = amount_map.get(invoice_id, Decimal('0'))
+	grn_value = record.get('grn__grn_number')
+
+	return [
+		_format_datetime(record.get('date_created')),
+		_format_vendor_name(record),
+		record.get('purchase_order__vendor__byd_internal_id') or '',
+		record.get('external_document_id') or '',
+		grn_value if grn_value is not None else '',
+		record.get('description') or '',
+		amount_value,
+		"\n".join(items_map.get(invoice_id, [])),
+		"\n".join(stores_map.get(invoice_id, [])),
+		latest_signature_map.get(invoice_id, ""),
+		"\n".join(signatures_map.get(invoice_id, [])),
+	]
+
+
+def _format_vendor_name(record: dict) -> str:
+	first_name = _safe_strip(record.get('purchase_order__vendor__user__first_name'))
+	last_name = _safe_strip(record.get('purchase_order__vendor__user__last_name'))
+	username = _safe_strip(record.get('purchase_order__vendor__user__username'))
+	email = _safe_strip(record.get('purchase_order__vendor__user__email'))
+	fallback = _safe_strip(record.get('purchase_order__vendor__byd_internal_id'))
+
+	full_name = f"{first_name} {last_name}".strip()
+	if full_name:
+		return full_name
+	if username:
+		return username
+	if email:
+		return email
+	return fallback
+
+
+def _safe_strip(value) -> str:
+	return str(value).strip() if value else ""
+
+
+def _format_signature_entry(signature: Signature) -> str:
+	signer = signature.signer
+	full_name = signer.get_full_name().strip()
+	if not full_name:
+		full_name = signer.username or signer.email or str(signer.pk)
+	role = signature.role or ''
+	return f"[{full_name} | {role} | {_format_datetime(signature.date_signed)}]"
+
+
+def _format_datetime(value) -> str:
+	if not value:
+		return ''
+	try:
+		value = timezone.localtime(value)
+	except (ValueError, TypeError):
+		pass
+	return value.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def _ensure_download_dir(target_slug: str) -> str:
+	download_dir = os.path.join(settings.MEDIA_ROOT, 'downloads', target_slug)
+	os.makedirs(download_dir, exist_ok=True)
+	return download_dir
+
+
+def _build_media_download_url(request: Request, file_path: str) -> str:
+	relative_path = os.path.relpath(file_path, settings.MEDIA_ROOT).replace(os.sep, '/')
+	media_url = settings.MEDIA_URL or '/media/'
+	if not media_url.endswith('/'):
+		media_url = f"{media_url}/"
+	if not media_url.startswith('/'):
+		media_url = f"/{media_url}"
+	return request.build_absolute_uri(f"{media_url}{relative_path}")
 
 
 
