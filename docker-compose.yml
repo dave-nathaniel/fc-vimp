@@ -61,6 +61,7 @@ services:
       - ./:/app
       - ./static:/app/static
       - ./media:/app/media
+      - ./html:/app/html:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -112,7 +113,7 @@ services:
       - ./nginx/conf.d:/etc/nginx/conf.d:ro
       - ./static:/app/static:ro
       - ./media:/app/media:ro
-      - ./html:/app/.html:ro
+      - ./html:/app/html:ro
       - ./certbot/conf:/etc/letsencrypt:ro  # For SSL certificates
       - ./certbot/www:/var/www/certbot:ro
     depends_on:
