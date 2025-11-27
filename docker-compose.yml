@@ -55,7 +55,7 @@ services:
       - DB_PORT=3306
       - REDIS_URL=redis://redis:6379/0
       - ALLOWED_HOSTS=${ALLOWED_HOSTS:-localhost,127.0.0.1}
-      # - FORCE_SCRIPT_NAME=/API
+      - FORCE_SCRIPT_NAME=/API
       - USE_X_FORWARDED_HOST=true
     volumes:
       - ./:/app
