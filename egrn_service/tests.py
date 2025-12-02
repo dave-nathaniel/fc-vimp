@@ -1,11 +1,17 @@
+import os
 from decimal import Decimal
-from django.test import TestCase
+from tempfile import TemporaryDirectory
+from urllib.parse import urlparse
+
+from django.conf import settings
+from django.test import TestCase, override_settings
 from django.db import models
 from django.utils import timezone
-from rest_framework.test import APIRequestFactory
+from rest_framework import status
+from rest_framework.test import APIRequestFactory, force_authenticate
 
 from core_service.models import CustomUser, VendorProfile
-from egrn_service.views import weighted_average
+from egrn_service.views import weighted_average, download_grns
 
 from .models import (
 	GoodsReceivedNote, GoodsReceivedLineItem,
@@ -94,4 +100,92 @@ class WeightedAverageConsumptionTest(TestCase):
 		events = [entry["event"] for entry in result["history"]]
 		self.assertIn("consumption", events)
 
-# Create your tests here.
+
+@override_settings(
+	CACHES={
+		'default': {
+			'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+			'LOCATION': 'egrn-service-tests',
+		}
+	},
+	CACHALOT_ENABLED=False,
+)
+class DownloadGRNsViewTests(TestCase):
+	def setUp(self):
+		self.factory = APIRequestFactory()
+		self.user = CustomUser.objects.create_user(
+			username="download_user",
+			email="download@example.com",
+			password="StrongPass123"
+		)
+		vendor_user = CustomUser.objects.create_user(
+			username="vendor_user",
+			email="vendor@example.com",
+			password="VendorPass123",
+			first_name="Vendor",
+			last_name="Owner",
+		)
+		self.vendor_profile = VendorProfile.objects.create(
+			user=vendor_user,
+			byd_internal_id="VEND-999",
+			byd_metadata={}
+		)
+		self.store = Store.objects.create(
+			store_name="Export Store",
+			store_email="store@example.com",
+			icg_warehouse_name="WH Export",
+			icg_warehouse_code="WH-EXP",
+			byd_cost_center_code="4100003-99",
+			metadata={}
+		)
+		self.purchase_order = PurchaseOrder.objects.create(
+			vendor=self.vendor_profile,
+			object_id="PO-EXPORT",
+			po_id=5555,
+			total_net_amount=Decimal('1500'),
+			date=timezone.now(),
+			metadata={}
+		)
+		self.po_line_item = PurchaseOrderLineItem.objects.create(
+			purchase_order=self.purchase_order,
+			delivery_store=self.store,
+			object_id="PO-EXPORT-LINE",
+			product_id="PROD-EXP",
+			product_name="Export Product",
+			quantity=Decimal('15'),
+			unit_price=Decimal('100'),
+			unit_of_measurement="EA",
+			metadata={'ProductID': 'PROD-EXP'}
+		)
+		self.grn = GoodsReceivedNote.objects.create(
+			purchase_order=self.purchase_order,
+			grn_number=7777
+		)
+		GoodsReceivedLineItem.objects.create(
+			grn=self.grn,
+			purchase_order_line_item=self.po_line_item,
+			quantity_received=Decimal('10'),
+			net_value_received=Decimal('1000'),
+			gross_value_received=Decimal('1050'),
+			metadata={}
+		)
+
+	def test_download_grns_generates_file_and_link(self):
+		with TemporaryDirectory() as tmp_dir, override_settings(MEDIA_ROOT=tmp_dir):
+			request = self.factory.get('/download-grns', {'po_id': self.purchase_order.po_id})
+			force_authenticate(request, user=self.user)
+			response = download_grns(request)
+			
+			self.assertEqual(response.status_code, status.HTTP_200_OK)
+			response_data = response.data.get('data', {})
+			self.assertEqual(response_data.get('row_count'), 1)
+			download_url = response_data.get('download_url')
+			self.assertIsNotNone(download_url)
+			
+			parsed = urlparse(download_url)
+			media_prefix = '/' + (settings.MEDIA_URL or 'media/').lstrip('/')
+			self.assertTrue(parsed.path.startswith(media_prefix))
+			
+			relative_path = parsed.path[len(media_prefix):]
+			file_path = os.path.join(tmp_dir, relative_path.replace('/', os.sep))
+			self.assertTrue(os.path.exists(file_path))

@@ -2,7 +2,12 @@
 import os, sys
 import logging
 from datetime import datetime
+from decimal import Decimal
+from uuid import uuid4
+
+from django.conf import settings
 from django.forms import model_to_dict
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes
 from django_auth_adfs.rest_framework import AdfsAccessTokenAuthentication
@@ -13,6 +18,7 @@ from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
 from django.db.models import Q
+from openpyxl import Workbook
 from core_service.cache_utils import (
     cache_result, CacheManager, get_or_set_cache, 
     invalidate_user_cache, CachedPagination
@@ -33,6 +39,18 @@ byd_rest_services = RESTServices()
 User = get_user_model()
 # Pagination
 paginator = CustomPagination()
+
+GRN_EXPORT_HEADERS = [
+	"GRN NUMBER",
+	"CREATED",
+	"PO NUMBER",
+	"VENDOR NAME",
+	"VENDOR BYD ID",
+	"TOTAL VALUE RECEIVED",
+	"INVOICE STATUS",
+	"DELIVERY STORES",
+	"ITEMS",
+]
 
 
 def delete_items(po):
@@ -233,66 +251,242 @@ def filter_grns(request, ):
 			- 'vendor_internal_id': Filter GRNs by vendor internal ID (from ByD)
 	'''
 	# Build all filters at database level for efficient querying
-	django_filters = {}
-	
-	for key in request.query_params:
-		# Convert the filter to the appropriate data type or the appropriate field name
-		if key == 'date_created':
-			django_filters['created'] = request.query_params.get(key)
-		if key == 'start_date':
-			django_filters['created__gte'] = request.query_params.get(key)
-		if key == 'end_date':
-			django_filters['created__lte'] = request.query_params.get(key)
-		if key in ['po_id']:
-			django_filters[f'purchase_order__{key}'] = request.query_params.get(key)
-		if key == 'vendor_internal_id':
-			django_filters['purchase_order__vendor__byd_internal_id'] = request.query_params.get(key)
-		# Move delivery_status_code filtering to database level
-		if key == 'delivery_status_code':
-			django_filters['purchase_order__delivery_status_code'] = request.query_params.get(key)
-		# Move invoice_status_code filtering to database level (assuming it's a field on GRN model)
-		if key == 'invoice_status_code':
-			django_filters['invoice_status_code'] = request.query_params.get(key)
-		if key == 'delivery_stores':
-			filter_stores = request.query_params.get(key)
-			# Split the store names and build a Q object for icontains lookup
-			store_names = [name.strip() for name in filter_stores.split(',') if name.strip()]
-			if store_names:
-				store_query = Q()
-				for name in store_names:
-					store_query |= Q(line_items__purchase_order_line_item__delivery_store__store_name__icontains=name)
-				# Save the Q object for later use
-				django_filters['__custom_store_name_q'] = store_query
-
 	try:
-		# Extract and remove the custom Q object if present
-		store_name_q = django_filters.pop('__custom_store_name_q', None)
-		
-		# Apply optimized queries with all filters at database level
-		grns = GoodsReceivedNote.objects.select_related(
-			'purchase_order',
-			'purchase_order__vendor'
-		).prefetch_related(
-			'line_items__purchase_order_line_item__delivery_store'
-		).filter(**django_filters)
-		
-		if store_name_q:
-			grns = grns.filter(store_name_q)
-		
-		# Ensure distinct results and proper ordering
-		grns = grns.distinct().order_by('-id')
+		grns = _build_filtered_grns_queryset(request)
 		
 		if grns.exists():
-			# Paginate the results - now much more efficient as all filtering is at DB level
 			paginated = paginator.paginate_queryset(grns, request)
-			# Serialize the paginated queryset
 			serialized_data = GoodsReceivedNoteSerializer(paginated, many=True, context={'request': request}).data
-			
-			# Return the filtered, paginated response
 			return paginator.get_paginated_response(serialized_data)
 		return APIResponse("No GRNs found for the specified criteria.", status=status.HTTP_404_NOT_FOUND)
 	except Exception as e:
 		return APIResponse(f"Internal Error: {e}", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([CombinedAuthentication])
+def download_grns(request):
+	try:
+		grns = _build_filtered_grns_queryset(request)
+		if not grns.exists():
+			return APIResponse("No GRNs found for the specified criteria.", status=status.HTTP_404_NOT_FOUND)
+		
+		grn_ids = list(grns.values_list('id', flat=True))
+		if not grn_ids:
+			return APIResponse("No GRNs found for the specified criteria.", status=status.HTTP_404_NOT_FOUND)
+		
+		items_map, stores_map, amount_map = _collect_grn_line_items(grn_ids)
+		file_path, row_count = _write_grn_export_file(
+			request=request,
+			queryset=grns,
+			amount_map=amount_map,
+			items_map=items_map,
+			stores_map=stores_map,
+		)
+		download_url = _build_media_download_url(request, file_path)
+		
+		return APIResponse(
+			"Download ready.",
+			status=status.HTTP_200_OK,
+			data={
+				"download_url": download_url,
+				"row_count": row_count,
+			}
+		)
+	except Exception as e:
+		return APIResponse(f"Internal Error: {e}", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _build_filtered_grns_queryset(request):
+	django_filters = {}
+	store_lookup_q = None
+	
+	for key in request.query_params:
+		value = request.query_params.get(key)
+		if value in [None, '']:
+			continue
+		if key == 'date_created':
+			django_filters['created'] = value
+		elif key == 'start_date':
+			django_filters['created__gte'] = value
+		elif key == 'end_date':
+			django_filters['created__lte'] = value
+		elif key == 'po_id':
+			django_filters['purchase_order__po_id'] = value
+		elif key == 'vendor_internal_id':
+			django_filters['purchase_order__vendor__byd_internal_id'] = value
+		elif key == 'delivery_status_code':
+			django_filters['purchase_order__delivery_status_code'] = value
+		elif key == 'invoice_status_code':
+			django_filters['invoice_status_code'] = value
+		elif key == 'delivery_stores':
+			store_identifiers = [identifier.strip() for identifier in value.split(',') if identifier.strip()]
+			if store_identifiers:
+				store_lookup_q = Q()
+				for identifier in store_identifiers:
+					store_lookup_q |= Q(line_items__purchase_order_line_item__delivery_store__store_name__icontains=identifier)
+					store_lookup_q |= Q(line_items__purchase_order_line_item__delivery_store__byd_cost_center_code__iexact=identifier)
+	
+	queryset = GoodsReceivedNote.objects.select_related(
+		'purchase_order',
+		'purchase_order__vendor',
+		'purchase_order__vendor__user',
+	).prefetch_related(
+		'line_items__purchase_order_line_item__delivery_store'
+	).filter(**django_filters)
+	
+	if store_lookup_q:
+		queryset = queryset.filter(store_lookup_q)
+	
+	order_by = request.query_params.get('order_by', '-id')
+	if order_by:
+		queryset = queryset.order_by(order_by)
+	
+	return queryset.distinct()
+
+
+def _collect_grn_line_items(grn_ids: list):
+	items_map = defaultdict(list)
+	stores_map = defaultdict(set)
+	amount_map = defaultdict(lambda: Decimal('0'))
+	
+	if not grn_ids:
+		return items_map, stores_map, amount_map
+	
+	line_items = GoodsReceivedLineItem.objects.filter(
+		grn_id__in=grn_ids
+	).select_related(
+		'purchase_order_line_item__delivery_store'
+	).values(
+		'grn_id',
+		'purchase_order_line_item__product_name',
+		'purchase_order_line_item__delivery_store__store_name',
+		'quantity_received',
+		'net_value_received',
+	)
+	
+	for line_item in line_items.iterator(chunk_size=1000):
+		grn_id = line_item['grn_id']
+		product_name = line_item.get('purchase_order_line_item__product_name') or "Item"
+		quantity = line_item.get('quantity_received')
+		items_map[grn_id].append(f"{product_name} (Qty: {_decimal_to_string(quantity)})")
+		
+		store_name = line_item.get('purchase_order_line_item__delivery_store__store_name')
+		if store_name:
+			stores_map[grn_id].add(store_name)
+		
+		line_amount = line_item.get('net_value_received') or Decimal('0')
+		amount_map[grn_id] += line_amount
+	
+	return items_map, stores_map, amount_map
+
+
+def _write_grn_export_file(request, queryset, amount_map, items_map, stores_map):
+	download_dir = _ensure_grn_download_dir()
+	user_identifier = getattr(request.user, 'id', None) or 'anonymous'
+	filename = f"grns_{user_identifier}_{timezone.now().strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}.xlsx"
+	file_path = os.path.join(download_dir, filename)
+	
+	workbook = Workbook(write_only=True)
+	worksheet = workbook.create_sheet(title="GRNs")
+	worksheet.append(GRN_EXPORT_HEADERS)
+	
+	row_count = 0
+	for grn in queryset.iterator(chunk_size=500):
+		worksheet.append(
+			_build_grn_export_row(
+				grn,
+				amount_map,
+				items_map,
+				stores_map,
+			)
+		)
+		row_count += 1
+	
+	workbook.save(file_path)
+	workbook.close()
+	return file_path, row_count
+
+
+def _build_grn_export_row(grn, amount_map, items_map, stores_map):
+	po = getattr(grn, 'purchase_order', None)
+	vendor_profile = getattr(po, 'vendor', None) if po else None
+	vendor_user = getattr(vendor_profile, 'user', None) if vendor_profile else None
+	vendor_name = _format_vendor_name(vendor_user) if vendor_user else ''
+	vendor_byd_id = getattr(vendor_profile, 'byd_internal_id', '') if vendor_profile else ''
+	
+	total_value = amount_map.get(grn.id, Decimal('0'))
+	stores_value = "\n".join(sorted(stores_map.get(grn.id, [])))
+	items_value = "\n".join(items_map.get(grn.id, []))
+	
+	return [
+		grn.grn_number,
+		_format_datetime(grn.created),
+		getattr(po, 'po_id', ''),
+		vendor_name,
+		vendor_byd_id,
+		float(total_value),
+		_format_invoice_status(grn),
+		stores_value,
+		items_value,
+	]
+
+
+def _format_vendor_name(user):
+	if not user:
+		return ''
+	full_name = (user.get_full_name() or '').strip()
+	if full_name:
+		return full_name
+	if user.username:
+		return user.username
+	return user.email or ''
+
+
+def _format_invoice_status(grn):
+	code = getattr(grn, 'invoice_status_code', '')
+	text = getattr(grn, 'invoice_status_text', '')
+	if code or text:
+		code_str = f"[{code}]" if code else ""
+		return f"{code_str} {text}".strip()
+	return ''
+
+
+def _format_datetime(value):
+	if not value:
+		return ''
+	if isinstance(value, datetime):
+		if timezone.is_aware(value):
+			value = timezone.localtime(value)
+		return value.strftime('%Y-%m-%d %H:%M:%S')
+	return value.strftime('%Y-%m-%d')
+
+
+def _decimal_to_string(value):
+	if value is None:
+		return "0"
+	if isinstance(value, Decimal):
+		value = value.normalize()
+		s = format(value, 'f')
+		s = s.rstrip('0').rstrip('.') if '.' in s else s
+		return s or "0"
+	return str(value)
+
+
+def _ensure_grn_download_dir():
+	download_dir = os.path.join(settings.MEDIA_ROOT, 'downloads', 'grns')
+	os.makedirs(download_dir, exist_ok=True)
+	return download_dir
+
+
+def _build_media_download_url(request, file_path: str) -> str:
+	relative_path = os.path.relpath(file_path, settings.MEDIA_ROOT).replace(os.sep, '/')
+	media_url = settings.MEDIA_URL or '/media/'
+	if not media_url.endswith('/'):
+		media_url = f"{media_url}/"
+	if not media_url.startswith('/'):
+		media_url = f"/{media_url}"
+	return request.build_absolute_uri(f"{media_url}{relative_path}")
 	
 
 @api_view(['GET'])
