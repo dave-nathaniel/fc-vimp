@@ -63,7 +63,7 @@ sqlparse==0.4.4
 types-python-dateutil==2.9.0.20240821
 typing_extensions==4.9.0
 tzdata==2023.4
-urllib3==2.2.0
+urllib3==2.6.0
 vine==5.1.0
 wcwidth==0.2.13
 zeep==4.3.1
