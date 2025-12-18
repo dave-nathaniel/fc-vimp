@@ -2,7 +2,7 @@
 import os, sys
 import logging
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from uuid import uuid4
 
 from django.conf import settings
@@ -41,16 +41,20 @@ User = get_user_model()
 paginator = CustomPagination()
 
 GRN_EXPORT_HEADERS = [
-	"GRN NUMBER",
-	"CREATED",
-	"PO NUMBER",
-	"VENDOR NAME",
-	"VENDOR BYD ID",
-	"TOTAL VALUE RECEIVED",
-	"INVOICE STATUS",
-	"DELIVERY STORES",
-	"ITEMS",
+	"Store ByD Code",
+	"Store Name",
+	"GRN Number",
+	"PO Number",
+	"Vendor Name",
+	"Date Created",
+	"Product",
+	"Unit Price",
+	"Quantity Delivered",
+	"Delivery Status",
+	"Amount",
 ]
+
+DELIVERY_STATUS_LOOKUP = dict(PurchaseOrder.delivery_status_code)
 
 
 def delete_items(po):
@@ -275,13 +279,12 @@ def download_grns(request):
 		if not grn_ids:
 			return APIResponse("No GRNs found for the specified criteria.", status=status.HTTP_404_NOT_FOUND)
 		
-		items_map, stores_map, amount_map = _collect_grn_line_items(grn_ids)
+		line_items_map, delivered_quantity_map = _collect_grn_line_items(grn_ids)
 		file_path, row_count = _write_grn_export_file(
 			request=request,
 			queryset=grns,
-			amount_map=amount_map,
-			items_map=items_map,
-			stores_map=stores_map,
+			line_items_map=line_items_map,
+			delivered_quantity_map=delivered_quantity_map,
 		)
 		download_url = _build_media_download_url(request, file_path)
 		
@@ -346,42 +349,39 @@ def _build_filtered_grns_queryset(request):
 
 
 def _collect_grn_line_items(grn_ids: list):
-	items_map = defaultdict(list)
-	stores_map = defaultdict(set)
-	amount_map = defaultdict(lambda: Decimal('0'))
-	
+	line_items_map = defaultdict(list)
+	delivered_quantity_map = defaultdict(lambda: Decimal('0'))
+
 	if not grn_ids:
-		return items_map, stores_map, amount_map
-	
+		return line_items_map, delivered_quantity_map
+
 	line_items = GoodsReceivedLineItem.objects.filter(
 		grn_id__in=grn_ids
 	).select_related(
 		'purchase_order_line_item__delivery_store'
-	).values(
-		'grn_id',
-		'purchase_order_line_item__product_name',
-		'purchase_order_line_item__delivery_store__store_name',
-		'quantity_received',
-		'net_value_received',
 	)
-	
+
 	for line_item in line_items.iterator(chunk_size=1000):
-		grn_id = line_item['grn_id']
-		product_name = line_item.get('purchase_order_line_item__product_name') or "Item"
-		quantity = line_item.get('quantity_received')
-		items_map[grn_id].append(f"{product_name} (Qty: {_decimal_to_string(quantity)})")
-		
-		store_name = line_item.get('purchase_order_line_item__delivery_store__store_name')
-		if store_name:
-			stores_map[grn_id].add(store_name)
-		
-		line_amount = line_item.get('net_value_received') or Decimal('0')
-		amount_map[grn_id] += line_amount
-	
-	return items_map, stores_map, amount_map
+		grn_id = line_item.grn_id
+		po_line_item = line_item.purchase_order_line_item
+		delivered_quantity_map[po_line_item.id] += line_item.quantity_received or Decimal('0')
+
+		delivery_store = getattr(po_line_item, 'delivery_store', None)
+		line_items_map[grn_id].append({
+			'store_code': getattr(delivery_store, 'byd_cost_center_code', '') if delivery_store else '',
+			'store_name': getattr(delivery_store, 'store_name', '') if delivery_store else '',
+			'product': getattr(po_line_item, 'product_name', '') or '',
+			'unit_price': po_line_item.unit_price or Decimal('0'),
+			'quantity': line_item.quantity_received or Decimal('0'),
+			'amount': line_item.net_value_received or Decimal('0'),
+			'po_line_item_id': po_line_item.id,
+			'total_quantity': po_line_item.quantity or Decimal('0'),
+		})
+
+	return line_items_map, delivered_quantity_map
 
 
-def _write_grn_export_file(request, queryset, amount_map, items_map, stores_map):
+def _write_grn_export_file(request, queryset, line_items_map, delivered_quantity_map):
 	download_dir = _ensure_grn_download_dir()
 	user_identifier = getattr(request.user, 'id', None) or 'anonymous'
 	filename = f"grns_{user_identifier}_{timezone.now().strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}.xlsx"
@@ -393,42 +393,45 @@ def _write_grn_export_file(request, queryset, amount_map, items_map, stores_map)
 	
 	row_count = 0
 	for grn in queryset.iterator(chunk_size=500):
-		worksheet.append(
-			_build_grn_export_row(
-				grn,
-				amount_map,
-				items_map,
-				stores_map,
+		grn_rows = line_items_map.get(grn.id, [])
+		for line_info in grn_rows:
+			worksheet.append(
+				_build_grn_export_row(
+					grn,
+					line_info,
+					delivered_quantity_map,
+				)
 			)
-		)
-		row_count += 1
+			row_count += 1
 	
 	workbook.save(file_path)
 	workbook.close()
 	return file_path, row_count
 
 
-def _build_grn_export_row(grn, amount_map, items_map, stores_map):
+def _build_grn_export_row(grn, line_info, delivered_quantity_map):
 	po = getattr(grn, 'purchase_order', None)
 	vendor_profile = getattr(po, 'vendor', None) if po else None
 	vendor_user = getattr(vendor_profile, 'user', None) if vendor_profile else None
 	vendor_name = _format_vendor_name(vendor_user) if vendor_user else ''
-	vendor_byd_id = getattr(vendor_profile, 'byd_internal_id', '') if vendor_profile else ''
-	
-	total_value = amount_map.get(grn.id, Decimal('0'))
-	stores_value = "\n".join(sorted(stores_map.get(grn.id, [])))
-	items_value = "\n".join(items_map.get(grn.id, []))
-	
+
+	delivery_status = _get_delivery_status_text(
+		line_info.get('total_quantity'),
+		delivered_quantity_map.get(line_info.get('po_line_item_id'), Decimal('0'))
+	)
+
 	return [
+		line_info.get('store_code', ''),
+		line_info.get('store_name', ''),
 		grn.grn_number,
-		_format_datetime(grn.created),
 		getattr(po, 'po_id', ''),
 		vendor_name,
-		vendor_byd_id,
-		float(total_value),
-		_format_invoice_status(grn),
-		stores_value,
-		items_value,
+		_format_datetime(grn.created),
+		line_info.get('product', ''),
+		float(_safe_decimal(line_info.get('unit_price'))),
+		float(_safe_decimal(line_info.get('quantity'))),
+		delivery_status,
+		float(_safe_decimal(line_info.get('amount'))),
 	]
 
 
@@ -462,6 +465,20 @@ def _format_datetime(value):
 	return value.strftime('%Y-%m-%d')
 
 
+def _get_delivery_status_text(total_quantity, delivered_quantity):
+	total = _safe_decimal(total_quantity)
+	delivered = _safe_decimal(delivered_quantity)
+	if total == 0:
+		return ''
+	if delivered == 0:
+		status_code = '1'
+	elif delivered < total:
+		status_code = '2'
+	else:
+		status_code = '3'
+	return DELIVERY_STATUS_LOOKUP.get(status_code, '')
+
+
 def _decimal_to_string(value):
 	if value is None:
 		return "0"
@@ -471,6 +488,20 @@ def _decimal_to_string(value):
 		s = s.rstrip('0').rstrip('.') if '.' in s else s
 		return s or "0"
 	return str(value)
+
+
+def _safe_decimal(value):
+	if isinstance(value, Decimal):
+		return value
+	if value is None:
+		return Decimal('0')
+	try:
+		return Decimal(value)
+	except (TypeError, InvalidOperation):
+		try:
+			return Decimal(str(value))
+		except (TypeError, InvalidOperation):
+			return Decimal('0')
 
 
 def _ensure_grn_download_dir():
