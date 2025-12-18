@@ -1,31 +1,29 @@
 {
   "files": {
-    "main.css": "./static/css/main.9a2bbc35.css",
-    "main.js": "./static/js/main.7679879b.js",
-    "static/js/371.6d5c5850.chunk.js": "./static/js/371.6d5c5850.chunk.js",
-    "static/js/213.22b65379.chunk.js": "./static/js/213.22b65379.chunk.js",
-    "static/js/455.48b27d88.chunk.js": "./static/js/455.48b27d88.chunk.js",
+    "main.css": "./static/css/main.52eabe06.css",
+    "main.js": "./static/js/main.0d307868.js",
+    "static/js/213.3497178a.chunk.js": "./static/js/213.3497178a.chunk.js",
+    "static/js/455.9b022eaf.chunk.js": "./static/js/455.9b022eaf.chunk.js",
     "static/media/session expired.png": "./static/media/session expired.5b98d465d2ed72e9c598.png",
     "static/media/FoodConcepts_Logo-1 1.png": "./static/media/FoodConcepts_Logo-1 1.f1c93921c6d9259e7948.png",
     "static/media/Vector.svg": "./static/media/Vector.44af185b4cb85f37b8a6f1ddfc595aeb.svg",
     "static/media/noresult.jfif": "./static/media/noresult.f1ec600855fcb737c9cc.jfif",
-    "static/media/downloadIcon.svg": "./static/media/downloadIcon.418431ad782641d3168a432c1ffc4488.svg",
+    "static/media/downloadIcon.svg": "./static/media/downloadIcon.c7c8f737e19075c6c982bf2045c81249.svg",
     "static/media/search.svg": "./static/media/search.98961cbb85c084c6956e69ae1bbb4488.svg",
-    "static/media/print.svg": "./static/media/print.99dab913239501943dda2a518066e452.svg",
+    "static/media/print.svg": "./static/media/print.e2394ee7ba153669078282d10812196a.svg",
     "index.html": "./index.html",
-    "static/media/download.svg": "./static/media/download.d71f54bfc8661f92852140b5271d5fe4.svg",
+    "static/media/download.svg": "./static/media/download.9282440c090be31554ad502cd091f825.svg",
     "static/media/Vector (1).svg": "./static/media/Vector (1).fd8072559f2baa937957e0f53aea6702.svg",
     "static/media/grey-arrow.svg": "./static/media/grey-arrow.f5345ff249295bc2dcc6c53cc0cb4175.svg",
-    "static/media/arrowLeft.svg": "./static/media/arrowLeft.4857a587139b6b62dd23fa9f7bb6ebe1.svg",
+    "static/media/arrowLeft.svg": "./static/media/arrowLeft.c4a3e8b47a12e9bc329f011c0859cd2d.svg",
     "static/media/Vector 6.svg": "./static/media/Vector 6.338e2c5d23d311e8eac0cd2540be2c1a.svg",
-    "main.9a2bbc35.css.map": "./static/css/main.9a2bbc35.css.map",
-    "main.7679879b.js.map": "./static/js/main.7679879b.js.map",
-    "371.6d5c5850.chunk.js.map": "./static/js/371.6d5c5850.chunk.js.map",
-    "213.22b65379.chunk.js.map": "./static/js/213.22b65379.chunk.js.map",
-    "455.48b27d88.chunk.js.map": "./static/js/455.48b27d88.chunk.js.map"
+    "main.52eabe06.css.map": "./static/css/main.52eabe06.css.map",
+    "main.0d307868.js.map": "./static/js/main.0d307868.js.map",
+    "213.3497178a.chunk.js.map": "./static/js/213.3497178a.chunk.js.map",
+    "455.9b022eaf.chunk.js.map": "./static/js/455.9b022eaf.chunk.js.map"
   },
   "entrypoints": [
-    "static/css/main.9a2bbc35.css",
-    "static/js/main.7679879b.js"
+    "static/css/main.52eabe06.css",
+    "static/js/main.0d307868.js"
   ]
 }
