@@ -41,17 +41,23 @@ User = get_user_model()
 paginator = CustomPagination()
 
 GRN_EXPORT_HEADERS = [
-	"Store ByD Code",
-	"Store Name",
-	"GRN Number",
 	"PO Number",
+	"GRN Number",
 	"Vendor Name",
+	"Vendor Code",
 	"Date Created",
-	"Product",
-	"Unit Price",
-	"Quantity Delivered",
+	"Store Name",
+	"Store ByD Code",
+	"Invoice Status",
 	"Delivery Status",
-	"Amount",
+	"Product Name",
+	"Product Code",
+	"Unit Price",
+	"Quantity Received",
+	"Net Value Received",
+	"Gross Value Received",
+	"Total Tax",
+	"Outstanding Qty",
 ]
 
 DELIVERY_STATUS_LOOKUP = dict(PurchaseOrder.delivery_status_code)
@@ -370,10 +376,12 @@ def _collect_grn_line_items(grn_ids: list):
 		line_items_map[grn_id].append({
 			'store_code': getattr(delivery_store, 'byd_cost_center_code', '') if delivery_store else '',
 			'store_name': getattr(delivery_store, 'store_name', '') if delivery_store else '',
-			'product': getattr(po_line_item, 'product_name', '') or '',
+			'product_name': getattr(po_line_item, 'product_name', '') or '',
+			'product_code': getattr(po_line_item, 'product_id', '') or '',
 			'unit_price': po_line_item.unit_price or Decimal('0'),
 			'quantity': line_item.quantity_received or Decimal('0'),
-			'amount': line_item.net_value_received or Decimal('0'),
+			'net_value': line_item.net_value_received or Decimal('0'),
+			'gross_value': line_item.gross_value_received or Decimal('0'),
 			'po_line_item_id': po_line_item.id,
 			'total_quantity': po_line_item.quantity or Decimal('0'),
 		})
@@ -420,18 +428,30 @@ def _build_grn_export_row(grn, line_info, delivered_quantity_map):
 		delivered_quantity_map.get(line_info.get('po_line_item_id'), Decimal('0'))
 	)
 
+	vendor_code = getattr(vendor_profile, 'byd_internal_id', '') if vendor_profile else ''
+	total_quantity = _safe_decimal(line_info.get('total_quantity'))
+	delivered_quantity = _safe_decimal(delivered_quantity_map.get(line_info.get('po_line_item_id'), Decimal('0')))
+	total_tax = _safe_decimal(line_info.get('gross_value')) - _safe_decimal(line_info.get('net_value'))
+	outstanding = max(total_quantity - delivered_quantity, Decimal('0'))
+
 	return [
-		line_info.get('store_code', ''),
-		line_info.get('store_name', ''),
-		grn.grn_number,
 		getattr(po, 'po_id', ''),
+		grn.grn_number,
 		vendor_name,
+		vendor_code,
 		_format_datetime(grn.created),
-		line_info.get('product', ''),
+		line_info.get('store_name', ''),
+		line_info.get('store_code', ''),
+		_format_invoice_status(grn),
+		delivery_status,
+		line_info.get('product_name', ''),
+		line_info.get('product_code', ''),
 		float(_safe_decimal(line_info.get('unit_price'))),
 		float(_safe_decimal(line_info.get('quantity'))),
-		delivery_status,
-		float(_safe_decimal(line_info.get('amount'))),
+		float(_safe_decimal(line_info.get('net_value'))),
+		float(_safe_decimal(line_info.get('gross_value'))),
+		float(total_tax),
+		float(outstanding),
 	]
 
 
