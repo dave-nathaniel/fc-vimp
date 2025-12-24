@@ -616,11 +616,12 @@ def _build_search_signables_queryset(request: Request, target: dict):
 			Q(description__icontains=q)
 			| Q(external_document_id__icontains=q)
 			| Q(payment_reason__icontains=q)
-			| Q(purchase_order__po_id__icontains=q)
 			| Q(purchase_order__vendor__user__first_name__icontains=q)
 			| Q(purchase_order__vendor__user__last_name__icontains=q)
 			| Q(purchase_order__vendor__user__email__icontains=q)
 			| Q(purchase_order__vendor__byd_internal_id__icontains=q)
+			| Q(grn__line_items__purchase_order_line_item__delivery_store__store_name__icontains=q)
+			| Q(grn__line_items__purchase_order_line_item__delivery_store__byd_cost_center_code__icontains=q)
 		)
 	if po:
 		queryset = queryset.filter(purchase_order__po_id=po)
@@ -1007,6 +1008,7 @@ def make_base_signable_queryset(signable_class: object, content_type: ContentTyp
 			# Prefetch GRN line items and their delivery stores to support GRN.stores property
 			'grn__line_items',
 			'grn__line_items__purchase_order_line_item__delivery_store',
+			'grn__line_items__purchase_order_line_item__delivery_store__store_name',
 			'grn__line_items__invoice_items',
 		).distinct().filter(
 			# signatories__contains=relevant_permissions
