@@ -17,7 +17,8 @@ from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import Q
+from django.db.models import Q, Sum, Case, When, Value, CharField, F
+from django.db.models.functions import Coalesce
 from openpyxl import Workbook
 from core_service.cache_utils import (
     cache_result, CacheManager, get_or_set_cache, 
@@ -309,12 +310,14 @@ def download_grns(request):
 def _build_filtered_grns_queryset(request):
 	django_filters = {}
 	store_lookup_q = None
+	q_filters = None
 	
 	for key in request.query_params:
 		value = request.query_params.get(key)
 		if value in [None, '']:
 			continue
-		if key == 'date_created':
+			
+		elif key == 'date_created':
 			django_filters['created'] = value
 		elif key == 'start_date':
 			django_filters['created__gte'] = value
@@ -324,10 +327,6 @@ def _build_filtered_grns_queryset(request):
 			django_filters['purchase_order__po_id'] = value
 		elif key == 'vendor_internal_id':
 			django_filters['purchase_order__vendor__byd_internal_id'] = value
-		elif key == 'delivery_status_code':
-			django_filters['purchase_order__delivery_status_code'] = value
-		elif key == 'invoice_status_code':
-			django_filters['invoice_status_code'] = value
 		elif key == 'delivery_stores':
 			store_identifiers = [identifier.strip() for identifier in value.split(',') if identifier.strip()]
 			if store_identifiers:
@@ -342,8 +341,54 @@ def _build_filtered_grns_queryset(request):
 		'purchase_order__vendor__user',
 	).prefetch_related(
 		'line_items__purchase_order_line_item__delivery_store'
-	).filter(**django_filters)
-	
+	).filter(**django_filters).annotate(
+		po_total_qty=Coalesce(Sum('purchase_order__line_items__quantity'), Decimal('0.0')),
+		po_delivered_qty=Coalesce(Sum('purchase_order__line_items__grn_line_item__quantity_received'), Decimal('0.0')),
+		invoice_quantity=Coalesce(Sum('line_items__invoice_items__quantity'), Decimal('0.0')),
+		invoice_total_qty=Coalesce(Sum('line_items__quantity_received'), Decimal('0.0')),
+	).annotate(
+		delivery_status_code_db=Case(
+			When(Q(po_delivered_qty__gte=F('po_total_qty')) & Q(po_total_qty__gt=0), then=Value('3')),
+			When(po_delivered_qty__gt=0, then=Value('2')),
+			default=Value('1'),
+			output_field=CharField(),
+		),
+		delivery_status_text_db=Case(
+			When(delivery_status_code_db='3', then=Value('Completely Delivered')),
+			When(delivery_status_code_db='2', then=Value('Partially Delivered')),
+			default=Value('Not Delivered'),
+			output_field=CharField(),
+		),
+		invoice_status_code_db=Case(
+			When(Q(invoice_quantity__gte=F('invoice_total_qty')) & Q(invoice_total_qty__gt=0), then=Value('3')),
+			When(invoice_quantity__gt=0, then=Value('2')),
+			default=Value('1'),
+			output_field=CharField(),
+		),
+		invoice_status_text_db=Case(
+			When(invoice_status_code_db='3', then=Value('Finished')),
+			When(invoice_status_code_db='2', then=Value('In Process')),
+			default=Value('Not Started'),
+			output_field=CharField(),
+		),
+	)
+
+	delivery_status_code = request.query_params.get('delivery_status_code')
+	if delivery_status_code:
+		queryset = queryset.filter(
+			Q(delivery_status_code_db=delivery_status_code) |
+			Q(delivery_status_text_db__icontains=delivery_status_code)
+		)
+
+	invoice_status_code = request.query_params.get('invoice_status_code')
+	if invoice_status_code:
+		queryset = queryset.filter(
+			Q(invoice_status_code_db=invoice_status_code) |
+			Q(invoice_status_text_db__icontains=invoice_status_code)
+		)
+
+	if q_filters:
+		queryset = queryset.filter(q_filters)
 	if store_lookup_q:
 		queryset = queryset.filter(store_lookup_q)
 	
