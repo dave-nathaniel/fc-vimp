@@ -1008,7 +1008,6 @@ def make_base_signable_queryset(signable_class: object, content_type: ContentTyp
 			# Prefetch GRN line items and their delivery stores to support GRN.stores property
 			'grn__line_items',
 			'grn__line_items__purchase_order_line_item__delivery_store',
-			'grn__line_items__purchase_order_line_item__delivery_store__store_name',
 			'grn__line_items__invoice_items',
 		).distinct().filter(
 			# signatories__contains=relevant_permissions
