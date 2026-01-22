@@ -91,12 +91,20 @@ class RESTServices:
 
 	def get_vendor_by_id(self, vendor_id, id_type='email'):
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=10"
-		query_url = f"{action_url}&$filter=EMail/URI eq '{vendor_id}'"
 
 		if id_type == 'phone':
 			vendor_id = vendor_id.strip()[-10:]
 			query_url = f"{action_url}&$filter=substringof('{vendor_id}',ConventionalPhone/NormalisedNumberDescription)"
 
+		if id_type == 'email':
+			query_url = f"{action_url}&$filter=EMail/URI eq '{vendor_id}'"
+		
+		if id_type == 'internal_id':
+			query_url = f"{action_url}&$filter=BusinessPartner/InternalID eq '{vendor_id}'"
+			
+		else:
+			raise ValueError(f"Unsupported ID type: {id_type}")
+		
 		# Make a request with HTTP Basic Authentication
 		response = self.__get__(query_url)
 
@@ -212,6 +220,9 @@ class RESTServices:
 		calculate_tax = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/CalculateTaxAmount?ObjectID="
 		try:
 			self.refresh_csrf_token()
+			# Limit invoice description to 40 chars per ByD's rule
+			invoice_data["InvoiceDescription"] = invoice_data["InvoiceDescription"][:40] or "Inv Frm eGRN Sys"
+			
 			response = self.__post__(action_url, json=invoice_data)
 			if response.status_code == 201:
 				response_data = response.json()

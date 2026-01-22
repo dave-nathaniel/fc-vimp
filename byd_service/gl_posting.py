@@ -4,11 +4,15 @@ from time import sleep
 from .soap import SOAPServices
 from .util import ordinal
 from pathlib import Path
+from dotenv import load_dotenv
+
+dotenv_path = os.path.join(Path(__file__).resolve().parent.parent, '.env')
+load_dotenv(dotenv_path)
 
 # Constants
 MAX_RETRY_POSTING = 3
-soap_endpoint = 'https://my350679.sapbydesign.com/sap/bc/srt/scs/sap/manageaccountingentryin'
-wsdl_path = os.path.join(Path(__file__).resolve().parent, 'manageaccountingentryin.wsdl')
+soap_endpoint = os.getenv('SAP_URL') + '/sap/bc/srt/scs/sap/manageaccountingentryin'
+wsdl_path = os.path.join(Path(__file__).resolve().parent, 'wsdl', 'manageaccountingentryin.wsdl')
 
 # Initialize the SOAP client and authenticate with SAP
 try:

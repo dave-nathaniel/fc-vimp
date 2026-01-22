@@ -1,5 +1,13 @@
 from django.urls import path
-from approval_service.views import sign_signable_view, get_user_signable_view, get_signable_view, track_signable_view
+from approval_service.views import (
+	sign_signable_view,
+	get_user_signable_view,
+	get_signable_view,
+	track_signable_view,
+	get_signable_summary_view,
+	search_signables_view,
+	download_signables_excel_view,
+)
 
 
 urlpatterns = [
@@ -11,4 +19,10 @@ urlpatterns = [
     path('any/<str:target_class>/<str:status_filter>', get_signable_view),
 	# Track all signatures for a specific signable object.
 	path('track/<str:target_class>/<int:object_id>', track_signable_view),
+	# Get a summary of all signables for a specific user's role.
+	path('summary/<str:target_class>', get_signable_summary_view),
+	# Search signables
+	path('search/<str:target_class>', search_signables_view),
+	# Download signables as Excel
+	path('download/<str:target_class>', download_signables_excel_view),
 ]
