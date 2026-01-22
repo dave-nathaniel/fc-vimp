@@ -1,27 +1,145 @@
-from django.shortcuts import render
-from rest_framework import generics, permissions, status
+import logging
+import os
+import uuid
+from datetime import date
+
+import pandas as pd
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.mail import EmailMessage
+from django.db import transaction
+from django.db.models import Q
+from django.template.loader import render_to_string
+from django.utils import timezone
+from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes
-from rest_framework.exceptions import PermissionDenied
+
 from byd_service.rest import RESTServices
 from overrides.authenticate import CombinedAuthentication
 from overrides.rest_framework import APIResponse, CustomPagination
-from django.core.mail import EmailMessage
-from django.template.loader import render_to_string
-from django.db import transaction
-from django.core.exceptions import ValidationError
-from django.db.models import Sum, Q
 from .models import StoreAuthorization, InboundDelivery
 from .serializers import (
 	TransferReceiptNoteSerializer,InboundDeliverySerializer
 )
 from .services import AuthorizationService
-from .validators import (
-	ValidationErrorResponse, TransferReceiptValidator,
-	StoreAuthorizationValidator
-)
-import logging
 
 logger = logging.getLogger(__name__)
+
+EXPORT_DOWNLOAD_DIR = 'downloads'
+EXPORT_FILENAME_PREFIX = 'transfers_search'
+EXPORT_COLUMNS = [
+	'Delivery ID',
+	'Source Location ID',
+	'Source Location Name',
+	'Destination Store Name',
+	'Destination Store Code',
+	'Delivery Date',
+	'Delivery Status Code',
+	'Delivery Status',
+	'Delivery Type Code',
+	'Sales Order Reference',
+	'Created Date',
+]
+
+
+def _format_date(value):
+	return value.isoformat() if value else ''
+
+
+def _build_export_rows(queryset):
+	rows = []
+	for delivery in queryset:
+		dest_store = getattr(delivery, 'destination_store', None)
+		rows.append({
+			'Delivery ID': delivery.delivery_id,
+			'Source Location ID': delivery.source_location_id,
+			'Source Location Name': delivery.source_location_name,
+			'Destination Store Name': getattr(dest_store, 'store_name', ''),
+			'Destination Store Code': getattr(dest_store, 'byd_cost_center_code', ''),
+			'Delivery Date': _format_date(delivery.delivery_date),
+			'Delivery Status Code': delivery.delivery_status_code,
+			'Delivery Status': delivery.delivery_status,
+			'Delivery Type Code': delivery.delivery_type_code,
+			'Sales Order Reference': delivery.sales_order_reference or '',
+			'Created Date': _format_date(delivery.created_date),
+		})
+	return rows
+
+
+def _write_export_file(rows):
+	download_root = os.path.join(settings.MEDIA_ROOT, EXPORT_DOWNLOAD_DIR)
+	os.makedirs(download_root, exist_ok=True)
+	timestamp = timezone.now().strftime('%Y%m%d%H%M%S')
+	filename = f"{EXPORT_FILENAME_PREFIX}_{timestamp}_{uuid.uuid4().hex[:8]}.xlsx"
+	filepath = os.path.join(download_root, filename)
+
+	df = pd.DataFrame(rows)
+	if df.empty:
+		df = pd.DataFrame(columns=EXPORT_COLUMNS)
+	else:
+		df = df.reindex(columns=EXPORT_COLUMNS)
+
+	try:
+		df.to_excel(filepath, index=False)
+	except Exception as exc:
+		logger.error(f"Failed to write delivery export to Excel: {exc}")
+		raise
+
+	return filename
+
+
+def _normalize_media_url():
+	media_url = settings.MEDIA_URL or 'media/'
+	if not media_url.startswith('/'):
+		media_url = f"/{media_url}"
+	return media_url.rstrip('/')
+
+
+def _generate_search_export_link(queryset, request):
+	rows = _build_export_rows(queryset)
+	filename = _write_export_file(rows)
+	download_path = f"{_normalize_media_url()}/{EXPORT_DOWNLOAD_DIR}/{filename}"
+	return request.build_absolute_uri(download_path)
+
+
+def _apply_delivery_filters(queryset, query_params):
+	"""
+		Apply optional delivery filters based on request query parameters
+	"""
+	delivery_id = query_params.get('delivery_id')
+	source_location_id = query_params.get('source_location_id')
+	source_location_name = query_params.get('source_location_name')
+	destination_store = query_params.get('destination_store')
+	delivery_date = query_params.get('delivery_date')
+	delivery_status_code = query_params.get('delivery_status_code') or query_params.get('status')
+	delivery_type_code = query_params.get('delivery_type_code')
+	sales_order_reference = query_params.get('sales_order_reference')
+
+	if delivery_id:
+		queryset = queryset.filter(delivery_id__icontains=delivery_id)
+	if source_location_id:
+		queryset = queryset.filter(source_location_id__icontains=source_location_id)
+	if source_location_name:
+		queryset = queryset.filter(source_location_name__icontains=source_location_name)
+	if destination_store:
+		queryset = queryset.filter(
+			Q(destination_store__store_name__icontains=destination_store) |
+			Q(destination_store__byd_cost_center_code__icontains=destination_store)
+		)
+	if delivery_date:
+		try:
+			parsed_date = date.fromisoformat(delivery_date)
+		except ValueError:
+			raise ValidationError("delivery_date must be in YYYY-MM-DD format")
+		queryset = queryset.filter(delivery_date=parsed_date)
+	if delivery_type_code:
+		queryset = queryset.filter(delivery_type_code__icontains=delivery_type_code)
+	if sales_order_reference:
+		queryset = queryset.filter(sales_order_reference__icontains=sales_order_reference)
+	if delivery_status_code:
+		queryset = queryset.filter(delivery_status_code=delivery_status_code)
+
+	return queryset
 
 # Create your views here.
 
@@ -38,15 +156,13 @@ def get_inbound_deliveries(request):
 		authorized_stores = AuthorizationService.get_user_authorized_stores(user)
 		queryset = InboundDelivery.objects.filter(destination_store__in=authorized_stores)
 		
-		# Support search by delivery ID
-		delivery_id = request.query_params.get('delivery_id')
-		if delivery_id:
-			queryset = queryset.filter(delivery_id__icontains=delivery_id)
-		
-		# Support filtering by status
-		status_filter = request.query_params.get('status')
-		if status_filter:
-			queryset = queryset.filter(delivery_status_code=status_filter)
+		try:
+			queryset = _apply_delivery_filters(queryset, request.query_params)
+		except ValidationError as e:
+			return APIResponse(
+				status=status.HTTP_400_BAD_REQUEST,
+				message=str(e)
+			)
 			
 		# Order queryset
 		queryset = queryset.order_by('-created_date')
@@ -125,70 +241,41 @@ def search_deliveries(request):
 			delivery_status_code
 			delivery_type_code
 			sales_order_reference
+		download - when set to true returns an Excel download URL for the filtered results.
+		Pagination is applied even when no parameters are provided.
 	"""
 	
 	user = request.user
 	authorized_stores = AuthorizationService.get_user_authorized_stores(user)
 	queryset = InboundDelivery.objects.filter(destination_store__in=authorized_stores)
+	download_requested = request.query_params.get('download', '').lower() == 'true'
 
-	delivery_id = request.query_params.get('delivery_id')
-	source_location_id = request.query_params.get('source_location_id')
-	source_location_name = request.query_params.get('source_location_name')
-	destination_store = request.query_params.get('destination_store')
-	delivery_date = request.query_params.get('delivery_date')
-	delivery_status_code = request.query_params.get('delivery_status_code')
-	delivery_type_code = request.query_params.get('delivery_type_code')
-	sales_order_reference = request.query_params.get('sales_order_reference')
-
-	if not any([
-		delivery_id, 
-		source_location_id, 
-		source_location_name, 
-		destination_store, 
-		delivery_date, 
-		delivery_status_code, 
-		delivery_type_code, 
-		sales_order_reference
-	]):
-		return APIResponse(
-			status=status.HTTP_400_BAD_REQUEST,
-			message='At least one parameter is required'
-		)
-	
 	try:
-		# First check local database
-		filter_kwargs = {
-			'destination_store__in': authorized_stores  # Always apply store authorization filter
-		}
+		try:
+			queryset = _apply_delivery_filters(queryset, request.query_params)
+		except ValidationError as e:
+			return APIResponse(
+				status=status.HTTP_400_BAD_REQUEST,
+				message=str(e)
+			)
+
+		queryset = queryset.order_by('-created_date')
+		download_url = None
+		if download_requested:
+			download_url = _generate_search_export_link(queryset, request)
 		
-		# Only add filters for parameters that are provided
-		if delivery_id:
-			filter_kwargs['delivery_id__icontains'] = delivery_id
-		if source_location_id:
-			filter_kwargs['source_location_id__icontains'] = source_location_id
-		if source_location_name:
-			filter_kwargs['source_location_name__icontains'] = source_location_name
-		if delivery_date:
-			filter_kwargs['delivery_date__icontains'] = delivery_date
-		if delivery_status_code:
-			filter_kwargs['delivery_status_code__icontains'] = delivery_status_code
-		if delivery_type_code:
-			filter_kwargs['delivery_type_code__icontains'] = delivery_type_code
-		if sales_order_reference:
-			filter_kwargs['sales_order_reference__icontains'] = sales_order_reference
-			
-		results = InboundDelivery.objects.filter(**filter_kwargs)
-		
-		# Apply pagination to the results
 		paginator = CustomPagination()
-		paginated_results = paginator.paginate_queryset(results, request)
-		# serialize
+		paginated_results = paginator.paginate_queryset(queryset, request)
 		serializer = InboundDeliverySerializer(paginated_results, many=True)
+
+		paginated_data = paginator.get_paginated_response(serializer.data).data
+		if download_url:
+			paginated_data['download_url'] = download_url
 		
 		return APIResponse(
 			status=status.HTTP_200_OK,
 			message='Inbound deliveries fetched successfully',
-			data=paginator.get_paginated_response(serializer.data).data
+			data=paginated_data
 		)
 		
 	except Exception as e:
