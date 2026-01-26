@@ -305,38 +305,18 @@ DATABASES = {
 }
 
 # Redis Cache Configuration
-CACHES = {
-	'default': {
-		'BACKEND': 'django_redis.cache.RedisCache',
-		'LOCATION': os.getenv('REDIS_URL', 'redis://127.0.0.1:6379'),
-		'OPTIONS': {
-			'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-			'CONNECTION_POOL_KWARGS': {
-				'max_connections': 50,
-				'retry_on_timeout': True,
-				'socket_keepalive': True,
-				'socket_keepalive_options': {},
-				'health_check_interval': 30,
-			},
-			'COMPRESSOR': 'django_redis.compressors.zlib.ZlibCompressor',
-			'SERIALIZER': 'django_redis.serializers.pickle.PickleSerializer',
-		},
-		'TIMEOUT': 300,
-		'KEY_PREFIX': 'vimp_prod',
-		'VERSION': 1,
-	},
-}
+# CACHES = {}
 
 # Session and Cache Configuration
-SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
-SESSION_CACHE_ALIAS = 'default'
+# SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+# SESSION_CACHE_ALIAS = 'default'
 
 # Cachalot Configuration for ORM query caching
-CACHALOT_ENABLED = True
-CACHALOT_TIMEOUT = 600  # 10 minutes default timeout
-CACHALOT_CACHE = 'default'
-CACHALOT_DATABASES = ['default']
-CACHALOT_UNCACHABLE_APPS = ['invoice_service', 'approval_service']
+# CACHALOT_ENABLED = False
+# CACHALOT_TIMEOUT = 600  # 10 minutes default timeout
+# CACHALOT_CACHE = 'default'
+# CACHALOT_DATABASES = ['default']
+# CACHALOT_UNCACHABLE_APPS = ['invoice_service', 'approval_service']
 
 CELERY_BROKER_URL = "memory://localhost"
 
