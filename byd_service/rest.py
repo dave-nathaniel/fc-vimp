@@ -360,6 +360,31 @@ class RESTServices:
 		except Exception as e:
 			logger.error(f"Error fetching sales orders for store {store_id}: {str(e)}")
 			raise
+
+	def get_product_details(self, material_id: str) -> dict:
+		'''
+			Fetch product/material details from SAP ByD by InternalID
+		'''
+		action_url = (
+			f"{self.endpoint}/sap/byd/odata/cust/v1/vmumaterial/MaterialCollection?"
+			f"$filter=InternalID eq '{material_id}'"
+			f"&$format=json&sap-language=EN"
+			f"&$select=InternalID,Description,DescriptionLanguageCode,DescriptionLanguageCodeText,"
+			f"BaseMeasureUnitCode,BaseMeasureUnitCodeText,IdentifiedStockTypeCode,IdentifiedStockTypeCodeText"
+		)
+		
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				results = response_json["d"]["results"]
+				return results[0] if results else None
+			else:
+				logger.error(f"Failed to fetch product {material_id}: {response.text}")
+				return None
+		except Exception as e:
+			logger.error(f"Error fetching product {material_id}: {str(e)}")
+			raise
 	
 	def get_delivery_by_id(self, delivery_id: str) -> dict:
 		'''
@@ -375,7 +400,20 @@ class RESTServices:
 			if response.status_code == 200:
 				response_json = json.loads(response.text)
 				results = response_json["d"]["results"]
-				return results[0] if results else None
+				delivery = results[0] if results else None
+				if delivery and "Item" in delivery:
+					items = delivery["Item"]
+					if isinstance(items, dict):
+						items = items.get("results", [])
+					if isinstance(items, list):
+						for item in items:
+							material_id = item.get("ProductID") or item.get("ItemProduct", {}).get("ProductID")
+							if material_id:
+								product_details = self.get_product_details(material_id)
+								if product_details:
+									item.update(product_details)
+						delivery["Item"] = items
+				return delivery
 			else:
 				logger.error(f"Failed to fetch delivery {delivery_id}: {response.text}")
 				return None
