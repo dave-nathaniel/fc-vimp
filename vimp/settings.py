@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 from datetime import timedelta
 
@@ -73,6 +74,7 @@ INSTALLED_APPS = [
 	'approval_service',
 	'byd_service',
 	'app_settings',
+	'reports_service',
 ]
 
 JSON_EDITOR_JS = 'https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/8.6.4/jsoneditor.js'
@@ -331,7 +333,15 @@ SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
 SESSION_CACHE_ALIAS = 'default'
 
 # Cachalot Configuration for ORM query caching
-CACHALOT_ENABLED = True
+# IMPORTANT: disable query caching during migrations/tests to avoid stale reads
+# (e.g. ContentType creation during post_migrate) causing duplicate inserts.
+RUNNING_TESTS = any(arg in sys.argv for arg in ["test", "pytest"])
+RUNNING_MIGRATIONS = any(arg in sys.argv for arg in ["migrate", "makemigrations"])
+CACHALOT_ENABLED = (
+	(not RUNNING_TESTS)
+	and (not RUNNING_MIGRATIONS)
+	and os.getenv("CACHALOT_ENABLED", "1") in ("1", "true", "True", "yes", "YES")
+)
 CACHALOT_TIMEOUT = 600  # 10 minutes default timeout
 CACHALOT_CACHE = 'default'
 CACHALOT_DATABASES = ['default']
