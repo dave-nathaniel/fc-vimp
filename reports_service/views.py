@@ -1,15 +1,23 @@
 import logging
+import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from django.db.models import Sum, Count, Q, F
+from django.conf import settings
+from django.db.models import Sum
 from django.db.models.functions import Coalesce
+from django.http import HttpResponse
+from django.template.loader import render_to_string
 from django.utils import timezone
 from django.contrib.contenttypes.models import ContentType
+from django.core.mail import EmailMultiAlternatives
+from django.core.validators import validate_email
+from django.core.exceptions import ValidationError
 
 from rest_framework import status
-from rest_framework.decorators import api_view, authentication_classes, permission_classes
+from rest_framework.decorators import api_view, authentication_classes, permission_classes, renderer_classes
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.renderers import JSONRenderer, StaticHTMLRenderer
 
 from overrides.authenticate import CombinedAuthentication
 from overrides.rest_framework import APIResponse, CustomPagination
@@ -24,6 +32,144 @@ from .serializers import WeeklyReportSerializer, WeeklyReportSummarySerializer
 
 logger = logging.getLogger(__name__)
 paginator = CustomPagination()
+
+
+def _parse_bool(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "t", "yes", "y", "on")
+    return default
+
+
+def _safe_json_body(request):
+    """
+    DRF does not reliably parse JSON bodies on GET requests.
+    This helper tries to parse request.body as JSON and returns a dict.
+    """
+    try:
+        raw = getattr(request, "body", b"") or b""
+        if not raw:
+            return {}
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        payload = json.loads(raw.decode("utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _validate_email_recipients(emails):
+    if not isinstance(emails, list):
+        raise ValueError("'emails' must be a list of email strings.")
+
+    cleaned = []
+    seen = set()
+    for item in emails:
+        if not isinstance(item, str):
+            continue
+        email = item.strip()
+        if not email:
+            continue
+        if email.lower() in seen:
+            continue
+        try:
+            validate_email(email)
+        except ValidationError:
+            continue
+        cleaned.append(email)
+        seen.add(email.lower())
+
+    if not cleaned:
+        raise ValueError("No valid email recipients were provided in 'emails'.")
+
+    return cleaned
+
+
+def _fmt_int(value):
+    try:
+        return f"{int(value):,}"
+    except Exception:
+        return str(value)
+
+
+def _fmt_money(value):
+    try:
+        if value is None:
+            return "0.00"
+        if not isinstance(value, Decimal):
+            value = Decimal(str(value))
+        return f"{value:,.2f}"
+    except Exception:
+        return str(value)
+
+
+def _weekly_report_email_context(report_like, *, title="Weekly Operational Summary", subtitle=None, is_complete=True, report_as_of=None):
+    """
+    Builds a template-safe context. Accepts a WeeklyReport model or a dict-like report.
+    """
+    def get_attr(obj, key, default=None):
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+        return getattr(obj, key, default)
+
+    week_start = get_attr(report_like, "week_start_date")
+    week_end = get_attr(report_like, "week_end_date")
+    week_number = get_attr(report_like, "week_number")
+    year = get_attr(report_like, "year")
+
+    generated_at = get_attr(report_like, "generated_at")
+    updated_at = get_attr(report_like, "updated_at")
+
+    ctx = {
+        "title": title,
+        "subtitle": subtitle,
+        "is_complete": is_complete,
+        "report_as_of": report_as_of,
+        "week_number": week_number,
+        "year": year,
+        "week_start_date": week_start,
+        "week_end_date": week_end,
+        "generated_at": generated_at,
+        "updated_at": updated_at,
+        # Metrics (formatted)
+        "total_grns_received": _fmt_int(get_attr(report_like, "total_grns_received", 0)),
+        "total_grn_line_items": _fmt_int(get_attr(report_like, "total_grn_line_items", 0)),
+        "total_net_value_received": _fmt_money(get_attr(report_like, "total_net_value_received", 0)),
+        "total_gross_value_received": _fmt_money(get_attr(report_like, "total_gross_value_received", 0)),
+        "total_tax_amount": _fmt_money(get_attr(report_like, "total_tax_amount", 0)),
+        "total_invoices_created": _fmt_int(get_attr(report_like, "total_invoices_created", 0)),
+        "total_invoices_approved": _fmt_int(get_attr(report_like, "total_invoices_approved", 0)),
+        "total_approved_payment_value": _fmt_money(get_attr(report_like, "total_approved_payment_value", 0)),
+        "total_invoices_rejected": _fmt_int(get_attr(report_like, "total_invoices_rejected", 0)),
+        "total_invoices_pending": _fmt_int(get_attr(report_like, "total_invoices_pending", 0)),
+        "unique_vendors_received": _fmt_int(get_attr(report_like, "unique_vendors_received", 0)),
+        "unique_vendors_paid": _fmt_int(get_attr(report_like, "unique_vendors_paid", 0)),
+        "unique_stores_received": _fmt_int(get_attr(report_like, "unique_stores_received", 0)),
+        "app_name": "VIMP",
+    }
+
+    return ctx
+
+
+def _render_weekly_report_html(context):
+    return render_to_string("reports_service/emails/weekly_report.html", context)
+
+
+def _render_weekly_comparison_html(context):
+    return render_to_string("reports_service/emails/weekly_comparison.html", context)
+
+
+def _send_report_email(*, subject, html_body, recipients, text_body=None):
+    from_email = getattr(settings, "DEFAULT_FROM_EMAIL", None) or getattr(settings, "EMAIL_HOST_USER", None) or "no-reply@localhost"
+    text_body = text_body or "Please view this message in an HTML-capable email client to see the report."
+    msg = EmailMultiAlternatives(subject=subject, body=text_body, from_email=from_email, to=recipients)
+    msg.attach_alternative(html_body, "text/html")
+    msg.send(fail_silently=False)
 
 
 def get_week_boundaries(date=None, previous_week=False):
@@ -221,6 +367,7 @@ def _get_daily_breakdown(queryset, date_field, week_start, week_end):
 
 
 @api_view(['GET'])
+@renderer_classes([JSONRenderer, StaticHTMLRenderer])
 @authentication_classes([CombinedAuthentication])
 @permission_classes([IsAuthenticated])
 def get_weekly_report(request):
@@ -235,6 +382,18 @@ def get_weekly_report(request):
         - regenerate: If 'true', forces regeneration of the report even if cached
     """
     try:
+        body = _safe_json_body(request)
+        send_email = _parse_bool(body.get("send_email"), False) or _parse_bool(request.query_params.get("send_email"), False)
+        emails = body.get("emails", None)
+        recipients = None
+        if send_email:
+            try:
+                recipients = _validate_email_recipients(emails)
+            except ValueError as ve:
+                return APIResponse(str(ve), status.HTTP_400_BAD_REQUEST)
+
+        render_html = request.query_params.get("format", "").lower() == "html" or request.query_params.get("html", "").lower() == "true"
+
         week_start = None
         regenerate = request.query_params.get('regenerate', '').lower() == 'true'
         
@@ -284,28 +443,46 @@ def get_weekly_report(request):
             except WeeklyReport.DoesNotExist:
                 pass
         
+        report = None
+        created = False
         if existing_report and not regenerate:
-            serializer = WeeklyReportSerializer(existing_report)
-            return APIResponse(
-                "Weekly report retrieved from cache.",
-                status.HTTP_200_OK,
-                data=serializer.data
+            report = existing_report
+        else:
+            # Generate new report data
+            report_data = calculate_weekly_report_data(monday, sunday)
+
+            # Save or update the report
+            report, created = WeeklyReport.objects.update_or_create(
+                year=year,
+                week_number=week_number,
+                defaults=report_data
             )
         
-        # Generate new report data
-        report_data = calculate_weekly_report_data(monday, sunday)
-        
-        # Save or update the report
-        report, created = WeeklyReport.objects.update_or_create(
-            year=year,
-            week_number=week_number,
-            defaults=report_data
-        )
-        
+        # Render HTML (for endpoint or email)
+        subtitle = "Completed week summary" if True else None
+        context = _weekly_report_email_context(report, subtitle=subtitle, is_complete=True)
+        html_body = _render_weekly_report_html(context)
+
+        emailed_to = []
+        if send_email and recipients:
+            subject = f"VIMP Weekly Report – Week {context.get('week_number')}, {context.get('year')}"
+            text_body = (
+                f"VIMP Weekly Report\n"
+                f"Week {context.get('week_number')}, {context.get('year')}\n"
+                f"Period: {context.get('week_start_date')} to {context.get('week_end_date')}\n"
+            )
+            _send_report_email(subject=subject, html_body=html_body, recipients=recipients, text_body=text_body)
+            emailed_to = recipients
+
+        if render_html:
+            return HttpResponse(html_body, content_type="text/html")
+
         serializer = WeeklyReportSerializer(report)
-        message = "Weekly report generated." if created else "Weekly report regenerated."
-        
-        return APIResponse(message, status.HTTP_200_OK, data=serializer.data)
+        message = "Weekly report retrieved from cache." if (existing_report and not regenerate) else ("Weekly report generated." if created else "Weekly report regenerated.")
+        data = serializer.data
+        if send_email:
+            data = {**data, "email_sent": True, "emailed_to": emailed_to}
+        return APIResponse(message, status.HTTP_200_OK, data=data)
         
     except Exception as e:
         logger.error(f"Error generating weekly report: {e}")
@@ -365,6 +542,7 @@ def get_weekly_report_history(request):
 
 
 @api_view(['GET'])
+@renderer_classes([JSONRenderer, StaticHTMLRenderer])
 @authentication_classes([CombinedAuthentication])
 @permission_classes([IsAuthenticated])
 def get_current_week_summary(request):
@@ -373,6 +551,18 @@ def get_current_week_summary(request):
     This is not stored but calculated on-the-fly.
     """
     try:
+        body = _safe_json_body(request)
+        send_email = _parse_bool(body.get("send_email"), False) or _parse_bool(request.query_params.get("send_email"), False)
+        emails = body.get("emails", None)
+        recipients = None
+        if send_email:
+            try:
+                recipients = _validate_email_recipients(emails)
+            except ValueError as ve:
+                return APIResponse(str(ve), status.HTTP_400_BAD_REQUEST)
+
+        render_html = request.query_params.get("format", "").lower() == "html" or request.query_params.get("html", "").lower() == "true"
+
         monday, sunday = get_week_boundaries()
         today = timezone.now().date()
         
@@ -384,11 +574,40 @@ def get_current_week_summary(request):
         report_data['days_remaining'] = (sunday - today).days
         report_data['report_as_of'] = today.isoformat()
         
-        return APIResponse(
-            "Current week summary generated.",
-            status.HTTP_200_OK,
-            data=report_data
+        # Render the same weekly template, but mark as in-progress
+        report_data_for_template = {
+            **report_data,
+            "generated_at": timezone.now(),
+            "updated_at": timezone.now(),
+        }
+        context = _weekly_report_email_context(
+            report_data_for_template,
+            title="Weekly Operational Summary (In Progress)",
+            subtitle=f"As of {today.isoformat()}",
+            is_complete=False,
+            report_as_of=today.isoformat(),
         )
+        html_body = _render_weekly_report_html(context)
+
+        emailed_to = []
+        if send_email and recipients:
+            subject = f"VIMP Weekly Summary (In Progress) – Week {context.get('week_number')}, {context.get('year')}"
+            text_body = (
+                f"VIMP Weekly Summary (In Progress)\n"
+                f"Week {context.get('week_number')}, {context.get('year')}\n"
+                f"As of: {today.isoformat()}\n"
+            )
+            _send_report_email(subject=subject, html_body=html_body, recipients=recipients, text_body=text_body)
+            emailed_to = recipients
+
+        if render_html:
+            return HttpResponse(html_body, content_type="text/html")
+
+        response_data = report_data
+        if send_email:
+            response_data = {**response_data, "email_sent": True, "emailed_to": emailed_to}
+
+        return APIResponse("Current week summary generated.", status.HTTP_200_OK, data=response_data)
         
     except Exception as e:
         logger.error(f"Error generating current week summary: {e}")
@@ -399,6 +618,7 @@ def get_current_week_summary(request):
 
 
 @api_view(['GET'])
+@renderer_classes([JSONRenderer, StaticHTMLRenderer])
 @authentication_classes([CombinedAuthentication])
 @permission_classes([IsAuthenticated])
 def get_weekly_comparison(request):
@@ -408,6 +628,18 @@ def get_weekly_comparison(request):
     Returns metrics with percentage changes.
     """
     try:
+        body = _safe_json_body(request)
+        send_email = _parse_bool(body.get("send_email"), False) or _parse_bool(request.query_params.get("send_email"), False)
+        emails = body.get("emails", None)
+        recipients = None
+        if send_email:
+            try:
+                recipients = _validate_email_recipients(emails)
+            except ValueError as ve:
+                return APIResponse(str(ve), status.HTTP_400_BAD_REQUEST)
+
+        render_html = request.query_params.get("format", "").lower() == "html" or request.query_params.get("html", "").lower() == "true"
+
         # Get current week data
         current_monday, current_sunday = get_week_boundaries()
         today = timezone.now().date()
@@ -481,12 +713,37 @@ def get_weekly_comparison(request):
                 ),
             }
         }
-        
-        return APIResponse(
-            "Weekly comparison generated.",
-            status.HTTP_200_OK,
-            data=comparison
-        )
+
+        # Render and/or email comparison
+        context = {
+            "title": "Weekly Comparison (Current vs Previous)",
+            "subtitle": f"As of {today.isoformat()}",
+            "current_week": comparison["current_week"],
+            "previous_week": comparison["previous_week"],
+            "changes": comparison["changes"],
+            "app_name": "VIMP",
+        }
+        html_body = _render_weekly_comparison_html(context)
+
+        emailed_to = []
+        if send_email and recipients:
+            subject = f"VIMP Weekly Comparison – Week {comparison['current_week']['week_number']}, {comparison['current_week']['year']}"
+            text_body = (
+                f"VIMP Weekly Comparison\n"
+                f"Current week: {comparison['current_week']['week_start_date']} to {comparison['current_week']['week_end_date']} (in progress)\n"
+                f"Previous week: {comparison['previous_week']['week_start_date']} to {comparison['previous_week']['week_end_date']}\n"
+            )
+            _send_report_email(subject=subject, html_body=html_body, recipients=recipients, text_body=text_body)
+            emailed_to = recipients
+
+        if render_html:
+            return HttpResponse(html_body, content_type="text/html")
+
+        response_data = comparison
+        if send_email:
+            response_data = {**response_data, "email_sent": True, "emailed_to": emailed_to}
+
+        return APIResponse("Weekly comparison generated.", status.HTTP_200_OK, data=response_data)
         
     except Exception as e:
         logger.error(f"Error generating weekly comparison: {e}")

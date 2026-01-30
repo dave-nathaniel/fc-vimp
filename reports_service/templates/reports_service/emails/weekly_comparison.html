@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="x-apple-disable-message-reformatting" content="yes" />
+    <title>{{ title|default:"Weekly Comparison" }}</title>
+  </head>
+  <body style="margin:0; padding:0; background-color:#f4f6f8; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%;">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f4f6f8; width:100%;">
+      <tr>
+        <td align="center" style="padding:24px 12px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px; max-width:600px; background-color:#ffffff; border-collapse:collapse; border:1px solid #e6eaef;">
+            <tr>
+              <td style="padding:22px 24px; background-color:#0b3a66;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr>
+                    <td align="left" style="font-family:Arial, Helvetica, sans-serif; color:#ffffff;">
+                      <div style="font-size:18px; font-weight:bold; line-height:24px;">{{ app_name|default:"VIMP" }}</div>
+                      <div style="font-size:14px; line-height:20px; opacity:0.95;">{{ title|default:"Weekly Comparison" }}</div>
+                      {% if subtitle %}
+                      <div style="font-size:12px; line-height:18px; opacity:0.9; margin-top:4px;">{{ subtitle }}</div>
+                      {% endif %}
+                    </td>
+                    <td align="right" style="font-family:Arial, Helvetica, sans-serif; color:#ffffff;">
+                      <div style="font-size:12px; line-height:18px; opacity:0.9;">Current: Week {{ current_week.week_number }}, {{ current_week.year }}</div>
+                      <div style="font-size:12px; line-height:18px; opacity:0.9;">Previous: Week {{ previous_week.week_number }}, {{ previous_week.year }}</div>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:16px 24px;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr>
+                    <td style="font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:18px; color:#6b7280;">
+                      Current week period: <strong style="color:#111827;">{{ current_week.week_start_date }} – {{ current_week.week_end_date }}</strong> (in progress)
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="font-family:Arial, Helvetica, sans-serif; font-size:12px; line-height:18px; color:#6b7280; padding-top:4px;">
+                      Previous week period: <strong style="color:#111827;">{{ previous_week.week_start_date }} – {{ previous_week.week_end_date }}</strong>
+                    </td>
+                  </tr>
+                </table>
+
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse; border:1px solid #e6eaef; margin-top:14px;">
+                  <tr>
+                    <td style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:12px; color:#6b7280; border-bottom:1px solid #e6eaef; background-color:#f8fafc;">Metric</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:12px; color:#6b7280; border-bottom:1px solid #e6eaef; background-color:#f8fafc;">Current</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:12px; color:#6b7280; border-bottom:1px solid #e6eaef; background-color:#f8fafc;">Previous</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:12px; color:#6b7280; border-bottom:1px solid #e6eaef; background-color:#f8fafc;">Change</td>
+                  </tr>
+
+                  <tr>
+                    <td style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">GRNs received</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ current_week.data.total_grns_received }}</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ previous_week.data.total_grns_received }}</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ changes.grns_received_change }}%</td>
+                  </tr>
+
+                  <tr>
+                    <td style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">Gross value received</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ current_week.data.total_gross_value_received }}</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ previous_week.data.total_gross_value_received }}</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ changes.gross_value_change }}%</td>
+                  </tr>
+
+                  <tr>
+                    <td style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">Invoices approved</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ current_week.data.total_invoices_approved }}</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ previous_week.data.total_invoices_approved }}</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ changes.invoices_approved_change }}%</td>
+                  </tr>
+
+                  <tr>
+                    <td style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">Approved payment value</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ current_week.data.total_approved_payment_value }}</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ previous_week.data.total_approved_payment_value }}</td>
+                    <td align="right" style="padding:10px 10px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ changes.approved_payment_change }}%</td>
+                  </tr>
+                </table>
+
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr>
+                    <td style="padding-top:14px; font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:16px; color:#6b7280;">
+                      Note: Percentage changes compare the current week-to-date against the previous completed week.
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding:16px 24px; background-color:#0b3a66;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr>
+                    <td align="left" style="font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:16px; color:#ffffff; opacity:0.95;">
+                      {{ app_name|default:"VIMP" }} • Weekly Reporting
+                    </td>
+                    <td align="right" style="font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:16px; color:#ffffff; opacity:0.95;">
+                      Generated: {{ subtitle }}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+
