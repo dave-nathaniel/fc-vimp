@@ -551,3 +551,100 @@ def complete_transfer_in_sap(receipt_id: int):
     except Exception as e:
         logger.error(f"Unexpected error completing transfer for receipt {receipt_id}: {e}")
         raise SAPIntegrationError(f"Unexpected error: {e}")
+
+
+@retry_on_failure(max_retries=3, delay=5)
+def sync_approved_receipt_to_sap(receipt_id: int):
+    """
+    Async task to sync an approved transfer receipt to SAP ByD.
+    This is only called after the sending store approves the receipt.
+    """
+    from byd_service.rest import RESTServices
+
+    try:
+        receipt = TransferReceiptNote.objects.select_related(
+            'inbound_delivery',
+            'inbound_delivery__destination_store'
+        ).get(id=receipt_id)
+
+        logger.info(f"Processing SAP sync for approved receipt TR-{receipt.receipt_number}")
+
+        # Validate receipt is approved
+        if receipt.approval_status != 'approved':
+            logger.warning(f"Receipt TR-{receipt.receipt_number} not approved, skipping SAP sync")
+            return
+
+        # Skip if already synced
+        if receipt.synced_to_sap:
+            logger.info(f"Receipt TR-{receipt.receipt_number} already synced to SAP")
+            return
+
+        inbound_delivery = receipt.inbound_delivery
+
+        # Initialize SAP ByD REST service
+        try:
+            byd_service = RESTServices()
+        except Exception as e:
+            logger.error(f"Failed to initialize SAP ByD service: {e}")
+            raise RetryableError(f"SAP ByD service initialization failed: {e}")
+
+        # Prepare goods receipt data for SAP ByD
+        # This uses the delivery notification endpoint to confirm goods received
+        goods_receipt_data = {
+            "DeliveryID": inbound_delivery.delivery_id,
+            "ObjectID": inbound_delivery.object_id,
+            "PostingDate": timezone.now().strftime("%Y-%m-%d"),
+            "Note": f"Goods received at {inbound_delivery.destination_store.store_name} - TR-{receipt.receipt_number}",
+            "Item": []
+        }
+
+        for line_item in receipt.line_items.select_related('inbound_delivery_line_item').all():
+            delivery_line = line_item.inbound_delivery_line_item
+            item_data = {
+                "ProductID": delivery_line.product_id,
+                "ObjectID": delivery_line.object_id,
+                "Quantity": str(line_item.quantity_received),
+                "QuantityUnitCode": delivery_line.unit_of_measurement or "EA",
+                "Note": f"Received quantity: {line_item.quantity_received}"
+            }
+            goods_receipt_data["Item"].append(item_data)
+
+        # Post delivery notification to SAP ByD
+        logger.info(f"Posting delivery notification to SAP ByD for {inbound_delivery.delivery_id}")
+        try:
+            response = byd_service.post_delivery_notification(inbound_delivery.object_id)
+        except Exception as e:
+            logger.error(f"SAP ByD post_delivery_notification failed: {e}")
+            if "authentication" in str(e).lower() or "unauthorized" in str(e).lower():
+                raise RetryableError(f"SAP ByD authentication error: {e}")
+            elif "timeout" in str(e).lower() or "connection" in str(e).lower():
+                raise RetryableError(f"SAP ByD connection error: {e}")
+            else:
+                raise RetryableError(f"SAP ByD delivery notification failed: {e}")
+
+        # Update receipt sync status
+        receipt.synced_to_sap = True
+        receipt.metadata['sap_sync'] = {
+            'synced_at': timezone.now().isoformat(),
+            'response': response if response else {},
+            'approved_by': receipt.approved_by.username if receipt.approved_by else None
+        }
+        receipt.save()
+
+        # Update delivery status if fully received
+        inbound_delivery.refresh_from_db()
+        if inbound_delivery.is_fully_received:
+            inbound_delivery.delivery_status_code = '3'  # Completed
+            inbound_delivery.save()
+
+        logger.info(f"Receipt TR-{receipt.receipt_number} successfully synced to SAP ByD")
+
+    except TransferReceiptNote.DoesNotExist:
+        logger.error(f"Transfer receipt with ID {receipt_id} not found")
+        raise SAPIntegrationError(f"Transfer receipt with ID {receipt_id} not found")
+    except (SAPIntegrationError, RetryableError):
+        # Re-raise these specific exceptions for proper handling
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error syncing receipt {receipt_id} to SAP: {e}")
+        raise SAPIntegrationError(f"Unexpected error: {e}")

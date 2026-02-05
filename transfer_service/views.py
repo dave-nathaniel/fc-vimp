@@ -17,9 +17,9 @@ from rest_framework.decorators import api_view, authentication_classes
 from byd_service.rest import RESTServices
 from overrides.authenticate import CombinedAuthentication
 from overrides.rest_framework import APIResponse, CustomPagination
-from .models import StoreAuthorization, InboundDelivery
+from .models import StoreAuthorization, InboundDelivery, TransferReceiptNote
 from .serializers import (
-	TransferReceiptNoteSerializer,InboundDeliverySerializer
+	TransferReceiptNoteSerializer, InboundDeliverySerializer
 )
 from .services import AuthorizationService
 
@@ -191,13 +191,24 @@ def get_inbound_delivery(request, pk):
 	"""
 	Get details of a specific inbound delivery
 	If not found locally, try to fetch from SAP ByD
+
+	Query Parameters:
+	- refresh: If 'true', force refresh from SAP ByD and update existing record
 	"""
 	try:
-		try:
-			# Check if delivery exists locally
-			delivery = InboundDelivery.objects.get(delivery_id=pk)
-		except InboundDelivery.DoesNotExist:
-			# If not found locally, try to fetch from SAP ByD
+		# Check if refresh is requested
+		refresh = request.query_params.get('refresh', '').lower() == 'true'
+
+		delivery = None
+		if not refresh:
+			try:
+				# Check if delivery exists locally
+				delivery = InboundDelivery.objects.get(delivery_id=pk)
+			except InboundDelivery.DoesNotExist:
+				pass
+
+		# If refresh requested or delivery not found, fetch from SAP ByD
+		if refresh or delivery is None:
 			byd_rest = RESTServices()
 			delivery_data = byd_rest.get_delivery_by_id(pk)
 			if not delivery_data:
@@ -205,7 +216,13 @@ def get_inbound_delivery(request, pk):
 					status=status.HTTP_404_NOT_FOUND,
 					message=f"Delivery {pk} not found in SAP ByD"
 				)
-			# Create local delivery record
+
+			if refresh and delivery:
+				# Update existing delivery - delete old line items and recreate
+				delivery.line_items.all().delete()
+				delivery.delete()
+
+			# Create or recreate delivery record with fresh data
 			delivery = InboundDelivery.create_from_byd_data(delivery_data)
 
 		# Check user authorization for the delivery's destination store
@@ -217,7 +234,7 @@ def get_inbound_delivery(request, pk):
 		# Return the delivery data
 		return APIResponse(
 			status=status.HTTP_200_OK,
-			message="Delivery fetched successfully",
+			message="Delivery fetched successfully" if not refresh else "Delivery refreshed successfully",
 			data=InboundDeliverySerializer(delivery).data
 		)
 	except Exception as e:
@@ -402,4 +419,474 @@ def send_inbound_delivery_receipt_notification(inbound_delivery, received_items,
 		
 	except Exception as e:
 		logger.error(f"Error sending inbound delivery receipt notification: {str(e)}")
+		return False
+
+
+@api_view(['POST'])
+@authentication_classes([CombinedAuthentication])
+def approve_delivery_receipt(request, receipt_id):
+	"""
+	Sending store approves a receipt submitted by the receiving store.
+	Only after approval can the receipt be synced to SAP ByD.
+	"""
+	try:
+		try:
+			receipt = TransferReceiptNote.objects.select_related(
+				'inbound_delivery',
+				'inbound_delivery__destination_store'
+			).get(id=receipt_id)
+		except TransferReceiptNote.DoesNotExist:
+			return APIResponse(
+				status=status.HTTP_404_NOT_FOUND,
+				message=f"Receipt {receipt_id} not found"
+			)
+
+		inbound_delivery = receipt.inbound_delivery
+
+		# Validate user is authorized for the sending store/location
+		if not AuthorizationService.validate_source_location_access(
+			request.user,
+			inbound_delivery.source_location_id
+		):
+			return APIResponse(
+				status=status.HTTP_403_FORBIDDEN,
+				message="You are not authorized to approve receipts from this source location"
+			)
+
+		# Validate receipt is in a state that can be approved
+		if receipt.approval_status not in ['receipt_submitted', 'resubmitted']:
+			return APIResponse(
+				status=status.HTTP_400_BAD_REQUEST,
+				message=f"Receipt cannot be approved in status: {receipt.approval_status}"
+			)
+
+		with transaction.atomic():
+			# Update receipt to approved status
+			receipt.approval_status = 'approved'
+			receipt.approved_at = timezone.now()
+			receipt.approved_by = request.user
+			receipt.save()
+
+			# Update delivery status based on whether fully received
+			inbound_delivery.refresh_from_db()
+			if inbound_delivery.is_fully_received:
+				inbound_delivery.delivery_status_code = '3'  # Completed
+			else:
+				inbound_delivery.delivery_status_code = '2'  # In Process
+			inbound_delivery.save()
+
+			# Trigger SAP ByD sync asynchronously
+			from django_q.tasks import async_task
+			async_task('transfer_service.tasks.sync_approved_receipt_to_sap', receipt.id)
+
+		# Send approval notification
+		send_receipt_approval_notification(receipt, request.user)
+
+		return APIResponse(
+			status=status.HTTP_200_OK,
+			message=f"Receipt TR-{receipt.receipt_number} approved successfully",
+			data=TransferReceiptNoteSerializer(receipt).data
+		)
+
+	except Exception as e:
+		logger.error(f"Error approving receipt {receipt_id}: {e}")
+		return APIResponse(
+			status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			message=f"Error approving receipt: {str(e)}"
+		)
+
+
+@api_view(['POST'])
+@authentication_classes([CombinedAuthentication])
+def reject_delivery_receipt(request, receipt_id):
+	"""
+	Sending store rejects a receipt submitted by the receiving store.
+	The receiving store must update and resubmit the receipt.
+	"""
+	try:
+		try:
+			receipt = TransferReceiptNote.objects.select_related(
+				'inbound_delivery',
+				'inbound_delivery__destination_store'
+			).get(id=receipt_id)
+		except TransferReceiptNote.DoesNotExist:
+			return APIResponse(
+				status=status.HTTP_404_NOT_FOUND,
+				message=f"Receipt {receipt_id} not found"
+			)
+
+		inbound_delivery = receipt.inbound_delivery
+
+		# Validate user is authorized for the sending store/location
+		if not AuthorizationService.validate_source_location_access(
+			request.user,
+			inbound_delivery.source_location_id
+		):
+			return APIResponse(
+				status=status.HTTP_403_FORBIDDEN,
+				message="You are not authorized to reject receipts from this source location"
+			)
+
+		# Validate receipt is in a state that can be rejected
+		if receipt.approval_status not in ['receipt_submitted', 'resubmitted']:
+			return APIResponse(
+				status=status.HTTP_400_BAD_REQUEST,
+				message=f"Receipt cannot be rejected in status: {receipt.approval_status}"
+			)
+
+		# Validate rejection reason is provided
+		rejection_reason = request.data.get('rejection_reason')
+		if not rejection_reason:
+			return APIResponse(
+				status=status.HTTP_400_BAD_REQUEST,
+				message="Rejection reason is required"
+			)
+
+		with transaction.atomic():
+			# Update receipt to rejected status
+			receipt.approval_status = 'rejected'
+			receipt.rejection_reason = rejection_reason
+			receipt.rejection_count += 1
+			receipt.save()
+
+		# Send rejection notification to receiving store
+		send_receipt_rejection_notification(receipt, request.user, rejection_reason)
+
+		return APIResponse(
+			status=status.HTTP_200_OK,
+			message=f"Receipt TR-{receipt.receipt_number} rejected",
+			data={
+				'receipt': TransferReceiptNoteSerializer(receipt).data,
+				'rejection_reason': rejection_reason
+			}
+		)
+
+	except Exception as e:
+		logger.error(f"Error rejecting receipt {receipt_id}: {e}")
+		return APIResponse(
+			status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			message=f"Error rejecting receipt: {str(e)}"
+		)
+
+
+@api_view(['PUT'])
+@authentication_classes([CombinedAuthentication])
+def update_rejected_receipt(request, receipt_id):
+	"""
+	Receiving store updates a rejected receipt and resubmits for approval.
+	"""
+	from decimal import Decimal
+	from .models import TransferReceiptLineItem
+
+	try:
+		try:
+			receipt = TransferReceiptNote.objects.select_related(
+				'inbound_delivery',
+				'inbound_delivery__destination_store'
+			).get(id=receipt_id)
+		except TransferReceiptNote.DoesNotExist:
+			return APIResponse(
+				status=status.HTTP_404_NOT_FOUND,
+				message=f"Receipt {receipt_id} not found"
+			)
+
+		inbound_delivery = receipt.inbound_delivery
+
+		# Validate user is authorized for receiving store
+		if not AuthorizationService.validate_store_access(
+			request.user,
+			inbound_delivery.destination_store.byd_cost_center_code
+		):
+			return APIResponse(
+				status=status.HTTP_403_FORBIDDEN,
+				message="You are not authorized to update this receipt"
+			)
+
+		# Validate receipt is in rejected status
+		if receipt.approval_status != 'rejected':
+			return APIResponse(
+				status=status.HTTP_400_BAD_REQUEST,
+				message=f"Only rejected receipts can be updated. Current status: {receipt.approval_status}"
+			)
+
+		# Validate line items are provided
+		line_items_data = request.data.get('line_items', [])
+		if not line_items_data:
+			return APIResponse(
+				status=status.HTTP_400_BAD_REQUEST,
+				message="Line items are required for update"
+			)
+
+		with transaction.atomic():
+			# Update line items
+			for item_data in line_items_data:
+				try:
+					line_item = TransferReceiptLineItem.objects.get(
+						id=item_data.get('line_item_id'),
+						transfer_receipt=receipt
+					)
+				except TransferReceiptLineItem.DoesNotExist:
+					return APIResponse(
+						status=status.HTTP_400_BAD_REQUEST,
+						message=f"Line item {item_data.get('line_item_id')} not found in this receipt"
+					)
+
+				# Calculate old and new quantities
+				old_quantity = line_item.quantity_received
+				new_quantity = Decimal(str(item_data.get('quantity_received', old_quantity)))
+
+				# Update delivery line item received quantity
+				delivery_line = line_item.inbound_delivery_line_item
+				delivery_line.quantity_received = (
+					delivery_line.quantity_received - old_quantity + new_quantity
+				)
+
+				# Validate total doesn't exceed expected
+				if delivery_line.quantity_received > delivery_line.quantity_expected:
+					return APIResponse(
+						status=status.HTTP_400_BAD_REQUEST,
+						message=f"Total received ({delivery_line.quantity_received}) exceeds expected ({delivery_line.quantity_expected}) for {delivery_line.product_name}"
+					)
+
+				delivery_line.save()
+
+				# Update the receipt line item
+				line_item.quantity_received = new_quantity
+				line_item.save()
+
+			# Update receipt metadata with update history
+			update_history = receipt.metadata.get('update_history', [])
+			update_history.append({
+				'updated_at': timezone.now().isoformat(),
+				'updated_by': request.user.username,
+				'previous_status': 'rejected',
+				'previous_rejection_reason': receipt.rejection_reason
+			})
+			receipt.metadata['update_history'] = update_history
+
+			# Update receipt status to resubmitted
+			receipt.approval_status = 'resubmitted'
+			receipt.submitted_at = timezone.now()
+			receipt.notes = request.data.get('notes', receipt.notes)
+			receipt.save()
+
+		# Notify sending store of resubmission
+		send_receipt_resubmission_notification(receipt, request.user)
+
+		return APIResponse(
+			status=status.HTTP_200_OK,
+			message=f"Receipt TR-{receipt.receipt_number} updated and resubmitted for approval",
+			data=TransferReceiptNoteSerializer(receipt).data
+		)
+
+	except Exception as e:
+		logger.error(f"Error updating receipt {receipt_id}: {e}")
+		return APIResponse(
+			status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			message=f"Error updating receipt: {str(e)}"
+		)
+
+
+@api_view(['GET'])
+@authentication_classes([CombinedAuthentication])
+def get_pending_approvals(request):
+	"""
+	Get receipts pending approval for source locations (warehouses/stores)
+	the user has access to.
+	"""
+	try:
+		user = request.user
+
+		# Get source locations user can approve for
+		authorized_locations = AuthorizationService.get_user_authorized_source_locations(user)
+
+		if not authorized_locations:
+			return APIResponse(
+				status=status.HTTP_200_OK,
+				message='No pending approvals',
+				data={'count': 0, 'results': []}
+			)
+
+		# Get pending receipts for those source locations
+		pending_receipts = TransferReceiptNote.objects.filter(
+			inbound_delivery__source_location_id__in=authorized_locations,
+			approval_status__in=['receipt_submitted', 'resubmitted']
+		).select_related(
+			'inbound_delivery',
+			'inbound_delivery__destination_store',
+			'created_by'
+		).order_by('-submitted_at')
+
+		paginator = CustomPagination()
+		paginated_receipts = paginator.paginate_queryset(pending_receipts, request)
+		serializer = TransferReceiptNoteSerializer(paginated_receipts, many=True)
+
+		return APIResponse(
+			status=status.HTTP_200_OK,
+			message='Pending approvals fetched successfully',
+			data=paginator.get_paginated_response(serializer.data).data
+		)
+
+	except Exception as e:
+		logger.error(f"Error fetching pending approvals: {e}")
+		return APIResponse(
+			status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+			message='Error fetching pending approvals'
+		)
+
+
+def send_receipt_approval_notification(receipt, approved_by):
+	"""
+	Send notification to receiving store about receipt approval.
+	"""
+	try:
+		inbound_delivery = receipt.inbound_delivery
+		destination_store = inbound_delivery.destination_store
+
+		# Get receiving store managers
+		destination_managers = StoreAuthorization.objects.filter(
+			store=destination_store,
+			role__in=['manager', 'assistant']
+		).select_related('user')
+
+		manager_emails = [
+			auth.user.email for auth in destination_managers
+			if auth.user.email
+		]
+
+		if not manager_emails:
+			logger.warning(f"No email addresses found for managers of store {destination_store.store_name}")
+			return False
+
+		context = {
+			'receipt': receipt,
+			'inbound_delivery': inbound_delivery,
+			'approved_by': approved_by,
+			'destination_store': destination_store
+		}
+
+		subject = f"Receipt Approved - TR-{receipt.receipt_number}"
+		html_content = render_to_string('transfer_service/receipt_approval_notification.html', context)
+
+		email = EmailMessage(
+			subject=subject,
+			body=html_content,
+			from_email='network@foodconceptsplc.com',
+			to=manager_emails,
+		)
+		email.content_subtype = 'html'
+		email.send()
+
+		logger.info(f"Approval notification sent for receipt TR-{receipt.receipt_number}")
+		return True
+
+	except Exception as e:
+		logger.error(f"Error sending approval notification: {str(e)}")
+		return False
+
+
+def send_receipt_rejection_notification(receipt, rejected_by, rejection_reason):
+	"""
+	Send notification to receiving store about receipt rejection.
+	"""
+	try:
+		inbound_delivery = receipt.inbound_delivery
+		destination_store = inbound_delivery.destination_store
+
+		# Get receiving store managers
+		destination_managers = StoreAuthorization.objects.filter(
+			store=destination_store,
+			role__in=['manager', 'assistant']
+		).select_related('user')
+
+		manager_emails = [
+			auth.user.email for auth in destination_managers
+			if auth.user.email
+		]
+
+		if not manager_emails:
+			logger.warning(f"No email addresses found for managers of store {destination_store.store_name}")
+			return False
+
+		context = {
+			'receipt': receipt,
+			'inbound_delivery': inbound_delivery,
+			'rejected_by': rejected_by,
+			'rejection_reason': rejection_reason,
+			'destination_store': destination_store
+		}
+
+		subject = f"Receipt Rejected - TR-{receipt.receipt_number} - Action Required"
+		html_content = render_to_string('transfer_service/receipt_rejection_notification.html', context)
+
+		email = EmailMessage(
+			subject=subject,
+			body=html_content,
+			from_email='network@foodconceptsplc.com',
+			to=manager_emails,
+		)
+		email.content_subtype = 'html'
+		email.send()
+
+		logger.info(f"Rejection notification sent for receipt TR-{receipt.receipt_number}")
+		return True
+
+	except Exception as e:
+		logger.error(f"Error sending rejection notification: {str(e)}")
+		return False
+
+
+def send_receipt_resubmission_notification(receipt, resubmitted_by):
+	"""
+	Send notification to sending store about receipt resubmission.
+	"""
+	try:
+		inbound_delivery = receipt.inbound_delivery
+		source_location_id = inbound_delivery.source_location_id
+
+		# Get sending store managers (using StoreAuthorization for warehouses treated as stores)
+		from egrn_service.models import Store
+		try:
+			source_store = Store.objects.get(byd_cost_center_code=source_location_id)
+			source_managers = StoreAuthorization.objects.filter(
+				store=source_store,
+				role__in=['manager', 'assistant']
+			).select_related('user')
+
+			manager_emails = [
+				auth.user.email for auth in source_managers
+				if auth.user.email
+			]
+		except Store.DoesNotExist:
+			logger.warning(f"Source location {source_location_id} not found as a store")
+			manager_emails = []
+
+		if not manager_emails:
+			logger.warning(f"No email addresses found for managers of source location {source_location_id}")
+			return False
+
+		context = {
+			'receipt': receipt,
+			'inbound_delivery': inbound_delivery,
+			'resubmitted_by': resubmitted_by,
+			'destination_store': inbound_delivery.destination_store
+		}
+
+		subject = f"Receipt Resubmitted - TR-{receipt.receipt_number} - Review Required"
+		html_content = render_to_string('transfer_service/receipt_resubmission_notification.html', context)
+
+		email = EmailMessage(
+			subject=subject,
+			body=html_content,
+			from_email='network@foodconceptsplc.com',
+			to=manager_emails,
+		)
+		email.content_subtype = 'html'
+		email.send()
+
+		logger.info(f"Resubmission notification sent for receipt TR-{receipt.receipt_number}")
+		return True
+
+	except Exception as e:
+		logger.error(f"Error sending resubmission notification: {str(e)}")
 		return False

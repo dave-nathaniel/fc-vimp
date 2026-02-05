@@ -97,7 +97,7 @@ class AuthorizationService:
         Filter a queryset to only include records for stores the user has access to
         """
         authorized_stores = AuthorizationService.get_user_authorized_stores(user)
-        
+
         # Handle different model types
         if hasattr(queryset.model, 'source_store'):
             return queryset.filter(source_store__in=authorized_stores)
@@ -105,8 +105,31 @@ class AuthorizationService:
             return queryset.filter(destination_store__in=authorized_stores)
         elif hasattr(queryset.model, 'store'):
             return queryset.filter(store__in=authorized_stores)
-        
+
         return queryset
+
+    @staticmethod
+    def get_user_authorized_source_locations(user: CustomUser) -> list:
+        """
+        Get source locations (warehouses/stores) user can approve receipts for.
+        Uses existing StoreAuthorization - warehouses are treated as stores.
+        Only users with manager or assistant roles can approve.
+        """
+        authorized_stores = Store.objects.filter(
+            authorized_users__user=user,
+            authorized_users__role__in=['manager', 'assistant']
+        ).values_list('byd_cost_center_code', flat=True)
+
+        return list(authorized_stores)
+
+    @staticmethod
+    def validate_source_location_access(user: CustomUser, source_location_id: str) -> bool:
+        """
+        Validate if user can approve receipts from a specific source location.
+        Uses existing StoreAuthorization model.
+        """
+        authorized_locations = AuthorizationService.get_user_authorized_source_locations(user)
+        return source_location_id in authorized_locations
 
 
 class DeliveryService:
@@ -164,7 +187,7 @@ class DeliveryService:
             delivery_data = self.byd_rest.get_delivery_by_id(delivery_id)
             if not delivery_data:
                 raise ValidationError(f"Delivery {delivery_id} not found in SAP ByD")
-            
+
             return InboundDelivery.create_from_byd_data(delivery_data)
         except Exception as e:
             logger.error(f"Error fetching delivery {delivery_id}: {e}")
