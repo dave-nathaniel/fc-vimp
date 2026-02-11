@@ -59,7 +59,7 @@ INSTALLED_APPS = [
 	'django.contrib.sessions',
 	'django.contrib.messages',
 	'django.contrib.staticfiles',
-	
+
 	'rest_framework',
 	'rest_framework_simplejwt',
 	'corsheaders',
@@ -74,6 +74,7 @@ INSTALLED_APPS = [
 	'byd_service',
 	'app_settings',
 	'transfer_service',
+	'imprest_service',
 ]
 
 JSON_EDITOR_JS = 'https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/8.6.4/jsoneditor.js'
