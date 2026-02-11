@@ -217,12 +217,16 @@ def get_inbound_delivery(request, pk):
 					message=f"Delivery {pk} not found in SAP ByD"
 				)
 
-			if refresh and delivery:
-				# Update existing delivery - delete old line items and recreate
+			# Delete any existing delivery with the same object_id to avoid duplicate key error
+			object_id = delivery_data.get("ObjectID")
+			if object_id:
+				InboundDelivery.objects.filter(object_id=object_id).delete()
+			elif delivery:
+				# Fallback: delete the delivery found by delivery_id
 				delivery.line_items.all().delete()
 				delivery.delete()
 
-			# Create or recreate delivery record with fresh data
+			# Create delivery record with fresh data
 			delivery = InboundDelivery.create_from_byd_data(delivery_data)
 
 		# Check user authorization for the delivery's destination store
