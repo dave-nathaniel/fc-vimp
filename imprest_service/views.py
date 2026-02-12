@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view, authentication_classes
 from rest_framework import status
 from django.db.models import Q
 from overrides.rest_framework import APIResponse, CustomPagination
-from overrides.authenticate import CombinedAuthentication
+from overrides.authenticate import CombinedWithBasicAuthentication
 from .models import ImprestItem
 from .serializers import ImprestItemSerializer, ImprestItemBriefSerializer
 import logging
@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 @api_view(['GET'])
-@authentication_classes([CombinedAuthentication])
+@authentication_classes([CombinedWithBasicAuthentication])
 def get_imprest_items(request):
     """
     GET /imprest/v1/items/
@@ -98,7 +98,7 @@ def get_imprest_items(request):
 
 
 @api_view(['GET'])
-@authentication_classes([CombinedAuthentication])
+@authentication_classes([CombinedWithBasicAuthentication])
 def get_imprest_item(request, gl_account):
     """
     GET /imprest/v1/items/<gl_account>/
@@ -166,7 +166,7 @@ def get_imprest_item(request, gl_account):
 
 
 @api_view(['POST'])
-@authentication_classes([CombinedAuthentication])
+@authentication_classes([CombinedWithBasicAuthentication])
 def sync_imprest_items(request):
     """
     POST /imprest/v1/sync/
@@ -219,7 +219,7 @@ def sync_imprest_items(request):
 
 
 @api_view(['GET'])
-@authentication_classes([CombinedAuthentication])
+@authentication_classes([CombinedWithBasicAuthentication])
 def get_expense_accounts(request):
     """
     GET /imprest/v1/expense-accounts/
@@ -277,7 +277,7 @@ def get_expense_accounts(request):
 
 
 @api_view(['GET'])
-@authentication_classes([CombinedAuthentication])
+@authentication_classes([CombinedWithBasicAuthentication])
 def get_bank_accounts(request):
     """
     GET /imprest/v1/bank-accounts/
