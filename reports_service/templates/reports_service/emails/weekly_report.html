@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="x-apple-disable-message-reformatting" content="yes" />
+    <title>{{ title|default:"Weekly Report" }}</title>
+  </head>
+  <body style="margin:0; padding:0; background-color:#f4f6f8; -webkit-text-size-adjust:100%; -ms-text-size-adjust:100%;">
+    <!-- Full width background table -->
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f4f6f8; width:100%;">
+      <tr>
+        <td align="center" style="padding:24px 12px;">
+          <!-- Container -->
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px; max-width:600px; background-color:#ffffff; border-collapse:collapse; border:1px solid #e6eaef;">
+            <!-- Header -->
+            <tr>
+              <td style="padding:22px 24px; background-color:#0b3a66;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr>
+                    <td align="left" style="font-family:Arial, Helvetica, sans-serif; color:#ffffff;">
+                      <div style="font-size:18px; font-weight:bold; line-height:24px;">{{ app_name|default:"VIMP" }}</div>
+                      <div style="font-size:14px; line-height:20px; opacity:0.95;">{{ title|default:"Weekly Operational Summary" }}</div>
+                      {% if subtitle %}
+                      <div style="font-size:12px; line-height:18px; opacity:0.9; margin-top:4px;">{{ subtitle }}</div>
+                      {% endif %}
+                    </td>
+                    <td align="right" style="font-family:Arial, Helvetica, sans-serif; color:#ffffff;">
+                      <div style="font-size:12px; line-height:18px; opacity:0.9;">Week {{ week_number }}, {{ year }}</div>
+                      <div style="font-size:12px; line-height:18px; opacity:0.9;">{{ week_start_date }} – {{ week_end_date }}</div>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- Status banner -->
+            <tr>
+              <td style="padding:12px 24px; background-color:#f8fafc; border-bottom:1px solid #e6eaef;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr>
+                    <td align="left" style="font-family:Arial, Helvetica, sans-serif; color:#1f2937; font-size:12px; line-height:18px;">
+                      {% if is_complete %}
+                        <strong>Status:</strong> Completed week
+                      {% else %}
+                        <strong>Status:</strong> In progress{% if report_as_of %} (as of {{ report_as_of }}){% endif %}
+                      {% endif %}
+                    </td>
+                    <td align="right" style="font-family:Arial, Helvetica, sans-serif; color:#6b7280; font-size:12px; line-height:18px;">
+                      {% if updated_at %}<strong>Last updated:</strong> {{ updated_at }}{% endif %}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- Body -->
+            <tr>
+              <td style="padding:20px 24px;">
+                <!-- Section: Goods Received -->
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr>
+                    <td style="font-family:Arial, Helvetica, sans-serif; color:#111827; font-size:14px; line-height:20px; font-weight:bold; padding-bottom:10px;">
+                      Goods Received (GRN)
+                    </td>
+                  </tr>
+                </table>
+
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse; border:1px solid #e6eaef;">
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:12px; color:#6b7280; border-bottom:1px solid #e6eaef; background-color:#f8fafc;">Metric</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:12px; color:#6b7280; border-bottom:1px solid #e6eaef; background-color:#f8fafc;">Value</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">Total GRNs received</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ total_grns_received }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">Total GRN line items</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ total_grn_line_items }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">Total net value received</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ total_net_value_received }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">Total gross value received</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ total_gross_value_received }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">Total tax amount</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ total_tax_amount }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">Unique vendors received</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ unique_vendors_received }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">Unique stores received</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ unique_stores_received }}</td>
+                  </tr>
+                </table>
+
+                <!-- Spacer -->
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr><td style="height:18px; line-height:18px; font-size:0;">&nbsp;</td></tr>
+                </table>
+
+                <!-- Section: Invoices & Approvals -->
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr>
+                    <td style="font-family:Arial, Helvetica, sans-serif; color:#111827; font-size:14px; line-height:20px; font-weight:bold; padding-bottom:10px;">
+                      Invoices & Approvals
+                    </td>
+                  </tr>
+                </table>
+
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse; border:1px solid #e6eaef;">
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:12px; color:#6b7280; border-bottom:1px solid #e6eaef; background-color:#f8fafc;">Metric</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:12px; color:#6b7280; border-bottom:1px solid #e6eaef; background-color:#f8fafc;">Value</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">Invoices created</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ total_invoices_created }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">Invoices approved</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ total_invoices_approved }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">Approved payment value</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ total_approved_payment_value }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">Invoices rejected</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ total_invoices_rejected }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">Invoices pending</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827;">{{ total_invoices_pending }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">Unique vendors paid</td>
+                    <td align="right" style="padding:10px 12px; font-family:Arial, Helvetica, sans-serif; font-size:13px; color:#111827; background-color:#fcfdff;">{{ unique_vendors_paid }}</td>
+                  </tr>
+                </table>
+
+                <!-- Footer note -->
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr>
+                    <td style="padding-top:16px; font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:16px; color:#6b7280;">
+                      This report is generated from system activity recorded during the stated period. If figures look unexpected, verify GRN and invoice timestamps and approval signatures for the week.
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- Footer -->
+            <tr>
+              <td style="padding:16px 24px; background-color:#0b3a66;">
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse:collapse;">
+                  <tr>
+                    <td align="left" style="font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:16px; color:#ffffff; opacity:0.95;">
+                      {{ app_name|default:"VIMP" }} • Weekly Reporting
+                    </td>
+                    <td align="right" style="font-family:Arial, Helvetica, sans-serif; font-size:11px; line-height:16px; color:#ffffff; opacity:0.95;">
+                      {% if generated_at %}Generated: {{ generated_at }}{% endif %}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+
+          <!-- Spacer -->
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px; max-width:600px; border-collapse:collapse;">
+            <tr><td style="height:14px; line-height:14px; font-size:0;">&nbsp;</td></tr>
+          </table>
+
+          <!-- Plain footer -->
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px; max-width:600px; border-collapse:collapse;">
+            <tr>
+              <td align="center" style="font-family:Arial, Helvetica, sans-serif; font-size:10px; line-height:14px; color:#6b7280;">
+                You are receiving this email because you were included as a report recipient.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+
