@@ -430,10 +430,17 @@ def send_inbound_delivery_receipt_notification(inbound_delivery, received_items,
 @authentication_classes([CombinedAuthentication])
 def approve_delivery_receipt(request, receipt_id):
 	"""
-	Sending store approves a receipt submitted by the receiving store.
+	SCD_Team approves a receipt submitted by the receiving store.
 	Only after approval can the receipt be synced to SAP ByD.
 	"""
 	try:
+		# Only SCD_Team members can approve receipts
+		if not AuthorizationService.is_scd_team_member(request.user):
+			return APIResponse(
+				status=status.HTTP_403_FORBIDDEN,
+				message="Only SCD Team members can approve receipts"
+			)
+
 		try:
 			receipt = TransferReceiptNote.objects.select_related(
 				'inbound_delivery',
@@ -443,18 +450,6 @@ def approve_delivery_receipt(request, receipt_id):
 			return APIResponse(
 				status=status.HTTP_404_NOT_FOUND,
 				message=f"Receipt {receipt_id} not found"
-			)
-
-		inbound_delivery = receipt.inbound_delivery
-
-		# Validate user is authorized for the sending store/location
-		if not AuthorizationService.validate_source_location_access(
-			request.user,
-			inbound_delivery.source_location_id
-		):
-			return APIResponse(
-				status=status.HTTP_403_FORBIDDEN,
-				message="You are not authorized to approve receipts from this source location"
 			)
 
 		# Validate receipt is in a state that can be approved
@@ -504,10 +499,17 @@ def approve_delivery_receipt(request, receipt_id):
 @authentication_classes([CombinedAuthentication])
 def reject_delivery_receipt(request, receipt_id):
 	"""
-	Sending store rejects a receipt submitted by the receiving store.
+	SCD_Team rejects a receipt submitted by the receiving store.
 	The receiving store must update and resubmit the receipt.
 	"""
 	try:
+		# Only SCD_Team members can reject receipts
+		if not AuthorizationService.is_scd_team_member(request.user):
+			return APIResponse(
+				status=status.HTTP_403_FORBIDDEN,
+				message="Only SCD Team members can reject receipts"
+			)
+
 		try:
 			receipt = TransferReceiptNote.objects.select_related(
 				'inbound_delivery',
@@ -517,18 +519,6 @@ def reject_delivery_receipt(request, receipt_id):
 			return APIResponse(
 				status=status.HTTP_404_NOT_FOUND,
 				message=f"Receipt {receipt_id} not found"
-			)
-
-		inbound_delivery = receipt.inbound_delivery
-
-		# Validate user is authorized for the sending store/location
-		if not AuthorizationService.validate_source_location_access(
-			request.user,
-			inbound_delivery.source_location_id
-		):
-			return APIResponse(
-				status=status.HTTP_403_FORBIDDEN,
-				message="You are not authorized to reject receipts from this source location"
 			)
 
 		# Validate receipt is in a state that can be rejected
@@ -577,12 +567,19 @@ def reject_delivery_receipt(request, receipt_id):
 @authentication_classes([CombinedAuthentication])
 def update_rejected_receipt(request, receipt_id):
 	"""
-	Receiving store updates a rejected receipt and resubmits for approval.
+	Restaurant Manager updates a rejected receipt and resubmits for approval.
 	"""
 	from decimal import Decimal
 	from .models import TransferReceiptLineItem
 
 	try:
+		# Only Restaurant_Manager members can update rejected receipts
+		if not AuthorizationService.is_restaurant_manager(request.user):
+			return APIResponse(
+				status=status.HTTP_403_FORBIDDEN,
+				message="Only Restaurant Managers can update rejected receipts"
+			)
+
 		try:
 			receipt = TransferReceiptNote.objects.select_related(
 				'inbound_delivery',
@@ -592,18 +589,6 @@ def update_rejected_receipt(request, receipt_id):
 			return APIResponse(
 				status=status.HTTP_404_NOT_FOUND,
 				message=f"Receipt {receipt_id} not found"
-			)
-
-		inbound_delivery = receipt.inbound_delivery
-
-		# Validate user is authorized for receiving store
-		if not AuthorizationService.validate_store_access(
-			request.user,
-			inbound_delivery.destination_store.byd_cost_center_code
-		):
-			return APIResponse(
-				status=status.HTTP_403_FORBIDDEN,
-				message="You are not authorized to update this receipt"
 			)
 
 		# Validate receipt is in rejected status
@@ -696,26 +681,36 @@ def update_rejected_receipt(request, receipt_id):
 def get_pending_approvals(request):
 	"""
 	Get receipts pending approval for source locations (warehouses/stores)
-	the user has access to.
+	the user has access to. SCD_Team members can see all pending approvals.
 	"""
 	try:
 		user = request.user
 
 		# Get source locations user can approve for
+		# Returns None for SCD_Team (all locations), or a list for other users
 		authorized_locations = AuthorizationService.get_user_authorized_source_locations(user)
 
-		if not authorized_locations:
+		# If authorized_locations is an empty list (not None), user has no access
+		if authorized_locations is not None and len(authorized_locations) == 0:
 			return APIResponse(
 				status=status.HTTP_200_OK,
 				message='No pending approvals',
 				data={'count': 0, 'results': []}
 			)
 
-		# Get pending receipts for those source locations
+		# Build query for pending receipts
 		pending_receipts = TransferReceiptNote.objects.filter(
-			inbound_delivery__source_location_id__in=authorized_locations,
 			approval_status__in=['receipt_submitted', 'resubmitted']
-		).select_related(
+		)
+
+		# If authorized_locations is None (SCD_Team), show all pending receipts
+		# Otherwise, filter by authorized source locations
+		if authorized_locations is not None:
+			pending_receipts = pending_receipts.filter(
+				inbound_delivery__source_location_id__in=authorized_locations
+			)
+
+		pending_receipts = pending_receipts.select_related(
 			'inbound_delivery',
 			'inbound_delivery__destination_store',
 			'created_by'
