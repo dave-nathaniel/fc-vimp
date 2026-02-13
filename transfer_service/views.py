@@ -467,6 +467,7 @@ def approve_delivery_receipt(request, receipt_id):
 			receipt.save()
 
 			# Update delivery status based on whether fully received
+			inbound_delivery = receipt.inbound_delivery
 			inbound_delivery.refresh_from_db()
 			if inbound_delivery.is_fully_received:
 				inbound_delivery.delivery_status_code = '3'  # Completed
@@ -610,8 +611,9 @@ def update_rejected_receipt(request, receipt_id):
 			# Update line items
 			for item_data in line_items_data:
 				try:
+					# Look up by delivery line item ID (what frontend sends)
 					line_item = TransferReceiptLineItem.objects.get(
-						id=item_data.get('line_item_id'),
+						inbound_delivery_line_item_id=item_data.get('line_item_id'),
 						transfer_receipt=receipt
 					)
 				except TransferReceiptLineItem.DoesNotExist:
