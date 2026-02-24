@@ -31,16 +31,23 @@ class InboundDeliveryLineItemSerializer(serializers.ModelSerializer):
         return float(obj.quantity_expected) * float(obj.unit_price or 0)
 
 
+class ReceiptLineItemSummarySerializer(serializers.Serializer):
+    """Lightweight serializer for receipt line items when nested in receipt summary"""
+    delivery_line_item = serializers.IntegerField(source='inbound_delivery_line_item_id')
+    quantity_received = serializers.DecimalField(max_digits=15, decimal_places=3)
+
+
 class InboundDeliveryReceiptSummarySerializer(serializers.ModelSerializer):
     """Lightweight serializer for receipts when nested in delivery responses"""
     created_by = serializers.CharField(source='created_by.get_full_name', read_only=True)
     approval_status_display = serializers.SerializerMethodField()
     approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True, allow_null=True)
+    line_items = ReceiptLineItemSummarySerializer(many=True, read_only=True)
 
     class Meta:
         model = None  # Will be set after TransferReceiptNote import
         fields = [
-            'id', 'receipt_number', 'notes', 'created_date', 'created_by',
+            'id', 'receipt_number', 'line_items', 'notes', 'created_date', 'created_by',
             'approval_status', 'approval_status_display', 'submitted_at',
             'approved_at', 'approved_by_name', 'rejection_reason', 'rejection_count',
             'synced_to_sap', 'posted_to_icg'
