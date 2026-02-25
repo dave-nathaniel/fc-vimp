@@ -8,7 +8,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.mail import EmailMessage
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, Prefetch
 from django.template.loader import render_to_string
 from django.utils import timezone
 from rest_framework import status
@@ -28,16 +28,25 @@ logger = logging.getLogger(__name__)
 EXPORT_DOWNLOAD_DIR = 'downloads'
 EXPORT_FILENAME_PREFIX = 'transfers_search'
 EXPORT_COLUMNS = [
-	'Delivery ID',
+	'Sales Order Ref',
+	'GTN No (Delivery ID)',
+	'Receipt ID',
 	'Source Location ID',
 	'Source Location Name',
 	'Destination Store Name',
 	'Destination Store Code',
 	'Delivery Date',
 	'Delivery Status Code',
+	'Produce Name',
+	'Product Code',
+	'UoM',
+	'Unit Price',
+	'Expected Qty',
+	'Qty Received',
+	'Outstanding Qty',
+	'Confirmation Status',
 	'Delivery Status',
 	'Delivery Type Code',
-	'Sales Order Reference',
 	'Created Date',
 ]
 
@@ -47,22 +56,52 @@ def _format_date(value):
 
 
 def _build_export_rows(queryset):
+	queryset = queryset.prefetch_related(
+		'line_items',
+		Prefetch('receipts', queryset=TransferReceiptNote.objects.order_by('-created_date')),
+	).select_related('destination_store')
+
 	rows = []
 	for delivery in queryset:
 		dest_store = getattr(delivery, 'destination_store', None)
-		rows.append({
-			'Delivery ID': delivery.delivery_id,
-			'Source Location ID': delivery.source_location_id,
-			'Source Location Name': delivery.source_location_name,
+		receipts = list(delivery.receipts.all())
+		latest_receipt = receipts[0] if receipts else None
+
+		delivery_base = {
+			'Sales Order Ref':        delivery.sales_order_reference or '',
+			'GTN No (Delivery ID)':   delivery.delivery_id,
+			'Receipt ID':             latest_receipt.id if latest_receipt else '',
+			'Source Location ID':     delivery.source_location_id,
+			'Source Location Name':   delivery.source_location_name,
 			'Destination Store Name': getattr(dest_store, 'store_name', ''),
 			'Destination Store Code': getattr(dest_store, 'byd_cost_center_code', ''),
-			'Delivery Date': _format_date(delivery.delivery_date),
-			'Delivery Status Code': delivery.delivery_status_code,
-			'Delivery Status': delivery.delivery_status,
-			'Delivery Type Code': delivery.delivery_type_code,
-			'Sales Order Reference': delivery.sales_order_reference or '',
-			'Created Date': _format_date(delivery.created_date),
-		})
+			'Delivery Date':          _format_date(delivery.delivery_date),
+			'Delivery Status Code':   delivery.delivery_status_code,
+			'Confirmation Status':    latest_receipt.get_approval_status_display() if latest_receipt else '',
+			'Delivery Status':        delivery.delivery_status,
+			'Delivery Type Code':     delivery.delivery_type_code,
+			'Created Date':           _format_date(delivery.created_date),
+		}
+
+		line_items = list(delivery.line_items.all())
+		if line_items:
+			for li in line_items:
+				rows.append({
+					**delivery_base,
+					'Produce Name':    li.product_name,
+					'Product Code':    li.product_id,
+					'UoM':             li.unit_of_measurement,
+					'Unit Price':      float(li.unit_price) if li.unit_price else '',
+					'Expected Qty':    float(li.quantity_expected),
+					'Qty Received':    float(li.quantity_received),
+					'Outstanding Qty': float(li.quantity_outstanding),
+				})
+		else:
+			rows.append({
+				**delivery_base,
+				'Produce Name': '', 'Product Code': '', 'UoM': '',
+				'Unit Price': '', 'Expected Qty': '', 'Qty Received': '', 'Outstanding Qty': '',
+			})
 	return rows
 
 
@@ -111,6 +150,8 @@ def _apply_delivery_filters(queryset, query_params):
 	source_location_name = query_params.get('source_location_name')
 	destination_store = query_params.get('destination_store')
 	delivery_date = query_params.get('delivery_date')
+	delivery_date_from = query_params.get('delivery_date_from')
+	delivery_date_to = query_params.get('delivery_date_to')
 	delivery_status_code = query_params.get('delivery_status_code') or query_params.get('status')
 	delivery_type_code = query_params.get('delivery_type_code')
 	sales_order_reference = query_params.get('sales_order_reference')
@@ -132,6 +173,18 @@ def _apply_delivery_filters(queryset, query_params):
 		except ValueError:
 			raise ValidationError("delivery_date must be in YYYY-MM-DD format")
 		queryset = queryset.filter(delivery_date=parsed_date)
+	if delivery_date_from:
+		try:
+			parsed_from = date.fromisoformat(delivery_date_from)
+		except ValueError:
+			raise ValidationError("delivery_date_from must be in YYYY-MM-DD format")
+		queryset = queryset.filter(delivery_date__gte=parsed_from)
+	if delivery_date_to:
+		try:
+			parsed_to = date.fromisoformat(delivery_date_to)
+		except ValueError:
+			raise ValidationError("delivery_date_to must be in YYYY-MM-DD format")
+		queryset = queryset.filter(delivery_date__lte=parsed_to)
 	if delivery_type_code:
 		queryset = queryset.filter(delivery_type_code__icontains=delivery_type_code)
 	if sales_order_reference:
@@ -477,7 +530,7 @@ def approve_delivery_receipt(request, receipt_id):
 
 			# Trigger SAP ByD sync asynchronously
 			from django_q.tasks import async_task
-			async_task('transfer_service.tasks.sync_approved_receipt_to_sap', receipt.id)
+			async_task('vimp.tasks.sync_approved_receipt_to_sap', receipt.id)
 
 		# Send approval notification
 		send_receipt_approval_notification(receipt, request.user)

@@ -609,3 +609,109 @@ if __name__ == "__main__":
 	# invoice = Invoice.objects.get(id=323)
 	# print(create_invoice_on_byd(invoice))
 	...
+
+
+# ─── Transfer Service: SAP Receipt Sync ───────────────────────────────────────
+import time as _transfer_time
+
+
+class SAPIntegrationError(Exception):
+	pass
+
+
+class RetryableError(Exception):
+	pass
+
+
+def _transfer_retry(max_retries=3, delay=5):
+	"""Retry decorator with exponential backoff for transfer tasks."""
+	def decorator(func):
+		def wrapper(*args, **kwargs):
+			last_exc = None
+			for attempt in range(max_retries):
+				try:
+					return func(*args, **kwargs)
+				except RetryableError as e:
+					last_exc = e
+					if attempt < max_retries - 1:
+						wait = delay * (2 ** attempt)
+						logger.warning(f"Attempt {attempt + 1} failed, retrying in {wait}s: {e}")
+						_transfer_time.sleep(wait)
+					else:
+						logger.error(f"All {max_retries} attempts failed for {func.__name__}")
+				except Exception as e:
+					logger.error(f"Non-retryable error in {func.__name__}: {e}")
+					raise
+			raise last_exc
+		return wrapper
+	return decorator
+
+
+@_transfer_retry(max_retries=3, delay=5)
+def sync_approved_receipt_to_sap(receipt_id: int):
+	"""
+	Sync an approved transfer receipt to SAP ByD.
+	Only called after SCD Team approves the receipt.
+	Updates synced_to_sap on success.
+	"""
+	from byd_service.rest import RESTServices
+	from transfer_service.models import TransferReceiptNote
+
+	try:
+		receipt = TransferReceiptNote.objects.select_related(
+			'inbound_delivery',
+			'inbound_delivery__destination_store'
+		).get(id=receipt_id)
+
+		logger.info(f"Processing SAP sync for approved receipt TR-{receipt.receipt_number}")
+
+		if receipt.approval_status != 'approved':
+			logger.warning(f"Receipt TR-{receipt.receipt_number} not approved, skipping SAP sync")
+			return
+
+		if receipt.synced_to_sap:
+			logger.info(f"Receipt TR-{receipt.receipt_number} already synced to SAP")
+			return
+
+		inbound_delivery = receipt.inbound_delivery
+
+		try:
+			byd_service = RESTServices()
+		except Exception as e:
+			logger.error(f"Failed to initialize SAP ByD service: {e}")
+			raise RetryableError(f"SAP ByD service initialization failed: {e}")
+
+		try:
+			response = byd_service.post_delivery_notification(inbound_delivery.object_id)
+		except Exception as e:
+			logger.error(f"SAP ByD post_delivery_notification failed: {e}")
+			if "authentication" in str(e).lower() or "unauthorized" in str(e).lower():
+				raise RetryableError(f"SAP ByD authentication error: {e}")
+			elif "timeout" in str(e).lower() or "connection" in str(e).lower():
+				raise RetryableError(f"SAP ByD connection error: {e}")
+			else:
+				raise RetryableError(f"SAP ByD delivery notification failed: {e}")
+
+		receipt.synced_to_sap = True
+		receipt.metadata['sap_sync'] = {
+			'synced_at': timezone.now().isoformat(),
+			'response': response if response else {},
+			'approved_by': receipt.approved_by.username if receipt.approved_by else None
+		}
+		receipt.save()
+
+		inbound_delivery.refresh_from_db()
+		if inbound_delivery.is_fully_received:
+			inbound_delivery.delivery_status_code = '3'
+			inbound_delivery.save()
+
+		logger.info(f"Receipt TR-{receipt.receipt_number} successfully synced to SAP ByD")
+
+	except TransferReceiptNote.DoesNotExist:
+		logger.error(f"Transfer receipt with ID {receipt_id} not found")
+		raise SAPIntegrationError(f"Transfer receipt with ID {receipt_id} not found")
+	except (SAPIntegrationError, RetryableError):
+		raise
+	except Exception as e:
+		logger.error(f"Unexpected error syncing receipt {receipt_id} to SAP: {e}")
+		raise SAPIntegrationError(f"Unexpected error: {e}")
