@@ -70,7 +70,7 @@ def _build_export_rows(queryset):
 		delivery_base = {
 			'Sales Order Ref':        delivery.sales_order_reference or '',
 			'GTN No (Delivery ID)':   delivery.delivery_id,
-			'Receipt ID':             latest_receipt.id if latest_receipt else '',
+			'Receipt ID':             latest_receipt.receipt_number if latest_receipt else '',
 			'Source Location ID':     delivery.source_location_id,
 			'Source Location Name':   delivery.source_location_name,
 			'Destination Store Name': getattr(dest_store, 'store_name', ''),
