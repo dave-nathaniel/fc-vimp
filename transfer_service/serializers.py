@@ -1,13 +1,7 @@
 from rest_framework import serializers
-from django.core.exceptions import ValidationError as DjangoValidationError
 from .models import (
     TransferReceiptNote, TransferReceiptLineItem,
     InboundDelivery, InboundDeliveryLineItem
-)
-from egrn_service.models import Store
-from .validators import (
-    FieldValidator, TransferReceiptValidator,
-    StoreAuthorizationValidator
 )
 
 
@@ -37,9 +31,6 @@ class InboundDeliverySerializer(serializers.ModelSerializer):
     # Store and location details
     destination_store_name = serializers.CharField(source='destination_store.store_name', read_only=True)
 
-    def get_destination_store(self, obj):
-        return Store.objects.get(id=obj.destination_store.id)
-    
     class Meta:
         model = InboundDelivery
         fields = [
@@ -115,7 +106,7 @@ class TransferReceiptNoteSerializer(serializers.ModelSerializer):
         model = TransferReceiptNote
         fields = [
             'id', 'receipt_number', 'inbound_delivery', 'notes', 'source_location', 'source_location_id', 'destination_store',
-            'created_date', 'created_by', 'posted_to_icg', 'line_items', 'metadata'
+            'created_date', 'created_by', 'line_items', 'metadata'
         ]
         read_only_fields = ['inbound_delivery', 'receipt_number', 'created_by']
 

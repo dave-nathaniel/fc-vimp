@@ -1,21 +1,16 @@
 import logging
 from django.db import models
 from django.db.utils import IntegrityError
-from django.core.exceptions import ObjectDoesNotExist, ValidationError
+from django.core.exceptions import ValidationError
 from django.db.models import Sum
-from django_q.tasks import async_task
 from django.utils import timezone
 
 from core_service.models import CustomUser
 from egrn_service.models import Store
-from byd_service.rest import RESTServices
 from byd_service.util import to_python_time
 
 
 logger = logging.getLogger(__name__)
-
-# Initialize REST services
-byd_rest_services = RESTServices()
 class InboundDelivery(models.Model):
     """
     Represents an inbound delivery notification from SAP ByD for warehouse-to-store transfers
@@ -153,18 +148,14 @@ class InboundDelivery(models.Model):
             return Store.objects.get(byd_cost_center_code=identifier)
         except Store.DoesNotExist:
             try:
-                # Try by icg_warehouse_code
-                return Store.objects.get(icg_warehouse_code=identifier)
+                # Try by store name
+                return Store.objects.get(store_name=identifier)
             except Store.DoesNotExist:
                 try:
-                    # Try by store name
-                    return Store.objects.get(store_name=identifier)
+                    # Try by metadata fields
+                    return Store.objects.get(metadata__store_code=identifier)
                 except Store.DoesNotExist:
-                    try:
-                        # Try by metadata fields
-                        return Store.objects.get(metadata__store_code=identifier)
-                    except Store.DoesNotExist:
-                        raise Store.DoesNotExist(f"Store not found with identifier: {identifier}")
+                    raise Store.DoesNotExist(f"Store not found with identifier: {identifier}")
     
     def __create_line_items__(self, line_items_data):
         """
@@ -249,7 +240,6 @@ class TransferReceiptNote(models.Model):
     notes = models.TextField(blank=True, null=True)
     created_date = models.DateField(auto_now_add=True)
     created_by = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
-    posted_to_icg = models.BooleanField(default=False)
     metadata = models.JSONField(default=dict)
     
     @property
@@ -268,61 +258,14 @@ class TransferReceiptNote(models.Model):
     
     def save(self, *args, **kwargs):
         """
-        Generate unique receipt number and create line items
+        Generate unique receipt number on creation
         """
-        receipt_data = kwargs.pop('receipt_data', None)
-        is_new = self.pk is None
-        
         if not self.receipt_number:
-            # Generate receipt number based on goods issue number
-            # Count how many transfer receipt notes are there for this inbound delivery
             count = TransferReceiptNote.objects.filter(inbound_delivery=self.inbound_delivery).count()
             self.receipt_number = f"{self.inbound_delivery.delivery_id}{count + 1}"
-        
+
         super().save(*args, **kwargs)
-        
-        # Check if transfer is complete and trigger SAP completion
-        if not is_new or (receipt_data and receipt_data.get('line_items')):
-            # Refresh sales order to get updated delivery status
-            self.inbound_delivery.refresh_from_db()
-            delivery_status = self.inbound_delivery.delivery_status
-            
-            # If transfer is completely delivered, trigger SAP completion
-            if delivery_status[0] == '3':  # Completely Delivered
-                logger.info(f"Transfer complete for sales order {self.inbound_delivery.delivery_id}, triggering SAP completion")
-                # self.complete_transfer_in_sap()
-            else:
-                # Update status for partial delivery
-                logger.info(f"Transfer partially complete for sales order {self.inbound_delivery.delivery_id}, updating status")
-                # async_task('transfer_service.tasks.update_sales_order_status', self.inbound_delivery.delivery_id)
-        
         return self
-    
-    def __create_line_items__(self, line_items):
-        """
-        Create transfer receipt line items
-        """
-        for item_data in line_items:
-            tr_line_item = TransferReceiptLineItem()
-            tr_line_item.transfer_receipt = self
-            tr_line_item.inbound_delivery_line_item = InboundDeliveryLineItem.objects.get(
-                id=item_data['goods_issue_line_item_id']
-            )
-            tr_line_item.quantity_received = item_data['quantity_received']
-            tr_line_item.metadata = item_data.get('metadata', {})
-            tr_line_item.save()
-    
-    def update_destination_inventory(self):
-        """
-        Update ICG inventory at destination store
-        """
-        async_task('transfer_service.tasks.update_transfer_receipt_inventory', self.id)
-    
-    def complete_transfer_in_sap(self):
-        """
-        Mark transfer as completed in SAP ByD
-        """
-        async_task('transfer_service.tasks.complete_transfer_in_sap', self.id)
     
     def __str__(self):
         return f"TR-{self.receipt_number}"
@@ -346,7 +289,6 @@ class TransferReceiptLineItem(models.Model):
         """
         Calculate value of received goods
         """
-        # return float(self.quantity_received) * float(self.inbound_delivery_line_item.sales_order_line_item.unit_price)
         return 0
     
     @property

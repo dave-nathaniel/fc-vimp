@@ -14,8 +14,8 @@ class TransferReceiptLineItemInline(admin.TabularInline):
 
 @admin.register(TransferReceiptNote)
 class TransferReceiptNoteAdmin(ModelAdmin):
-    list_display = ('receipt_number', 'inbound_delivery', 'created_date', 'created_by', 'posted_to_icg')
-    list_filter = ('posted_to_icg', 'created_date', 'inbound_delivery__destination_store')
+    list_display = ('receipt_number', 'inbound_delivery', 'created_date', 'created_by')
+    list_filter = ('created_date', 'inbound_delivery__destination_store')
     search_fields = ('receipt_number', 'inbound_delivery__delivery_id')
     readonly_fields = ('receipt_number', 'created_date')
     inlines = [TransferReceiptLineItemInline]
