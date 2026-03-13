@@ -61,7 +61,7 @@ class ByDPostingStatusAdmin(ModelAdmin):
 			return format_html(
 				'<a class="bg-primary-600 border border-transparent font-medium px-3 py-2 rounded text-white" '
 				'style="width: fit-content !important;" href="{}">Retry</a>',
-				f"/API/admin/byd_service/bydpostingstatus/{obj.id}/retry-posting/"
+				f"/admin/byd_service/bydpostingstatus/{obj.id}/retry-posting/"
 			)
 		return ""
 
@@ -81,7 +81,7 @@ class ByDPostingStatusAdmin(ModelAdmin):
 			logging.error(f"Error while retrying all failed postings: {e}")
 			self.message_user(request, f"Error: {e}", messages.ERROR)
 
-		return redirect(request.META.get('HTTP_REFERER', '/API/admin/byd_service/bydpostingstatus/'))
+		return redirect(request.META.get('HTTP_REFERER', '/admin/byd_service/bydpostingstatus/'))
 
 	def retry_single_posting_view(self, request, posting_id):
 		"""
@@ -102,7 +102,7 @@ class ByDPostingStatusAdmin(ModelAdmin):
 			logging.error(f"Error while retrying posting {posting_id}: {e}")
 			self.message_user(request, f"Error: {e}", messages.ERROR)
 
-		return redirect(request.META.get('HTTP_REFERER', '/API/admin/byd_service/bydpostingstatus/'))
+		return redirect(request.META.get('HTTP_REFERER', '/admin/byd_service/bydpostingstatus/'))
 
 	def get_urls(self):
 		"""
@@ -123,7 +123,7 @@ class ByDPostingStatusAdmin(ModelAdmin):
 		"""
 		extra_context = extra_context or {}
 		extra_context['show_retry_all_button'] = True
-		extra_context['retry_all_url'] = '/API/admin/byd_service/bydpostingstatus/retry-all-failed/'
+		extra_context['retry_all_url'] = '/admin/byd_service/bydpostingstatus/retry-all-failed/'
 		return super().changelist_view(request, extra_context=extra_context)
 
 	def retry_selected_posting(self, request, queryset):

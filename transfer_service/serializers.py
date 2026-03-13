@@ -44,7 +44,7 @@ class InboundDeliveryReceiptSummarySerializer(serializers.ModelSerializer):
             'id', 'receipt_number', 'line_items', 'notes', 'created_date', 'created_by',
             'approval_status', 'approval_status_display', 'submitted_at',
             'approved_at', 'approved_by_name', 'rejection_reason', 'rejection_count',
-            'synced_to_sap', 'posted_to_icg'
+            'synced_to_sap'
         ]
 
     def get_approval_status_display(self, obj):
@@ -181,7 +181,7 @@ class TransferReceiptNoteSerializer(serializers.ModelSerializer):
         model = TransferReceiptNote
         fields = [
             'id', 'receipt_number', 'inbound_delivery', 'notes', 'source_location', 'source_location_id', 'destination_store',
-            'created_date', 'created_by', 'posted_to_icg', 'line_items', 'metadata',
+            'created_date', 'created_by', 'line_items', 'metadata',
             # Approval workflow fields
             'approval_status', 'approval_status_display', 'submitted_at', 'approved_at',
             'approved_by_name', 'rejection_reason', 'rejection_count', 'synced_to_sap',

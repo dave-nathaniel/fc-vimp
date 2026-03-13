@@ -406,12 +406,7 @@ def create_delivery_receipt(request):
 			receipt = serializer.save()
 			response_serializer = TransferReceiptNoteSerializer(receipt)
 			send_inbound_delivery_receipt_notification(inbound_delivery, receipt.line_items.all(), request.user, receipt.notes)
-			# Post goods receipt to SAP ByD asynchronously
-			async_task(
-				'transfer_service.tasks.post_goods_receipt_on_byd',
-				receipt,
-				q_options={'task_name': f'Post-GoodsReceipt-TR-{receipt.receipt_number}-On-ByD'}
-			)
+			
 			return APIResponse(
 				message=f"Transfer receipt TR-{receipt.receipt_number} created successfully",
 				status=status.HTTP_201_CREATED,

@@ -12,9 +12,6 @@ from byd_service.util import to_python_time
 
 logger = logging.getLogger(__name__)
 
-# Initialize REST services
-byd_rest_services = RESTServices()
-
 # Approval status choices for transfer receipts
 RECEIPT_APPROVAL_STATUS_CHOICES = [
     ('pending_receipt', 'Pending Receipt'),
