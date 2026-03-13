@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Receipt Rejected - TR-{{ receipt.receipt_number }}</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+        .header {
+            background-color: #e74c3c;
+            color: white;
+            padding: 20px;
+            text-align: center;
+            margin: -30px -30px 30px -30px;
+            border-radius: 8px 8px 0 0;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        .info-section {
+            margin-bottom: 25px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-left: 4px solid #e74c3c;
+            border-radius: 4px;
+        }
+        .info-section h3 {
+            margin-top: 0;
+            color: #2c3e50;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        .info-item {
+            background-color: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .info-item strong {
+            color: #2c3e50;
+        }
+        .status-badge {
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: bold;
+            text-transform: uppercase;
+            display: inline-block;
+        }
+        .status-rejected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .rejection-reason {
+            background-color: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 15px;
+        }
+        .rejection-reason h4 {
+            margin-top: 0;
+            color: #856404;
+        }
+        .action-required {
+            background-color: #cce5ff;
+            border: 1px solid #007bff;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 20px;
+        }
+        .action-required h4 {
+            margin-top: 0;
+            color: #004085;
+        }
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #ddd;
+            font-size: 12px;
+            color: #666;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Receipt Rejected</h1>
+            <p>TR-{{ receipt.receipt_number }}</p>
+        </div>
+
+        <div class="info-section">
+            <p><span class="status-badge status-rejected">Rejected</span></p>
+            <p>Your transfer receipt has been rejected by the sending store. Please review the rejection reason and update the receipt.</p>
+        </div>
+
+        <div class="info-section">
+            <h3>Receipt Information</h3>
+            <div class="info-grid">
+                <div class="info-item">
+                    <strong>Receipt Number:</strong><br>
+                    TR-{{ receipt.receipt_number }}
+                </div>
+                <div class="info-item">
+                    <strong>Delivery ID:</strong><br>
+                    {{ inbound_delivery.delivery_id }}
+                </div>
+                <div class="info-item">
+                    <strong>Destination Store:</strong><br>
+                    {{ destination_store.store_name }}
+                </div>
+                <div class="info-item">
+                    <strong>Source Location:</strong><br>
+                    {{ inbound_delivery.source_location_name }}
+                </div>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <h3>Rejection Details</h3>
+            <div class="info-grid">
+                <div class="info-item">
+                    <strong>Rejected By:</strong><br>
+                    {{ rejected_by.get_full_name|default:rejected_by.username }}
+                </div>
+                <div class="info-item">
+                    <strong>Rejection Count:</strong><br>
+                    {{ receipt.rejection_count }}
+                </div>
+            </div>
+
+            <div class="rejection-reason">
+                <h4>Rejection Reason</h4>
+                <p>{{ rejection_reason }}</p>
+            </div>
+        </div>
+
+        <div class="action-required">
+            <h4>Action Required</h4>
+            <p>Please review the rejection reason above and update the receipt with the correct information. Once updated, the receipt will be resubmitted for approval.</p>
+            <p>Use the <strong>Update Receipt</strong> function in the system to make corrections.</p>
+        </div>
+
+        <div class="footer">
+            <p>This is an automated notification from the Food Concepts Transfer Management System.</p>
+            <p>Please do not reply to this email. For questions, contact your store manager or system administrator.</p>
+        </div>
+    </div>
+</body>
+</html>

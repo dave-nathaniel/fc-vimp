@@ -20,7 +20,8 @@ urlpatterns = [
     path('egrn/v1/', include('egrn_service.urls')),
     path('approvals/v1/', include('approval_service.urls')),
     path('reports/v1/', include('reports_service.urls')),
-    
+    path('imprest/v1/', include('imprest_service.urls')),
+
     # Performance monitoring endpoints
     path('health/performance/', performance_views.performance_dashboard, name='performance_dashboard'),
     path('health/performance/cache/', performance_views.cache_statistics, name='cache_statistics'),

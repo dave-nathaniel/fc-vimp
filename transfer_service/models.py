@@ -11,6 +11,47 @@ from byd_service.util import to_python_time
 
 
 logger = logging.getLogger(__name__)
+
+# Initialize REST services
+byd_rest_services = RESTServices()
+
+# Approval status choices for transfer receipts
+RECEIPT_APPROVAL_STATUS_CHOICES = [
+    ('pending_receipt', 'Pending Receipt'),
+    ('receipt_submitted', 'Receipt Submitted'),
+    ('approved', 'Approved'),
+    ('rejected', 'Rejected'),
+    ('resubmitted', 'Resubmitted'),
+]
+
+class MaterialPricing(models.Model):
+    """
+    Fallback pricing for materials when SAP ByD doesn't have pricing configured.
+    This allows manual price entry for stock transfers.
+    """
+    material_id = models.CharField(max_length=50, db_index=True)
+    material_name = models.CharField(max_length=255, blank=True)
+    unit_price = models.DecimalField(max_digits=15, decimal_places=2)
+    currency = models.CharField(max_length=3, default='NGN')
+    site_id = models.CharField(max_length=50, blank=True, null=True, help_text="Location/warehouse this price applies to")
+    effective_date = models.DateField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_by = models.ForeignKey(CustomUser, on_delete=models.SET_NULL, null=True, blank=True)
+    notes = models.TextField(blank=True, help_text="Source or reason for this pricing")
+
+    class Meta:
+        verbose_name = "Material Pricing"
+        verbose_name_plural = "Material Pricing"
+        ordering = ['-effective_date']
+        indexes = [
+            models.Index(fields=['material_id', '-effective_date']),
+            models.Index(fields=['material_id', 'site_id', '-effective_date']),
+        ]
+
+    def __str__(self):
+        return f"{self.material_id} - {self.currency} {self.unit_price} (effective {self.effective_date})"
+
 class InboundDelivery(models.Model):
     """
     Represents an inbound delivery notification from SAP ByD for warehouse-to-store transfers
@@ -161,15 +202,21 @@ class InboundDelivery(models.Model):
         """
         Create line items for this delivery from SAP ByD outbound delivery data
         """
+        from decimal import Decimal
+
         for item_data in line_items_data:
             line_item = InboundDeliveryLineItem()
             line_item.delivery = self
             line_item.object_id = item_data.get("ObjectID", "")
             line_item.product_id = item_data.get("ProductID", "")
-            
-            # For product name, try to get from ProductDescription or construct from ProductID
-            line_item.product_name = item_data.get("ProductDescription", item_data.get("ProductID", "Unknown Product"))
-            
+
+            # For product name, try to get from ProductDescription or Description (from product details) or construct from ProductID
+            line_item.product_name = (
+                item_data.get("ProductDescription") or
+                item_data.get("Description") or
+                item_data.get("ProductID", "Unknown Product")
+            )
+
             # Extract quantity from ItemDeliveryQuantity
             item_delivery_quantity = item_data.get("ItemDeliveryQuantity", {})
             if item_delivery_quantity:
@@ -181,9 +228,25 @@ class InboundDelivery(models.Model):
                 quantity = item_data.get("Quantity", "0")
                 unit_code = item_data.get("QuantityUnitCode", "")
                 unit_text = unit_code
-            
+
             line_item.quantity_expected = float(quantity)
             line_item.unit_of_measurement = unit_text if unit_text else unit_code
+
+            # Extract unit price from various possible SAP ByD fields
+            # First check for our enriched unit_price from material valuation
+            unit_price = (
+                item_data.get("unit_price") or
+                item_data.get("ListUnitPriceAmount") or
+                item_data.get("NetUnitPriceAmount") or
+                item_data.get("UnitPrice") or
+                item_data.get("NetAmount") or
+                0
+            )
+            # Handle if price is nested in an Amount structure
+            if isinstance(unit_price, dict):
+                unit_price = unit_price.get("content") or unit_price.get("Amount") or 0
+            line_item.unit_price = Decimal(str(unit_price))
+
             line_item.metadata = item_data
             line_item.save()
     
@@ -206,6 +269,7 @@ class InboundDeliveryLineItem(models.Model):
     quantity_expected = models.DecimalField(max_digits=15, decimal_places=3)
     quantity_received = models.DecimalField(max_digits=15, decimal_places=3, default=0)
     unit_of_measurement = models.CharField(max_length=32)
+    unit_price = models.DecimalField(max_digits=15, decimal_places=3, default=0, help_text="Unit price from SAP ByD")
     metadata = models.JSONField(default=dict)
     
     @property
@@ -241,6 +305,27 @@ class TransferReceiptNote(models.Model):
     created_date = models.DateField(auto_now_add=True)
     created_by = models.ForeignKey(CustomUser, on_delete=models.CASCADE)
     metadata = models.JSONField(default=dict)
+
+    # Approval workflow fields
+    approval_status = models.CharField(
+        max_length=25,
+        choices=RECEIPT_APPROVAL_STATUS_CHOICES,
+        default='pending_receipt',
+        help_text="Current approval status in the two-stage workflow"
+    )
+    submitted_at = models.DateTimeField(null=True, blank=True, help_text="When receiving store submitted the receipt")
+    approved_at = models.DateTimeField(null=True, blank=True, help_text="When sending store approved the receipt")
+    approved_by = models.ForeignKey(
+        CustomUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_transfer_receipts',
+        help_text="User from sending store who approved"
+    )
+    rejection_reason = models.TextField(blank=True, null=True, help_text="Reason for rejection by sending store")
+    rejection_count = models.IntegerField(default=0, help_text="Number of times receipt has been rejected")
+    synced_to_sap = models.BooleanField(default=False, help_text="Whether receipt has been synced to SAP ByD")
     
     @property
     def total_quantity_received(self):
@@ -287,9 +372,10 @@ class TransferReceiptLineItem(models.Model):
     @property
     def value_received(self):
         """
-        Calculate value of received goods
+        Calculate value of received goods based on unit price from delivery line item
         """
-        return 0
+        unit_price = self.inbound_delivery_line_item.unit_price or 0
+        return float(self.quantity_received) * float(unit_price)
     
     @property
     def product_name(self):
