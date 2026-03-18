@@ -1,6 +1,7 @@
 from rest_framework.response import Response
 from rest_framework import pagination, serializers
 from rest_framework.pagination import PageNumberPagination
+from core_service.cache_utils import CachedPagination
 
 class APIResponse(Response):
 	def __init__(self, message: object, status: object, **kwargs: object) -> object:
@@ -22,29 +23,88 @@ class APIResponse(Response):
 class CustomPagination(PageNumberPagination):
 	page_query_param = "page"
 	page_size_query_param = "size"
-	max_page_size  = 30
+	page_size = 15  # Default page size from settings
+	max_page_size = 1000
 
 	def paginate_queryset(self, queryset, request, view=None, order_by=None):
-		# Sort the queryset based on the 'order_by' query parameter, always show latest records first
-		queryset = queryset.order_by(order_by) if order_by else queryset
-		# Get 'limit' and 'offset' from request query parameters
+		# Handle both QuerySets and regular lists
+		if hasattr(queryset, 'order_by'):
+			# This is a Django QuerySet
+			if order_by:
+				queryset = queryset.order_by(order_by)
+			elif hasattr(queryset, 'ordered') and not queryset.ordered:
+				# Ensure queryset is ordered for consistent pagination
+				queryset = queryset.order_by('id')
+		# For regular lists, we don't need to apply ordering
+		
+		# Use parent method which efficiently applies LIMIT/OFFSET at database level
+		page_size = self.get_page_size(request)
+		if not page_size:
+			return None
+
+		paginator = self.django_paginator_class(queryset, page_size)
+
+		# Compute and cache true total count for the queryset/list
+		# try:
+		# 	if hasattr(queryset, 'count'):
+		# 		# Build a cache key suffix tied to request path and query params
+		# 		cache_key_suffix = f"{request.path}_qs_{request.query_params.urlencode()}"
+		# 		self.total_count = CachedPagination.cache_page_count(queryset, cache_key_suffix)
+		# 	else:
+		# 		# For plain lists, use full length
+		# 		self.total_count = len(queryset)
+		# except Exception:
+		# 	# Fallback to paginator's native count on any failure
+		# 	self.total_count = getattr(getattr(paginator, 'object_list', None), 'count', None) or getattr(paginator, 'count', None) or 0
+		
+		page_number = self.get_page_number(request, paginator)
+
+		try:
+			# This efficiently fetches only the requested page from database
+			self.page = paginator.page(page_number)
+		except Exception as exc:
+			msg = self.get_invalid_page_message(request, page_number, paginator)
+			raise serializers.ValidationError(msg)
+
+		if paginator.num_pages > 1 and self.template is not None:
+			self.display_page_controls = True
+
+		self.request = request
+		return list(self.page)
+
+	def get_paginated_response(self, data):
+		# Ensure we return the true total count if it was computed
+		count = getattr(self, 'total_count', None)
+		if count is None:
+			count = getattr(getattr(self, 'page', None), 'paginator', None)
+			count = getattr(count, 'count', 0)
+		return Response({
+			'count': count,
+			'next': self.get_next_link(),
+			'previous': self.get_previous_link(),
+			'results': data
+		})
+
+	def get_page_size(self, request):
+		# Support both 'size' and 'limit' query parameters for backward compatibility
+		if self.page_size_query_param:
+			page_size = request.query_params.get(self.page_size_query_param)
+			if page_size:
+				try:
+					page_size = int(page_size)
+					if page_size > 0:
+						return page_size
+				except (KeyError, ValueError):
+					pass
+		
+		# Also check for 'limit' parameter for backward compatibility
 		limit = request.query_params.get('limit')
-		offset = request.query_params.get('offset')
-
 		if limit:
-			limit = int(limit)
-			# Validate limit is within min and max limits
-			if limit > self.max_limit:
-				raise serializers.ValidationError({"limit": ["Limit should be less than or equal to {0}".format(self.max_limit)]})
-			elif limit < self.min_limit:
-				raise serializers.ValidationError({"limit": ["Limit should be greater than or equal to {0}".format(self.min_limit)]})
+			try:
+				limit = int(limit)
+				if limit > 0:
+					return limit
+			except (KeyError, ValueError):
+				pass
 
-		if offset:
-			offset = int(offset)
-			# Validate offset is within min and max offsets
-			if offset > self.max_offset:
-				raise serializers.ValidationError({"offset": ["Offset should be less than or equal to {0}".format(self.max_offset)]})
-			elif offset < self.min_offset:
-				raise serializers.ValidationError({"offset": ["Offset should be greater than or equal to {0}".format(self.min_offset)]})
-
-		return super(CustomPagination, self).paginate_queryset(queryset, request, view)
+		return self.page_size

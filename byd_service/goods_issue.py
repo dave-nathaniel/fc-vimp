@@ -6,10 +6,14 @@ from time import sleep
 from .soap import SOAPServices
 from .util import ordinal
 from pathlib import Path
+from dotenv import load_dotenv
+
+dotenv_path = os.path.join(Path(__file__).resolve().parent.parent, '.env')
+load_dotenv(dotenv_path)
 
 # Constants
 MAX_RETRY_POSTING = 3
-soap_endpoint = 'https://my350679.sapbydesign.com/sap/bc/srt/scs/sap/inventoryprocessinggoodsandac3'
+soap_endpoint = os.getenv('SAP_URL') + '/sap/bc/srt/scs/sap/inventoryprocessinggoodsandac3'
 wsdl_path = os.path.join(Path(__file__).resolve().parent, 'wsdl', 'InventoryProcessingGoodsAndActivityConfirmationGoodsMovementIn.wsdl')
 
 # Initialize the SOAP client and authenticate with SAP
@@ -93,7 +97,7 @@ def post_goods_consumption_for_cost_center(external_id, site_id, inventory_movem
 				request
 			)
 			if response['Log'] is not None:
-				logging.error(f"The following issues were raised by SAP ByD: ")
+				logging.error("The following issues were raised by SAP ByD: ")
 				logging.error(f"{chr(10)}{chr(10).join(['Issue ' + str(counter + 1) + ': ' + item['Note'] + '.' for counter, item in enumerate(response['Log']['Item'])])}")
 			else:
 				return True
@@ -145,7 +149,7 @@ def example_usage():
 	# Create inventory items
 	inventory_items = [
 		{
-			"external_item_id": "E20250-1",
+			"external_item_id": "WF5LA6D-1",
 			"material_internal_id": "RM1000072",
 			"owner_party_internal_id": "FC-0001",
 			"inventory_restricted_use_indicator": False,
@@ -158,13 +162,13 @@ def example_usage():
 	# Example 1: Single item posting
 	print("=== Example 1: Single Item Posting ===")
 	success_single = post_goods_consumption_for_cost_center(
-		external_id="E20250",
+		external_id="WF5LA6D",
 		site_id="4100003-17",
 		inventory_movement_direction_code="1",
 		inventory_items=[
 			format_inventory_item(**item) for item in inventory_items
 		],
-		transaction_datetime="2025-07-17T09:30:00.0000000Z",
+		transaction_datetime="2025-12-05T17:00:36.183Z",
 		cost_center_id="4100003-17"
 	)
 	

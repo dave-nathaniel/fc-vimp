@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 """
 
 import os
+import sys
 from pathlib import Path
 from datetime import timedelta
 
@@ -26,16 +27,20 @@ SECRET_KEY = os.getenv('DJANGO_SECRET')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = bool(int(os.getenv('DEBUG', default="0")))
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
-
 CORS_ORIGIN_ALLOW_ALL = True
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', default='localhost,127.0.0.1').split(',')
+CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', default='').split(',')
 
-# CSRF_TRUSTED_ORIGINS = ['localhost:3000', '20.101.63.100', "*.wajesmarthrms.website"]
+# Trust proxy headers (important for Docker/nginx setup)
+USE_X_FORWARDED_HOST = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
-AUTH_USER_MODEL = 'core_service.CustomUser'
+FORCE_SCRIPT_NAME = os.getenv("FORCE_SCRIPT_NAME", "")
 
-# EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+
+# Application definition
+
+EMAIL_BACKEND = os.getenv("EMAIL_BACKEND", "django.core.mail.backends.console.EmailBackend")
 EMAIL_USE_TLS = True
 EMAIL_HOST = os.getenv("SMTP_HOST")
 EMAIL_PORT = os.getenv("SMTP_PORT")
@@ -45,7 +50,8 @@ EMAIL_HOST_PASSWORD = os.getenv("EMAIL_PASSWORD")
 USE_L10N = False
 USE_THOUSAND_SEPARATOR = True
 
-# Application definition
+AUTH_USER_MODEL = 'core_service.CustomUser'
+
 INSTALLED_APPS = [
 	'unfold',
 	'django.contrib.admin',
@@ -54,12 +60,13 @@ INSTALLED_APPS = [
 	'django.contrib.sessions',
 	'django.contrib.messages',
 	'django.contrib.staticfiles',
-	
+
 	'rest_framework',
 	'rest_framework_simplejwt',
 	'corsheaders',
 	'jsoneditor',
 	'django_q',
+	'cachalot',
 
 	'core_service',
 	'egrn_service',
@@ -68,6 +75,8 @@ INSTALLED_APPS = [
 	'byd_service',
 	'app_settings',
 	'transfer_service',
+	'reports_service',
+	'imprest_service',
 ]
 
 JSON_EDITOR_JS = 'https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/8.6.4/jsoneditor.js'
@@ -125,8 +134,22 @@ REST_FRAMEWORK = {
 	'DEFAULT_PERMISSION_CLASSES': (
 		'rest_framework.permissions.IsAuthenticated',
 	),
-	'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
-	'PAGE_SIZE': 15
+	'DEFAULT_PAGINATION_CLASS': 'overrides.rest_framework.CustomPagination',
+	'PAGE_SIZE': 15,
+	'DEFAULT_RENDERER_CLASSES': [
+		'rest_framework.renderers.JSONRenderer',
+	] if not DEBUG else [
+		'rest_framework.renderers.JSONRenderer',
+		'rest_framework.renderers.BrowsableAPIRenderer',
+	],
+	'DEFAULT_THROTTLE_CLASSES': [
+		'rest_framework.throttling.AnonRateThrottle',
+		'rest_framework.throttling.UserRateThrottle'
+	],
+	'DEFAULT_THROTTLE_RATES': {
+		'anon': '100/hour',
+		'user': '1000/hour'
+	}
 }
 
 AUTHENTICATION_BACKENDS = (
@@ -152,6 +175,7 @@ AUTH_ADFS = {
 	],
 }
 
+# Logging Configuration
 LOGGING = {
 	'version': 1,
 	'disable_existing_loggers': False,
@@ -163,7 +187,8 @@ LOGGING = {
 	'handlers': {
 		'console': {
 			'class': 'logging.StreamHandler',
-			'formatter': 'verbose'
+			'formatter': 'verbose',
+			'level': 'DEBUG',
 		},
 	},
 	'loggers': {
@@ -173,6 +198,40 @@ LOGGING = {
 		},
 	},
 }
+
+if not DEBUG:
+	# Production performance settings
+	ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '').split(',')
+	
+	# Security settings for production
+	SECURE_BROWSER_XSS_FILTER = True
+	SECURE_CONTENT_TYPE_NOSNIFF = True
+	X_FRAME_OPTIONS = 'DENY'
+	
+	# Session optimization
+	SESSION_COOKIE_AGE = 3600  # 1 hour
+	SESSION_SAVE_EVERY_REQUEST = False
+	
+	# File upload settings
+	FILE_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
+	DATA_UPLOAD_MAX_MEMORY_SIZE = 5242880  # 5MB
+
+	# Logging optimization for production
+	LOGGING['handlers']['file'] = {
+		'level': 'WARNING',
+		'class': 'logging.handlers.RotatingFileHandler',
+		'filename': 'logs/vimp.log',
+		'maxBytes': 1024*1024*10,  # 10MB
+		'backupCount': 5,
+		'formatter': 'verbose'
+	}
+	LOGGING['loggers']['django']['handlers'] = ['file']
+	LOGGING['loggers']['vimp'] = {
+		'handlers': ['file'],
+		'level': 'WARNING',
+		'propagate': False,
+	}
+
 
 SIMPLE_JWT = {
 	'REFRESH_TOKEN_LIFETIME': timedelta(days=1),
@@ -193,14 +252,18 @@ SIMPLE_JWT = {
 
 MIDDLEWARE = [
 	'django.middleware.security.SecurityMiddleware',
+	'django.middleware.gzip.GZipMiddleware',  # Compress responses
+	'core_service.middleware.PerformanceMonitoringMiddleware',  # Performance tracking
+	'core_service.middleware.RequestOptimizationMiddleware',  # Request optimization
 	'django.contrib.sessions.middleware.SessionMiddleware',
+	'corsheaders.middleware.CorsMiddleware',
 	'django.middleware.common.CommonMiddleware',
 	'django.middleware.csrf.CsrfViewMiddleware',
 	'django.contrib.auth.middleware.AuthenticationMiddleware',
 	'django.contrib.messages.middleware.MessageMiddleware',
 	'django.middleware.clickjacking.XFrameOptionsMiddleware',
-	'corsheaders.middleware.CorsMiddleware',
-]
+	'core_service.middleware.APIResponseOptimizationMiddleware',  # API optimization
+] + (['core_service.middleware.DatabaseQueryOptimizationMiddleware'] if DEBUG else [])  # Query optimization in debug only
 
 ROOT_URLCONF = 'vimp.urls'
 
@@ -235,8 +298,28 @@ DATABASES = {
 		'PASSWORD': os.getenv('DB_PASSWORD'),
 		'HOST': os.getenv('DB_HOST'),
 		'PORT': os.getenv('DB_PORT'),
-	}
+		'OPTIONS': {
+			'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+			'charset': 'utf8mb4',
+		},
+		'CONN_MAX_AGE': 600,  # 10 minutes connection reuse
+		'CONN_HEALTH_CHECKS': True,  # Validate connections before use
+	},
 }
+
+# Redis Cache Configuration
+# CACHES = {}
+
+# Session and Cache Configuration
+# SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+# SESSION_CACHE_ALIAS = 'default'
+
+# Cachalot Configuration for ORM query caching
+# CACHALOT_ENABLED = False
+# CACHALOT_TIMEOUT = 600  # 10 minutes default timeout
+# CACHALOT_CACHE = 'default'
+# CACHALOT_DATABASES = ['default']
+# CACHALOT_UNCACHABLE_APPS = ['invoice_service', 'approval_service']
 
 CELERY_BROKER_URL = "memory://localhost"
 

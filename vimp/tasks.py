@@ -7,7 +7,6 @@ import os
 import logging
 import random
 import string
-from pprint import pprint
 from copy import deepcopy
 from dotenv import load_dotenv
 from django.template.loader import render_to_string
@@ -23,13 +22,11 @@ from egrn_service.serializers import GoodsReceivedNoteSerializer, GoodsReceivedL
 
 import byd_service.rest as byd_rest
 import byd_service.util as byd_util
-from byd_service.models import ByDPostingStatus, get_or_create_byd_posting_status
-from django.contrib.contenttypes.models import ContentType
+from byd_service.models import get_or_create_byd_posting_status
 
 import time
+from django.utils import timezone
 from django_q.tasks import async_task
-from django_q.models import Success, Failure
-from django.core.cache import cache
 
 load_dotenv()
 
@@ -113,14 +110,23 @@ def send_grn_to_email(created_grn, ):
 	template_data['purchase_order']['Supplier']['SupplierPostalAddress'] = template_data['purchase_order']['Supplier']['SupplierPostalAddress'][0]
 	# Render the HTML content of the template and send the email asynchronously
 	html_content = render_to_string('grn_receipt_template.html', {'data': template_data})
+	# Set the emails to receive this GRN
+	recepient_emails = list(set([item.purchase_order_line_item.delivery_store.store_email for item in created_grn.line_items.all()]))
+	# Try to add the vendor's email if a user profile exists for the vendor
+	try:
+		recepient_emails.append(created_grn.purchase_order.vendor.user.email)
+	except Exception as e:
+		pass
+	recepient_emails.append(os.getenv('TEST_EMAILS'))
 	# Send the HTML content via email
 	email = EmailMessage(
 		'Your Goods Received Note',
 		html_content,
 		'network@foodconceptsplc.com',
-		"davynathaniel@gmail.com oguntoyeadebola21@gmail.com olawson@wajesmart.com posuala@wajesmart.com".split(" "),
+		recepient_emails
 	)
 	email.content_subtype = 'html'
+	
 	return email.send()
 
 
@@ -255,188 +261,171 @@ def create_inbound_delivery_notification_on_byd(grn: GoodsReceivedNote):
 	# Generate the notification ID by combining the GRN number two random alphabets
 	notification_id = f"{grn.grn_number}{''.join(random.choices(string.ascii_uppercase, k=2))}"
 	
-	# Check if this GRN is already being processed
-	cache_key = f"processing_delivery_notification_{grn.id}"
-	if cache.get(cache_key):
-		logger.warning(f"Delivery notification for GRN {grn.grn_number} is already being processed")
-		return False
+	payload = {
+		"ID": notification_id,
+		"ProcessingTypeCode": "SD",
+		"Item": [
+			{
+				"ID": line_item.purchase_order_line_item.metadata["ID"],
+				"TypeCode": "14",
+				"ProductID": line_item.purchase_order_line_item.product_id,
+				"ItemDeliveryQuantity":{
+					"Quantity": str(float(line_item.quantity_received)),
+					"UnitCode": line_item.purchase_order_line_item.metadata["QuantityUnitCode"],
+				},
+				"ItemPurchaseOrderReference": {
+					"ID": str(line_item.purchase_order_line_item.purchase_order.po_id),
+					"ItemID": line_item.purchase_order_line_item.metadata["ID"],
+					"ItemTypeCode": line_item.purchase_order_line_item.metadata["ItemTypeCode"],
+					"RelationshipRoleCode": "1"
+				},
+				"ItemSellerParty": {
+					"PartyID": line_item.grn.purchase_order.vendor.byd_internal_id
+				},
+				"ItemInboundDeliveryRequestReference": {
+					"ID": notification_id,
+					"ItemID": line_item.purchase_order_line_item.metadata["ID"],
+					"ItemTypeCode": "14",
+					"TypeCode": "59",
+					"RelationshipRoleCode": "1"
+				}
+			} for line_item in grn.line_items.all()
+		],
+		"SenderParty":{
+			"PartyID": grn.purchase_order.vendor.byd_internal_id
+		},
+		"ShipToParty": {
+			# TODO: Make this configuration dynamic
+			"PartyID": "FC-0001"
+		}
+	}
+	
+	status = get_or_create_byd_posting_status(grn, request_payload=payload, task_name='vimp.tasks.create_inbound_delivery_notification_on_byd')
 	
 	try:
-		# Set processing flag
-		cache.set(cache_key, True, timeout=300)  # 5 minutes timeout
-		
-		payload = {
-			"ID": notification_id,
-			"ProcessingTypeCode": "SD",
-			"Item": [
-				{
-					"ID": line_item.purchase_order_line_item.metadata["ID"],
-					"TypeCode": "14",
-					"ProductID": line_item.purchase_order_line_item.product_id,
-					"ItemDeliveryQuantity":{
-						"Quantity": str(float(line_item.quantity_received)),
-						"UnitCode": line_item.purchase_order_line_item.metadata["QuantityUnitCode"],
-					},
-					"ItemPurchaseOrderReference": {
-						"ID": str(line_item.purchase_order_line_item.purchase_order.po_id),
-						"ItemID": line_item.purchase_order_line_item.metadata["ID"],
-						"ItemTypeCode": line_item.purchase_order_line_item.metadata["ItemTypeCode"],
-						"RelationshipRoleCode": "1"
-					},
-					"ItemSellerParty": {
-						"PartyID": line_item.grn.purchase_order.vendor.byd_internal_id
-					},
-					"ItemInboundDeliveryRequestReference": {
-						"ID": notification_id,
-						"ItemID": line_item.purchase_order_line_item.metadata["ID"],
-						"ItemTypeCode": "14",
-						"TypeCode": "59",
-						"RelationshipRoleCode": "1"
-					}
-				} for line_item in grn.line_items.all()
-			],
-			"SenderParty":{
-				"PartyID": grn.purchase_order.vendor.byd_internal_id
-			},
-			"ShipToParty": {
-				# TODO: Make this configuration dynamic
-				"PartyID": "FC-0001"
-			}
+		# Create the notification
+		response = rest_client.create_inbound_delivery_notification(payload)
+		object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+
+		grn.inbound_delivery_object_id = object_id
+		grn.inbound_delivery_notification_id = notification_id
+		grn.inbound_delivery_metadata = {
+			"payload": payload,
+			"create_response": response
 		}
+		grn.save(update_fields=[
+			'inbound_delivery_object_id',
+			'inbound_delivery_notification_id',
+			'inbound_delivery_metadata'
+		])
 		
-		status = get_or_create_byd_posting_status(grn, request_payload=payload, task_name='vimp.tasks.create_inbound_delivery_notification_on_byd')
+		# Add a delay before posting
+		time.sleep(5)
 		
-		try:
-			# Create the notification
-			response = rest_client.create_inbound_delivery_notification(payload)
-			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
-			
-			# Add a delay before posting
-			time.sleep(5)
-			
-			# Post the notification
-			response = rest_client.post_delivery_notification(object_id)
-			
-			# Mark as success
-			status.mark_success(
-				response.get("d", {})
-				.get("results", {})
+		# Post the notification
+		post_response = rest_client.post_delivery_notification(object_id)
+		grn.inbound_delivery_metadata.update({
+			"post_response": post_response,
+		})
+		grn.save(update_fields=['inbound_delivery_metadata'])
+		
+		# Mark as success
+		status.mark_success(
+			response.get("d", {})
+			.get("results", {})
+		)
+		return True
+		
+	except Exception as e:
+		logger.error(f"Error creating GRN {grn.grn_number}: {e}")
+		# Mark as failure
+		status.mark_failure(e)
+		# Increment retry count
+		status.increment_retry()
+		
+		# If the error is due to object lock, retry after 30 seconds
+		if "Object is locked" in str(e):
+			async_task(
+				'vimp.tasks.create_inbound_delivery_notification_on_byd',
+				grn,
+				hook='vimp.tasks.handle_delivery_notification_result',
+				retry=30
 			)
-			return True
-			
-		except Exception as e:
-			logger.error(f"Error creating GRN {grn.grn_number}: {e}")
-			# Mark as failure
-			status.mark_failure(e)
-			# Increment retry count
-			status.increment_retry()
-			
-			# If the error is due to object lock, retry after 30 seconds
-			if "Object is locked" in str(e):
-				async_task(
-					'vimp.tasks.create_inbound_delivery_notification_on_byd',
-					grn,
-					hook='vimp.tasks.handle_delivery_notification_result',
-					retry=30
-				)
-			return False
-			
-	finally:
-		# Clear processing flag
-		cache.delete(cache_key)
+		return False
 
 def create_invoice_on_byd(invoice: Invoice):
 	# Initialize the REST client
 	rest_client = byd_rest.RESTServices()
+		
+	payload = {
+		"Inv_Integration_KUT": "YES",
+		"TypeCode": "004",
+		"DataOriginTypeCode": "1",
+		"ItemsGrossAmountIndicator": True,
+		"InvoiceDescription": invoice.description if invoice.description else f"{invoice.purchase_order.vendor.user.first_name.title()} for {invoice.purchase_order}"[:40],
+		"InvoiceDate": byd_util.format_datetime_to_iso8601(invoice.date_created),
+		"ExternalReference": {
+			"BusinessTransactionDocumentRelationshipRoleCode": "7",
+			"ID": str(invoice.external_document_id) if invoice.external_document_id else f'{invoice.purchase_order.vendor.byd_internal_id}-{invoice.id}',
+			"TypeCode": "28",
+		},
+		"SellerParty": {
+			"PartyID": invoice.purchase_order.vendor.byd_internal_id,
+		},
+		"Item": [
+			{
+				"TypeCode": "002",
+				"ProductID": str(line_item.po_line_item.product_id),
+				"ProductTypeCode": "2",
+				"Quantity": str(float(line_item.quantity)),
+				"QuantityUnitCode": line_item.po_line_item.metadata["QuantityUnitCode"],
+				"GrossUnitPriceAmount": str(float(line_item.po_line_item.unit_price)),
+				"GrossUnitPriceBaseQuantity": "1",
+				"ItemPurchaseOrderReference": {
+					"ID": str(line_item.po_line_item.purchase_order.po_id),
+					"ItemID": str(line_item.po_line_item.metadata["ID"]),
+				},
+			}
+			for line_item in invoice.invoice_line_items.all()
+		]
+	}
 	
-	# Check if this invoice is already being processed
-	cache_key = f"processing_invoice_{invoice.id}"
-	if cache.get(cache_key):
-		logger.warning(f"Invoice {invoice.id} is already being processed")
-		return False
+	status = get_or_create_byd_posting_status(invoice, request_payload=payload, task_name='vimp.tasks.create_invoice_on_byd')
 	
 	try:
-		# Set processing flag
-		cache.set(cache_key, True, timeout=300)  # 5 minutes timeout
+		# Create the invoice
+		response = rest_client.create_supplier_invoice(payload)
+		object_id = response.get("d", {}).get("results", {}).get("ObjectID")
 		
-		payload = {
-			"Inv_Integration_KUT": "YES",
-			"TypeCode": "004",
-			"DataOriginTypeCode": "1",
-			"ItemsGrossAmountIndicator": True,
-			"InvoiceDescription": invoice.description if invoice.description else ', '.join(
-				str(line_item.po_line_item.metadata.get("Description", line_item.po_line_item.product_id))
-				for line_item in invoice.invoice_line_items.all()
-			),
-			"InvoiceDate": byd_util.format_datetime_to_iso8601(invoice.date_created),
-			"ExternalReference": {
-				"BusinessTransactionDocumentRelationshipRoleCode": "7",
-				"ID": str(invoice.external_document_id) if invoice.external_document_id else f'{invoice.purchase_order.vendor.byd_internal_id}-{invoice.id}',
-				"TypeCode": "28",
-			},
-			"SellerParty": {
-				"PartyID": invoice.purchase_order.vendor.byd_internal_id,
-			},
-			"Item": [
-				{
-					"TypeCode": "002",
-					"ProductID": str(line_item.po_line_item.product_id),
-					"ProductTypeCode": "2",
-					"Quantity": str(float(line_item.quantity)),
-					"QuantityUnitCode": line_item.po_line_item.metadata["QuantityUnitCode"],
-					"GrossUnitPriceAmount": str(float(line_item.po_line_item.unit_price)),
-					"GrossUnitPriceBaseQuantity": "1",
-					"ItemPurchaseOrderReference": {
-						"ID": str(line_item.po_line_item.purchase_order.po_id),
-						"ItemID": str(line_item.po_line_item.metadata["ID"]),
-					},
-				}
-				for line_item in invoice.invoice_line_items.all()
-			]
-		}
-
-		# return payload
+		# Add a delay before posting
+		time.sleep(5)
 		
-		status = get_or_create_byd_posting_status(invoice, request_payload=payload, task_name='vimp.tasks.create_invoice_on_byd')
+		# Post the invoice
+		response = rest_client.post_invoice(object_id)
 		
-		try:
-			# Create the invoice
-			response = rest_client.create_supplier_invoice(payload)
-			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
-			
-			# Add a delay before posting
-			time.sleep(5)
-			
-			# Post the invoice
-			response = rest_client.post_invoice(object_id)
-			
-			# Mark as success
-			status.mark_success(
-				response.get("d", {})
-				.get("results", {})
+		# Mark as success
+		status.mark_success(
+			response.get("d", {})
+			.get("results", {})
+		)
+		return True
+		
+	except Exception as e:
+		logger.error(f"Error creating Invoice {invoice.id}: {e}")
+		# Mark as failure
+		status.mark_failure(e)
+		# Increment retry count
+		status.increment_retry()
+		
+		# If the error is due to object lock, retry after 30 seconds
+		if "Object is locked" in str(e):
+			async_task(
+				'vimp.tasks.create_invoice_on_byd',
+				invoice,
+				hook='vimp.tasks.handle_invoice_result',
+				retry=30
 			)
-			return True
-			
-		except Exception as e:
-			logger.error(f"Error creating Invoice {invoice.id}: {e}")
-			# Mark as failure
-			status.mark_failure(e)
-			# Increment retry count
-			status.increment_retry()
-			
-			# If the error is due to object lock, retry after 30 seconds
-			if "Object is locked" in str(e):
-				async_task(
-					'vimp.tasks.create_invoice_on_byd',
-					invoice,
-					hook='vimp.tasks.handle_invoice_result',
-					retry=30
-				)
-			return False
-			
-	finally:
-		# Clear processing flag
-		cache.delete(cache_key)
+		return False
 
 
 def notify_approval_required(signable):
@@ -444,7 +433,7 @@ def notify_approval_required(signable):
 		Send an email notification to the users in the pending role who need to approve the given
 		signable object. The workflow data is modified for more straightforward rendering.
 	'''
-	portal_url = 'https://vimp.foodconceptsplc.com/approval'
+	portal_url = f'{os.getenv("VIMP_HOST")}/approval'
 	# Get the role of the current pending signatory
 	current_pending_signatory = signable.get('workflow')['pending_approval_from']
 	if not current_pending_signatory:
@@ -492,7 +481,7 @@ def send_otp_to_user(args):
 	request = args.get('request')
 	user = args.get('user')
 	if user.email:
-		user_emails = os.getenv("TEST_EMAILS").split(" ") + [user.email]
+		user_emails = [user.email]
 		html_content = render_to_string('otp.html', {
 			'otp': otp,
 			'request': request
@@ -518,13 +507,55 @@ def send_otp_to_user(args):
 	return True
 
 
+def cancel_inbound_delivery_notification_on_byd(grn_id: int, cancel_payload: dict):
+	rest_client = byd_rest.RESTServices()
+	grn = GoodsReceivedNote.objects.get(id=grn_id)
+	status = get_or_create_byd_posting_status(
+		grn,
+		request_payload=cancel_payload,
+		task_name='vimp.tasks.cancel_inbound_delivery_notification_on_byd'
+	)
+
+	try:
+		response = rest_client.create_inbound_delivery_notification(cancel_payload)
+		object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+		if not object_id:
+			raise ValueError("ByD did not return ObjectID for cancellation.")
+
+		time.sleep(5)
+
+		post_response = rest_client.post_delivery_notification(object_id)
+
+		status.mark_success({
+			"object_id": object_id,
+			"post_response": post_response,
+		})
+
+		grn.inbound_delivery_metadata.setdefault("nullifications", []).append({
+			"payload": cancel_payload,
+			"create_response": response,
+			"post_response": post_response,
+			"posting_status_id": status.id,
+			"cancelled_on": timezone.now().isoformat(),
+		})
+		grn.save(update_fields=['inbound_delivery_metadata'])
+		grn.mark_nullified(reason="Admin-triggered nullification")
+
+		return True
+
+	except Exception as exc:
+		status.mark_failure(str(exc))
+		status.increment_retry()
+		raise
+
+
 def send_reset_link_to_user(args):
 	user = args.get('user')
 	token = args.get('token')
 	if user.email:
-		user_emails = os.getenv("TEST_EMAILS").split(" ") + [user.email]
+		user_emails = [user.email]
 		html_content = render_to_string('password_reset.html', {
-			'reset_link': f"{os.getenv('DEV_HOST')}/reset_password?token={token}&email={user.email}",
+			'reset_link': f"{os.getenv('VIMP_HOST')}/reset_password?token={token}&email={user.email}",
 		})
 		# Send the HTML content via email
 		email = EmailMessage(
@@ -547,7 +578,7 @@ def send_vendor_setup_email(args):
 	# email_to = "davynathaniel@gmail.com".split(" ")
 	email_subject = f"Complete your account setup"
 	
-	verification_link = f'{os.getenv("DEV_HOST")}/sign-up?{id_hash}={instance.token}'
+	verification_link = f'{os.getenv("VIMP_HOST")}/sign-up?{id_hash}={instance.token}'
 	
 	content = render_to_string('verification_setup.html', {
 		"MERCHANT_NAME": merchant_name,
@@ -571,10 +602,390 @@ def send_vendor_setup_email(args):
 		return False
 
 
+def generate_weekly_report_task(week_start_date=None):
+	"""
+	Task to generate weekly reports automatically.
+	This task can be scheduled to run at the end of each week (e.g., Sunday night or Monday morning).
+	
+	Args:
+		week_start_date: Optional date string (YYYY-MM-DD) for the week to generate.
+					   If not provided, generates report for the previous completed week.
+	
+	Returns:
+		dict: Summary of the generated report or error details.
+	"""
+	from reports_service.views import calculate_weekly_report_data, get_week_boundaries
+	from reports_service.models import WeeklyReport
+	from datetime import datetime
+	
+	try:
+		# Determine the week boundaries
+		if week_start_date:
+			if isinstance(week_start_date, str):
+				week_start_date = datetime.strptime(week_start_date, '%Y-%m-%d').date()
+			monday, sunday = get_week_boundaries(week_start_date)
+		else:
+			# Default to previous completed week
+			monday, sunday = get_week_boundaries(previous_week=True)
+		
+		# Calculate ISO week info
+		week_number = monday.isocalendar()[1]
+		year = monday.isocalendar()[0]
+		
+		# Generate report data
+		report_data = calculate_weekly_report_data(monday, sunday)
+		
+		# Save or update the report
+		report, created = WeeklyReport.objects.update_or_create(
+			year=year,
+			week_number=week_number,
+			defaults=report_data
+		)
+		
+		# Return summary
+		return {
+			'success': True,
+			'created': created,
+			'report_id': report.id,
+			'week_number': week_number,
+			'year': year,
+			'week_start': monday.isoformat(),
+			'week_end': sunday.isoformat(),
+			'summary': {
+				'total_grns_received': report.total_grns_received,
+				'total_gross_value_received': float(report.total_gross_value_received),
+				'total_invoices_approved': report.total_invoices_approved,
+				'total_approved_payment_value': float(report.total_approved_payment_value),
+			}
+		}
+		
+	except Exception as e:
+		logger.error(f"Error generating weekly report: {e}")
+		return {
+			'success': False,
+			'error': str(e)
+		}
+
+
+def send_weekly_report_email(report_id=None):
+	"""
+	Task to send weekly report summary via email to configured recipients.
+	
+	Args:
+		report_id: Optional WeeklyReport ID. If not provided, sends the most recent report.
+	
+	Returns:
+		bool: True if email sent successfully, False otherwise.
+	"""
+	from reports_service.models import WeeklyReport
+	
+	try:
+		# Get the report
+		if report_id:
+			report = WeeklyReport.objects.get(id=report_id)
+		else:
+			report = WeeklyReport.objects.order_by('-year', '-week_number').first()
+		
+		if not report:
+			logger.warning("No weekly report found to send.")
+			return False
+		
+		# Prepare email content
+		subject = f"Weekly Activity Report - Week {report.week_number}, {report.year}"
+		
+		html_content = f"""
+		<html>
+		<body style="font-family: Arial, sans-serif; padding: 20px;">
+			<h1 style="color: #2957A4;">Weekly Activity Report</h1>
+			<h2>Week {report.week_number}, {report.year}</h2>
+			<p><strong>Period:</strong> {report.week_start_date} to {report.week_end_date}</p>
+			
+			<hr style="border: 1px solid #eee; margin: 20px 0;">
+			
+			<h3 style="color: #2957A4;">Goods Received Summary</h3>
+			<table style="border-collapse: collapse; width: 100%; max-width: 500px;">
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Total GRNs Received</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.total_grns_received}</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Total Line Items</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.total_grn_line_items}</td>
+				</tr>
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Total Net Value</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">&#8358;{report.total_net_value_received:,.2f}</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Total Gross Value</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">&#8358;{report.total_gross_value_received:,.2f}</td>
+				</tr>
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Unique Vendors</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.unique_vendors_received}</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Unique Stores</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.unique_stores_received}</td>
+				</tr>
+			</table>
+			
+			<h3 style="color: #2957A4; margin-top: 30px;">Vendor Payments Summary</h3>
+			<table style="border-collapse: collapse; width: 100%; max-width: 500px;">
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Invoices Approved</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.total_invoices_approved}</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Total Approved Value</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">&#8358;{report.total_approved_payment_value:,.2f}</td>
+				</tr>
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Invoices Rejected</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.total_invoices_rejected}</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Invoices Pending</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.total_invoices_pending}</td>
+				</tr>
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Unique Vendors Paid</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.unique_vendors_paid}</td>
+				</tr>
+			</table>
+			
+			<hr style="border: 1px solid #eee; margin: 20px 0;">
+			
+			<p style="color: #666; font-size: 12px;">
+				Report generated on {report.generated_at.strftime('%Y-%m-%d %H:%M:%S')} UTC<br>
+				This is an automated report from the VIMP system.
+			</p>
+		</body>
+		</html>
+		"""
+		
+		# Get recipients from environment or use default
+		recipients = os.getenv('WEEKLY_REPORT_RECIPIENTS', os.getenv('TEST_EMAILS', '')).split(',')
+		recipients = [r.strip() for r in recipients if r.strip()]
+		
+		if not recipients:
+			logger.warning("No recipients configured for weekly report email.")
+			return False
+		
+		# Send email
+		email = EmailMessage(
+			subject,
+			html_content,
+			'network@foodconceptsplc.com',
+			recipients
+		)
+		email.content_subtype = 'html'
+		email.send()
+		
+		logger.info(f"Weekly report email sent to {len(recipients)} recipients.")
+		return True
+		
+	except Exception as e:
+		logger.error(f"Error sending weekly report email: {e}")
+		return False
+
+
+# ─── Transfer Service: SAP Receipt Sync ───────────────────────────────────────
+import time as _transfer_time
+
+
+class SAPIntegrationError(Exception):
+	pass
+
+
+class RetryableError(Exception):
+	pass
+
+
+def _transfer_retry(max_retries=3, delay=5):
+	"""Retry decorator with exponential backoff for transfer tasks."""
+	def decorator(func):
+		def wrapper(*args, **kwargs):
+			last_exc = None
+			for attempt in range(max_retries):
+				try:
+					return func(*args, **kwargs)
+				except RetryableError as e:
+					last_exc = e
+					if attempt < max_retries - 1:
+						wait = delay * (2 ** attempt)
+						logger.warning(f"Attempt {attempt + 1} failed, retrying in {wait}s: {e}")
+						_transfer_time.sleep(wait)
+					else:
+						logger.error(f"All {max_retries} attempts failed for {func.__name__}")
+				except Exception as e:
+					logger.error(f"Non-retryable error in {func.__name__}: {e}")
+					raise
+			raise last_exc
+		return wrapper
+	return decorator
+
+
+def post_goods_receipt_on_byd(receipt):
+	"""
+	Post a Goods Receipt on ByD for a completed transfer receipt.
+
+	Two-step process:
+	1. Create an Inbound Delivery Notification with received quantities
+	2. Post the Goods Receipt to finalize it in ByD
+
+	Args:
+		receipt: TransferReceiptNote instance with line_items and inbound_delivery
+	"""
+	rest_client = byd_rest.RESTServices()
+
+	# Generate a unique notification ID
+	notification_id = f"TR{receipt.receipt_number}{''.join(random.choices(string.ascii_uppercase, k=2))}"
+
+	# Build line items, extracting the SAP unit code from the original ByD metadata
+	# (unit_of_measurement stores human-readable text like "Each", not the code "EA")
+	items = []
+	for index, line_item in enumerate(receipt.line_items.all()):
+		metadata = line_item.inbound_delivery_line_item.metadata
+		unit_code = (
+			metadata.get("ItemDeliveryQuantity", {}).get("UnitCode", "")
+			or metadata.get("QuantityUnitCode", "")
+		)
+		items.append({
+			"ID": str(index + 1),
+			"TypeCode": "14",
+			"ProductID": line_item.inbound_delivery_line_item.product_id,
+			"ItemDeliveryQuantity": {
+				"Quantity": str(float(line_item.quantity_received)),
+				"UnitCode": unit_code,
+			},
+		})
+
+	payload = {
+		"ID": notification_id,
+		"ProcessingTypeCode": "SD",
+		"Item": items,
+		"SenderParty": {
+			"PartyID": receipt.inbound_delivery.source_location_id
+		},
+		"ShipToParty": {
+			"PartyID": receipt.inbound_delivery.destination_store.byd_cost_center_code
+		},
+	}
+
+	posting_status = get_or_create_byd_posting_status(
+		receipt,
+		request_payload=payload,
+		task_name='vimp.tasks.post_goods_receipt_on_byd'
+	)
+
+	try:
+		# Step 1: Create the inbound delivery notification
+		response = rest_client.create_inbound_delivery_notification(payload)
+		object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+
+		receipt.metadata.update({
+			"byd_notification_id": notification_id,
+			"byd_object_id": object_id,
+			"create_response": response,
+		})
+		receipt.save(update_fields=['metadata'])
+
+		# Step 2: Wait for ByD to index, then post the goods receipt
+		time.sleep(5)
+
+		post_response = rest_client.post_delivery_notification(object_id)
+		receipt.metadata.update({
+			"post_response": post_response,
+		})
+		receipt.save(update_fields=['metadata'])
+
+		# Mark posting as successful
+		posting_status.mark_success(
+			response.get("d", {}).get("results", {})
+		)
+		logger.info(f"Goods receipt posted successfully for TR-{receipt.receipt_number}")
+		return True
+
+	except Exception as e:
+		error_msg = str(e)
+		logger.error(f"Error posting goods receipt for TR-{receipt.receipt_number}: {error_msg}")
+		posting_status.mark_failure(error_msg)
+		posting_status.increment_retry()
+		# Re-raise so callers (sync_approved_receipt_to_sap / _transfer_retry) can handle retries
+		raise
+
+
+@_transfer_retry(max_retries=3, delay=5)
+def sync_approved_receipt_to_sap(receipt_id: int):
+	"""
+	Sync an approved transfer receipt to SAP ByD.
+	Only called after SCD Team approves the receipt.
+
+	Delegates to post_goods_receipt_on_byd() which handles the two-step
+	ByD flow: create Inbound Delivery Notification → PostGoodsReceipt.
+	Updates synced_to_sap on success.
+	"""
+	from transfer_service.models import TransferReceiptNote
+
+	# Non-retryable SAP errors (no point retrying these)
+	NON_RETRYABLE_ERRORS = [
+		"action is disabled",
+		"object does not exist",
+		"not found",
+	]
+
+	try:
+		receipt = TransferReceiptNote.objects.select_related(
+			'inbound_delivery',
+			'inbound_delivery__destination_store'
+		).get(id=receipt_id)
+
+		logger.info(f"Processing SAP sync for approved receipt TR-{receipt.receipt_number}")
+
+		if receipt.approval_status != 'approved':
+			logger.warning(f"Receipt TR-{receipt.receipt_number} not approved, skipping SAP sync")
+			return
+
+		if receipt.synced_to_sap:
+			logger.info(f"Receipt TR-{receipt.receipt_number} already synced to SAP")
+			return
+
+		# Delegate to the two-step ByD posting function (raises on failure)
+		post_goods_receipt_on_byd(receipt)
+
+		# If we get here, the posting succeeded
+		receipt.refresh_from_db()
+		receipt.synced_to_sap = True
+		receipt.metadata['sap_sync'] = {
+			'synced_at': timezone.now().isoformat(),
+			'approved_by': receipt.approved_by.username if receipt.approved_by else None
+		}
+		receipt.save()
+
+		inbound_delivery = receipt.inbound_delivery
+		inbound_delivery.refresh_from_db()
+		if inbound_delivery.is_fully_received:
+			inbound_delivery.delivery_status_code = '3'
+			inbound_delivery.save()
+
+		logger.info(f"Receipt TR-{receipt.receipt_number} successfully synced to SAP ByD")
+
+	except TransferReceiptNote.DoesNotExist:
+		logger.error(f"Transfer receipt with ID {receipt_id} not found")
+		raise SAPIntegrationError(f"Transfer receipt with ID {receipt_id} not found")
+	except (SAPIntegrationError, RetryableError):
+		raise
+	except Exception as e:
+		error_msg = str(e).lower()
+		# Check if error is non-retryable (SAP state issues that won't resolve with retries)
+		if any(phrase in error_msg for phrase in NON_RETRYABLE_ERRORS):
+			logger.error(f"Non-retryable SAP error for receipt {receipt_id}: {e}")
+			raise SAPIntegrationError(f"SAP error (non-retryable): {e}")
+		# Retryable errors: auth, timeout, connection, object locked
+		logger.error(f"Retryable error syncing receipt {receipt_id} to SAP: {e}")
+		raise RetryableError(f"SAP sync failed for TR-{receipt_id}: {e}")
+
+
 if __name__ == "__main__":
-	# from pprint import pprint
-	# egrn = GoodsReceivedNote.objects.get(id=1318)
-	# print(create_inbound_delivery_notification_on_byd(egrn))
-	# invoice = Invoice.objects.get(id=323)
-	# print(create_invoice_on_byd(invoice))
 	...

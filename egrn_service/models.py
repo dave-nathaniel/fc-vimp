@@ -11,6 +11,7 @@ from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from django.db.models import Sum
 from django.forms.models import model_to_dict
 from django_q.tasks import async_task
+from django.utils import timezone
 
 # Initialize REST services
 byd_rest_services = RESTServices()
@@ -260,6 +261,12 @@ class GoodsReceivedNote(models.Model):
 	purchase_order = models.ForeignKey(PurchaseOrder, on_delete=models.CASCADE, related_name='purchase_order')
 	grn_number = models.IntegerField(blank=False, null=False, unique=True)
 	created = models.DateField(auto_now_add=True)
+	inbound_delivery_object_id = models.CharField(max_length=255, blank=True, null=True)
+	inbound_delivery_notification_id = models.CharField(max_length=255, blank=True, null=True)
+	inbound_delivery_metadata = models.JSONField(default=dict, blank=True)
+	is_nullified = models.BooleanField(default=False)
+	nullified_on = models.DateTimeField(blank=True, null=True)
+	nullified_reason = models.CharField(max_length=255, blank=True, null=True)
 	
 	invoicing_status_code = [('1', 'Not Started'), ('2', 'In Process'), ('3', 'Finished')]
 	
@@ -307,7 +314,9 @@ class GoodsReceivedNote(models.Model):
 		return total_invoiced
 	
 	def save(self, *args, **kwargs):
-		grn_data = kwargs.pop('grn_data')
+		grn_data = kwargs.pop('grn_data', None)
+		if not grn_data:
+			return super().save(*args, **kwargs)
 		po_id = grn_data['po_id']
 		try:
 			# Try to retrieve an object by a specific field if the object is found, you can work with it here
@@ -358,6 +367,15 @@ class GoodsReceivedNote(models.Model):
 		# Return the created Goods Received Note
 		return self
 	
+	def mark_nullified(self, reason: str = ""):
+		"""
+			Flag the GRN as nullified and record metadata for audit purposes.
+		"""
+		self.is_nullified = True
+		self.nullified_on = timezone.now()
+		self.nullified_reason = reason or "Admin triggered nullification"
+		self.save(update_fields=['is_nullified', 'nullified_on', 'nullified_reason'])
+
 	def __create_line_items__(self, line_items):
 		# An object to hold the status of line items that were created
 		created_line_items = {}
@@ -512,6 +530,30 @@ class GoodsReceivedLineItem(models.Model):
 	
 	class Meta:
 		verbose_name_plural = "2.4 Goods Received Line Items"
+
+
+class StockConsumptionRecord(models.Model):
+	product_id = models.CharField(max_length=32)
+	product_name = models.CharField(max_length=100, blank=True, null=True)
+	quantity = models.DecimalField(max_digits=15, decimal_places=3)
+	unit_cost = models.DecimalField(max_digits=15, decimal_places=3, default=0.0)
+	unit_of_measurement = models.CharField(max_length=32, blank=True, null=True)
+	cost_center = models.CharField(max_length=64, blank=True, null=True)
+	external_item_id = models.CharField(max_length=64, blank=True, null=True)
+	metadata = models.JSONField(default=dict, blank=True)
+	date_consumed = models.DateTimeField(auto_now_add=True)
+
+	@property
+	def total_cost(self):
+		return float(self.quantity) * float(self.unit_cost)
+
+	def __str__(self):
+		return f"{self.product_id} consumed ({self.quantity} {self.unit_of_measurement or ''})"
+
+	class Meta:
+		ordering = ['-date_consumed']
+		verbose_name = '2.5 Stock Consumption Record'
+		verbose_name_plural = '2.5 Stock Consumption Records'
 
 
 class Conversion(models.Model):

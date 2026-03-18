@@ -2,7 +2,12 @@
 import os, sys
 import logging
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
+from uuid import uuid4
+
+from django.conf import settings
 from django.forms import model_to_dict
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.decorators import api_view, authentication_classes
 from django_auth_adfs.rest_framework import AdfsAccessTokenAuthentication
@@ -12,9 +17,20 @@ from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import Q
+from django.db.models import Q, Sum, Case, When, Value, CharField, F
+from django.db.models.functions import Coalesce
+from openpyxl import Workbook
+from core_service.cache_utils import (
+    cache_result, CacheManager, get_or_set_cache, 
+    invalidate_user_cache, CachedPagination
+)
+from collections import defaultdict
 
-from .models import GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder, PurchaseOrderLineItem, ProductConfiguration, Store
+from .models import (
+	GoodsReceivedNote, GoodsReceivedLineItem, PurchaseOrder,
+	PurchaseOrderLineItem, ProductConfiguration, Store,
+	StockConsumptionRecord
+)
 from .serializers import GoodsReceivedNoteSerializer, GoodsReceivedLineItemSerializer, PurchaseOrderSerializer
 
 
@@ -24,6 +40,28 @@ byd_rest_services = RESTServices()
 User = get_user_model()
 # Pagination
 paginator = CustomPagination()
+
+GRN_EXPORT_HEADERS = [
+	"PO Number",
+	"GRN Number",
+	"Vendor Name",
+	"Vendor Code",
+	"Date Created",
+	"Store Name",
+	"Store ByD Code",
+	"Invoice Status",
+	"Delivery Status",
+	"Product Name",
+	"Product Code",
+	"Unit Price",
+	"Quantity Received",
+	"Net Value Received",
+	"Gross Value Received",
+	"Total Tax",
+	"Outstanding Qty",
+]
+
+DELIVERY_STATUS_LOOKUP = dict(PurchaseOrder.delivery_status_code)
 
 
 def delete_items(po):
@@ -164,13 +202,39 @@ def create_grn(request, ):
 @authentication_classes([CombinedAuthentication])
 def get_all_grns(request, ):
 	try:
-		user_stores = Store.objects.filter(store_email=request.user.email)
-		# Get all GRNs sorted by creation date in descending order
-		grns = GoodsReceivedNote.objects.filter(
-			line_items__purchase_order_line_item__delivery_store__in=user_stores
+		# Cache user stores lookup
+		user_stores_key = CacheManager.get_user_cache_key(
+			request.user, "stores", request.user.email
 		)
-		if grns:
-			# Paginate the results
+		user_stores = get_or_set_cache(
+			user_stores_key,
+			lambda: list(Store.objects.filter(store_email=request.user.email)),
+			CacheManager.TIMEOUT_LONG
+		)
+		
+		if not user_stores:
+			return APIResponse(f"No stores found for user: {request.user.email}", status.HTTP_404_NOT_FOUND)
+		
+		# Generate cache key for this user's GRN query
+		page = request.query_params.get('page', '1')
+		page_size = request.query_params.get('size', '15')
+		cache_key_suffix = f"all_grns_user_{request.user.id}_page_{page}_size_{page_size}"
+		
+		# Get all GRNs with optimized queries to reduce database hits
+		grns = GoodsReceivedNote.objects.select_related(
+			'purchase_order',
+			'purchase_order__vendor'
+		).prefetch_related(
+			'line_items__purchase_order_line_item__delivery_store'
+		).filter(
+			line_items__purchase_order_line_item__delivery_store__in=user_stores
+		).distinct()
+		
+		if grns.exists():
+			# Cache the total count for pagination
+			total_count = CachedPagination.cache_page_count(grns, cache_key_suffix)
+			
+			# Paginate the results - now only fetches the requested page from database
 			paginated = paginator.paginate_queryset(grns, request, order_by='-id')
 			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
 			grn_serializer = GoodsReceivedNoteSerializer(paginated, many=True, context={'request':request})
@@ -197,69 +261,328 @@ def filter_grns(request, ):
 			- 'end_date': Filter GRNs by end date
 			- 'vendor_internal_id': Filter GRNs by vendor internal ID (from ByD)
 	'''
-	# These are filters that we can use directly on the queryset
-	django_filters = {}
-	# These are filters that we need to manually apply on the queryset after fetching the base queryset
-	custom_filters = {
-		'delivery_status_code': None,
-		'invoice_status_code': None,
-	}
-	
-	for key in request.query_params:
-		# Remove unnecessary filter keys
-		if key in custom_filters.keys():
-			custom_filters[key] = request.query_params.get(key)
-		# Convert the filter to the appropriate data type or the appropriate field name
-		if key == 'date_created':
-			django_filters['created'] = request.query_params.get(key)
-		if key == 'start_date':
-			django_filters['created__gte'] = request.query_params.get(key)
-		if key == 'end_date':
-			django_filters['created__lte'] = request.query_params.get(key)
-		if key in ['po_id']:
-			django_filters[f'purchase_order__{key}'] = request.query_params.get(key)
-		if key == 'vendor_internal_id':
-			django_filters['purchase_order__vendor__byd_internal_id'] = request.query_params.get(key)
-		if key == 'delivery_stores':
-			filter_stores = request.query_params.get(key)
-			# Split the store names and build a Q object for icontains lookup
-			store_names = [name.strip() for name in filter_stores.split(',') if name.strip()]
-			if store_names:
-				store_query = Q()
-				for name in store_names:
-					store_query |= Q(line_items__purchase_order_line_item__delivery_store__store_name__icontains=name)
-				# Save the Q object for later use
-				django_filters['__custom_store_name_q'] = store_query
-
+	# Build all filters at database level for efficient querying
 	try:
-		# Extract and remove the custom Q object if present
-		store_name_q = django_filters.pop('__custom_store_name_q', None)
-		# Apply filters to get the base queryset
-		grns = GoodsReceivedNote.objects.filter(**django_filters)
-		if store_name_q:
-			grns = grns.filter(store_name_q)
-		grns = grns.order_by('-id')
+		grns = _build_filtered_grns_queryset(request)
+		
 		if grns.exists():
-			# Paginate the results
 			paginated = paginator.paginate_queryset(grns, request)
-			# Serialize the paginated queryset
 			serialized_data = GoodsReceivedNoteSerializer(paginated, many=True, context={'request': request}).data
-			# Apply custom filtering after serialization (since 'delivery_status_code' comes from the serializer)
-			if custom_filters:
-				# Use only custom filters that are not None
-				custom_filters = {k: v for k, v in custom_filters.items() if v is not None}
-				if 'delivery_status_code' in custom_filters:
-					# Filter based on serialized data
-					serialized_data = [grn for grn in serialized_data if grn.get('purchase_order', {}).get('delivery_status_code') == custom_filters.get('delivery_status_code')]
-				if 'invoice_status_code' in custom_filters:
-					# Filter based on serialized data
-					serialized_data = [grn for grn in serialized_data if grn.get('invoice_status_code') == custom_filters.get('invoice_status_code')]
-			
-			# Return the filtered, paginated response
 			return paginator.get_paginated_response(serialized_data)
 		return APIResponse("No GRNs found for the specified criteria.", status=status.HTTP_404_NOT_FOUND)
 	except Exception as e:
 		return APIResponse(f"Internal Error: {e}", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['GET'])
+@authentication_classes([CombinedAuthentication])
+def download_grns(request):
+	try:
+		grns = _build_filtered_grns_queryset(request)
+		if not grns.exists():
+			return APIResponse("No GRNs found for the specified criteria.", status=status.HTTP_404_NOT_FOUND)
+		
+		grn_ids = list(grns.values_list('id', flat=True))
+		if not grn_ids:
+			return APIResponse("No GRNs found for the specified criteria.", status=status.HTTP_404_NOT_FOUND)
+		
+		line_items_map, delivered_quantity_map = _collect_grn_line_items(grn_ids)
+		file_path, row_count = _write_grn_export_file(
+			request=request,
+			queryset=grns,
+			line_items_map=line_items_map,
+			delivered_quantity_map=delivered_quantity_map,
+		)
+		download_url = _build_media_download_url(request, file_path)
+		
+		return APIResponse(
+			"Download ready.",
+			status=status.HTTP_200_OK,
+			data={
+				"download_url": download_url,
+				"row_count": row_count,
+			}
+		)
+	except Exception as e:
+		return APIResponse(f"Internal Error: {e}", status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+def _build_filtered_grns_queryset(request):
+	django_filters = {}
+	store_lookup_q = None
+	q_filters = None
+	
+	for key in request.query_params:
+		value = request.query_params.get(key)
+		if value in [None, '']:
+			continue
+			
+		elif key == 'date_created':
+			django_filters['created'] = value
+		elif key == 'start_date':
+			django_filters['created__gte'] = value
+		elif key == 'end_date':
+			django_filters['created__lte'] = value
+		elif key == 'po_id':
+			django_filters['purchase_order__po_id'] = value
+		elif key == 'vendor_internal_id':
+			django_filters['purchase_order__vendor__byd_internal_id'] = value
+		elif key == 'delivery_stores':
+			store_identifiers = [identifier.strip() for identifier in value.split(',') if identifier.strip()]
+			if store_identifiers:
+				store_lookup_q = Q()
+				for identifier in store_identifiers:
+					store_lookup_q |= Q(line_items__purchase_order_line_item__delivery_store__store_name__icontains=identifier)
+					store_lookup_q |= Q(line_items__purchase_order_line_item__delivery_store__byd_cost_center_code__iexact=identifier)
+	
+	queryset = GoodsReceivedNote.objects.select_related(
+		'purchase_order',
+		'purchase_order__vendor',
+		'purchase_order__vendor__user',
+	).prefetch_related(
+		'line_items__purchase_order_line_item__delivery_store'
+	).filter(**django_filters).annotate(
+		po_total_qty=Coalesce(Sum('purchase_order__line_items__quantity'), Decimal('0.0')),
+		po_delivered_qty=Coalesce(Sum('purchase_order__line_items__grn_line_item__quantity_received'), Decimal('0.0')),
+		invoice_quantity=Coalesce(Sum('line_items__invoice_items__quantity'), Decimal('0.0')),
+		invoice_total_qty=Coalesce(Sum('line_items__quantity_received'), Decimal('0.0')),
+	).annotate(
+		delivery_status_code_db=Case(
+			When(Q(po_delivered_qty__gte=F('po_total_qty')) & Q(po_total_qty__gt=0), then=Value('3')),
+			When(po_delivered_qty__gt=0, then=Value('2')),
+			default=Value('1'),
+			output_field=CharField(),
+		),
+		delivery_status_text_db=Case(
+			When(delivery_status_code_db='3', then=Value('Completely Delivered')),
+			When(delivery_status_code_db='2', then=Value('Partially Delivered')),
+			default=Value('Not Delivered'),
+			output_field=CharField(),
+		),
+		invoice_status_code_db=Case(
+			When(Q(invoice_quantity__gte=F('invoice_total_qty')) & Q(invoice_total_qty__gt=0), then=Value('3')),
+			When(invoice_quantity__gt=0, then=Value('2')),
+			default=Value('1'),
+			output_field=CharField(),
+		),
+		invoice_status_text_db=Case(
+			When(invoice_status_code_db='3', then=Value('Finished')),
+			When(invoice_status_code_db='2', then=Value('In Process')),
+			default=Value('Not Started'),
+			output_field=CharField(),
+		),
+	)
+
+	delivery_status_code = request.query_params.get('delivery_status_code')
+	if delivery_status_code:
+		queryset = queryset.filter(
+			Q(delivery_status_code_db=delivery_status_code) |
+			Q(delivery_status_text_db__icontains=delivery_status_code)
+		)
+
+	invoice_status_code = request.query_params.get('invoice_status_code')
+	if invoice_status_code:
+		queryset = queryset.filter(
+			Q(invoice_status_code_db=invoice_status_code) |
+			Q(invoice_status_text_db__icontains=invoice_status_code)
+		)
+
+	if q_filters:
+		queryset = queryset.filter(q_filters)
+	if store_lookup_q:
+		queryset = queryset.filter(store_lookup_q)
+	
+	order_by = request.query_params.get('order_by', '-id')
+	if order_by:
+		queryset = queryset.order_by(order_by)
+	
+	return queryset.distinct()
+
+
+def _collect_grn_line_items(grn_ids: list):
+	line_items_map = defaultdict(list)
+	delivered_quantity_map = defaultdict(lambda: Decimal('0'))
+
+	if not grn_ids:
+		return line_items_map, delivered_quantity_map
+
+	line_items = GoodsReceivedLineItem.objects.filter(
+		grn_id__in=grn_ids
+	).select_related(
+		'purchase_order_line_item__delivery_store'
+	)
+
+	for line_item in line_items.iterator(chunk_size=1000):
+		grn_id = line_item.grn_id
+		po_line_item = line_item.purchase_order_line_item
+		delivered_quantity_map[po_line_item.id] += line_item.quantity_received or Decimal('0')
+
+		delivery_store = getattr(po_line_item, 'delivery_store', None)
+		line_items_map[grn_id].append({
+			'store_code': getattr(delivery_store, 'byd_cost_center_code', '') if delivery_store else '',
+			'store_name': getattr(delivery_store, 'store_name', '') if delivery_store else '',
+			'product_name': getattr(po_line_item, 'product_name', '') or '',
+			'product_code': getattr(po_line_item, 'product_id', '') or '',
+			'unit_price': po_line_item.unit_price or Decimal('0'),
+			'quantity': line_item.quantity_received or Decimal('0'),
+			'net_value': line_item.net_value_received or Decimal('0'),
+			'gross_value': line_item.gross_value_received or Decimal('0'),
+			'po_line_item_id': po_line_item.id,
+			'total_quantity': po_line_item.quantity or Decimal('0'),
+		})
+
+	return line_items_map, delivered_quantity_map
+
+
+def _write_grn_export_file(request, queryset, line_items_map, delivered_quantity_map):
+	download_dir = _ensure_grn_download_dir()
+	user_identifier = getattr(request.user, 'id', None) or 'anonymous'
+	filename = f"grns_{user_identifier}_{timezone.now().strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}.xlsx"
+	file_path = os.path.join(download_dir, filename)
+	
+	workbook = Workbook(write_only=True)
+	worksheet = workbook.create_sheet(title="GRNs")
+	worksheet.append(GRN_EXPORT_HEADERS)
+	
+	row_count = 0
+	for grn in queryset.iterator(chunk_size=500):
+		grn_rows = line_items_map.get(grn.id, [])
+		for line_info in grn_rows:
+			worksheet.append(
+				_build_grn_export_row(
+					grn,
+					line_info,
+					delivered_quantity_map,
+				)
+			)
+			row_count += 1
+	
+	workbook.save(file_path)
+	workbook.close()
+	return file_path, row_count
+
+
+def _build_grn_export_row(grn, line_info, delivered_quantity_map):
+	po = getattr(grn, 'purchase_order', None)
+	vendor_profile = getattr(po, 'vendor', None) if po else None
+	vendor_user = getattr(vendor_profile, 'user', None) if vendor_profile else None
+	vendor_name = _format_vendor_name(vendor_user) if vendor_user else ''
+
+	delivery_status = _get_delivery_status_text(
+		line_info.get('total_quantity'),
+		delivered_quantity_map.get(line_info.get('po_line_item_id'), Decimal('0'))
+	)
+
+	vendor_code = getattr(vendor_profile, 'byd_internal_id', '') if vendor_profile else ''
+	total_quantity = _safe_decimal(line_info.get('total_quantity'))
+	delivered_quantity = _safe_decimal(delivered_quantity_map.get(line_info.get('po_line_item_id'), Decimal('0')))
+	total_tax = _safe_decimal(line_info.get('gross_value')) - _safe_decimal(line_info.get('net_value'))
+	outstanding = max(total_quantity - delivered_quantity, Decimal('0'))
+
+	return [
+		getattr(po, 'po_id', ''),
+		grn.grn_number,
+		vendor_name,
+		vendor_code,
+		_format_datetime(grn.created),
+		line_info.get('store_name', ''),
+		line_info.get('store_code', ''),
+		_format_invoice_status(grn),
+		delivery_status,
+		line_info.get('product_name', ''),
+		line_info.get('product_code', ''),
+		float(_safe_decimal(line_info.get('unit_price'))),
+		float(_safe_decimal(line_info.get('quantity'))),
+		float(_safe_decimal(line_info.get('net_value'))),
+		float(_safe_decimal(line_info.get('gross_value'))),
+		float(total_tax),
+		float(outstanding),
+	]
+
+
+def _format_vendor_name(user):
+	if not user:
+		return ''
+	full_name = (user.get_full_name() or '').strip()
+	if full_name:
+		return full_name
+	if user.username:
+		return user.username
+	return user.email or ''
+
+
+def _format_invoice_status(grn):
+	code = getattr(grn, 'invoice_status_code', '')
+	text = getattr(grn, 'invoice_status_text', '')
+	if code or text:
+		code_str = f"[{code}]" if code else ""
+		return f"{code_str} {text}".strip()
+	return ''
+
+
+def _format_datetime(value):
+	if not value:
+		return ''
+	if isinstance(value, datetime):
+		if timezone.is_aware(value):
+			value = timezone.localtime(value)
+		return value.strftime('%Y-%m-%d %H:%M:%S')
+	return value.strftime('%Y-%m-%d')
+
+
+def _get_delivery_status_text(total_quantity, delivered_quantity):
+	total = _safe_decimal(total_quantity)
+	delivered = _safe_decimal(delivered_quantity)
+	if total == 0:
+		return ''
+	if delivered == 0:
+		status_code = '1'
+	elif delivered < total:
+		status_code = '2'
+	else:
+		status_code = '3'
+	return DELIVERY_STATUS_LOOKUP.get(status_code, '')
+
+
+def _decimal_to_string(value):
+	if value is None:
+		return "0"
+	if isinstance(value, Decimal):
+		value = value.normalize()
+		s = format(value, 'f')
+		s = s.rstrip('0').rstrip('.') if '.' in s else s
+		return s or "0"
+	return str(value)
+
+
+def _safe_decimal(value):
+	if isinstance(value, Decimal):
+		return value
+	if value is None:
+		return Decimal('0')
+	try:
+		return Decimal(value)
+	except (TypeError, InvalidOperation):
+		try:
+			return Decimal(str(value))
+		except (TypeError, InvalidOperation):
+			return Decimal('0')
+
+
+def _ensure_grn_download_dir():
+	download_dir = os.path.join(settings.MEDIA_ROOT, 'downloads', 'grns')
+	os.makedirs(download_dir, exist_ok=True)
+	return download_dir
+
+
+def _build_media_download_url(request, file_path: str) -> str:
+	relative_path = os.path.relpath(file_path, settings.MEDIA_ROOT).replace(os.sep, '/')
+	media_url = settings.MEDIA_URL or '/media/'
+	if not media_url.endswith('/'):
+		media_url = f"{media_url}/"
+	if not media_url.startswith('/'):
+		media_url = f"/{media_url}"
+	return request.build_absolute_uri(f"{media_url}{relative_path}")
 	
 
 @api_view(['GET'])
@@ -270,10 +593,15 @@ def get_vendors_grns(request, ):
 	'''
 	try:
 		po_id = request.query_params.get('po_id')
-		grns = GoodsReceivedNote.objects.filter(purchase_order__vendor=request.user.vendor_profile)
+		grns = GoodsReceivedNote.objects.select_related(
+			'purchase_order',
+			'purchase_order__vendor'
+		).prefetch_related(
+			'line_items__purchase_order_line_item__delivery_store'
+		).filter(purchase_order__vendor=request.user.vendor_profile)
 		# If the request params contain po_id, filter by po_id
 		grns = grns.filter(purchase_order__po_id=po_id) if po_id else grns
-		if grns:
+		if grns.exists():
 			# Paginate the results
 			paginated = paginator.paginate_queryset(grns, request, order_by='-id')
 			# Serialize the GoodsReceivedNote instance along with its related GoodsReceivedLineItem instances
@@ -307,92 +635,169 @@ def get_grn(request, grn_number):
 def weighted_average(request):
 	'''
 		Get the weighted average cost for all products or for a specific product, with a history of purchases.
+		Results are cached for 30 minutes to improve performance.
 	'''
-	def calculate_wac(product_line_items, cumulative_quantity, cumulative_cost):
+	def calculate_wac(events, product_name, product_id, cumulative_quantity, cumulative_cost):
 		# Dictionary to store results grouped by product_id
 		product_data = {
-			"product_id": product_line_items[0].purchase_order_line_item.product_id,
-			"product_name": product_line_items[0].purchase_order_line_item.product_name,
+			"product_id": product_id,
+			"product_name": product_name,
 			"starting_quantity": cumulative_quantity,
 			"starting_cost": cumulative_cost / cumulative_quantity if cumulative_quantity > 0 else 0,
 			"cumulative_quantity": cumulative_quantity,
 			"cumulative_cost": cumulative_cost,
-			"wac": 0,
+			"wac": round(cumulative_cost / cumulative_quantity, 2) if cumulative_quantity > 0 else 0,
 			"history": [],
 		}
 
-		for line_item in product_line_items:
-			purchase_quantity = line_item.quantity_received
-			purchase_cost = purchase_quantity * line_item.purchase_order_line_item.unit_price
-			
-			cumulative_quantity = product_data["cumulative_quantity"]
-			cumulative_cost = product_data["cumulative_cost"]
+		def safe_wac(quantity, cost):
+			return round(cost / quantity, 2) if quantity > 0 else 0
 
-			# Update cumulative values with new purchase
-			cumulative_quantity += purchase_quantity
-			cumulative_cost += purchase_cost
+		for event in events:
+			if event["type"] == "receive":
+				line_item = event["line_item"]
+				purchase_quantity = line_item.quantity_received
+				purchase_cost = purchase_quantity * line_item.purchase_order_line_item.unit_price
+				
+				product_data["cumulative_quantity"] += purchase_quantity
+				product_data["cumulative_cost"] += purchase_cost
+				product_data["wac"] = safe_wac(
+					product_data["cumulative_quantity"],
+					product_data["cumulative_cost"],
+				)
 
-			# Calculate new WAC for the product
-			new_wac = cumulative_cost / cumulative_quantity
+				product_data["history"].append({
+					"event": "receipt",
+					"date": line_item.date_received,
+					"store": line_item.purchase_order_line_item.delivery_store.store_name,
+					"purchase_quantity": purchase_quantity,
+					"purchase_price_per_unit": line_item.purchase_order_line_item.unit_price,
+					"purchase_cost": purchase_cost,
+					"cumulative_quantity": product_data["cumulative_quantity"],
+					"cumulative_cost": product_data["cumulative_cost"],
+					"wac": product_data["wac"],
+					"grn": GoodsReceivedLineItemSerializer(line_item).data,
+				})
+			else:
+				record = event["record"]
+				consumed_quantity = record.quantity
+				consumed_cost = record.total_cost
 
-			# Update product's current data
-			product_data.update({
-				"cumulative_quantity": cumulative_quantity,
-				"cumulative_cost": cumulative_cost,
-				"wac": round(new_wac, 2),
-			})
+				product_data["cumulative_quantity"] = max(product_data["cumulative_quantity"] - consumed_quantity, 0)
+				product_data["cumulative_cost"] = max(product_data["cumulative_cost"] - consumed_cost, 0)
+				product_data["wac"] = safe_wac(
+					product_data["cumulative_quantity"],
+					product_data["cumulative_cost"],
+				)
 
-			# Add history entry
-			product_data["history"].append({
-				"date": line_item.date_received,
-				"store": line_item.purchase_order_line_item.delivery_store.store_name,
-				"purchase_quantity": purchase_quantity,
-				"purchase_price_per_unit": purchase_cost / purchase_quantity,
-				"purchase_cost": purchase_cost,
-				"cumulative_quantity": cumulative_quantity,
-				"cumulative_cost": cumulative_cost,
-				"wac": round(new_wac, 2),
-				"grn": GoodsReceivedLineItemSerializer(line_item).data,
-			})
+				product_data["history"].append({
+					"event": "consumption",
+					"date": record.date_consumed,
+					"store": record.cost_center,
+					"consumed_quantity": consumed_quantity,
+					"consumption_unit_cost": record.unit_cost,
+					"consumption_cost": consumed_cost,
+					"cumulative_quantity": product_data["cumulative_quantity"],
+					"cumulative_cost": product_data["cumulative_cost"],
+					"wac": product_data["wac"],
+					"metadata": record.metadata,
+				})
 
-		# Convert defaultdict to a regular dict before returning
 		return product_data
-	
+
 	products_wac = []
 	
 	try:
 		if request.query_params.get('product_id'):
-			products = map(lambda x: x.strip(), request.query_params.get('product_id').split(','))
+			products = [x.strip() for x in request.query_params.get('product_id').split(',') if x.strip()]
 		else:
-			products = GoodsReceivedLineItem.objects.order_by('purchase_order_line_item__product_id').values_list('purchase_order_line_item__product_id', flat=True).distinct()
-			
-		for product_id in products:
-			product_config = ProductConfiguration.objects.filter(product_id=product_id).first()
+			# Optimize distinct product query
+			products = GoodsReceivedLineItem.objects.select_related(
+				'purchase_order_line_item'
+			).values_list('purchase_order_line_item__product_id', flat=True).distinct()
+		
+		# Optimize product config queries by fetching all at once
+		product_configs = {
+			pc.product_id: pc for pc in 
+			ProductConfiguration.objects.filter(product_id__in=products)
+		}
+
+		# Track stock consumption records per product
+		consumption_records_by_product = defaultdict(list)
+		consumption_queryset = StockConsumptionRecord.objects.filter(
+			product_id__in=products
+		).order_by('product_id', 'date_consumed')
+		for record in consumption_queryset:
+			consumption_records_by_product[record.product_id].append(record)
+		
+		# Apply date filter at the queryset level if provided
+		date_filter = {}
+		if request.query_params.get('date'):
+			try:
+				date_filter['date_received__lte'] = datetime.strptime(
+					request.query_params.get('date'),
+					'%Y-%m-%d'
+				)
+			except ValueError:
+				return APIResponse("Invalid date format. Use YYYY-MM-DD.", status.HTTP_400_BAD_REQUEST)
+		
+		# Fetch all relevant line items with optimized query
+		base_queryset = GoodsReceivedLineItem.objects.select_related(
+			'purchase_order_line_item__delivery_store'
+		).filter(
+			purchase_order_line_item__product_id__in=products,
+			**date_filter
+		).order_by('purchase_order_line_item__product_id', 'date_received')
+		
+		# Group line items by product to avoid multiple queries
+		from itertools import groupby
+		line_items_by_product = groupby(
+			base_queryset, 
+			key=lambda x: x.purchase_order_line_item.product_id
+		)
+		
+		for product_id, line_items_group in line_items_by_product:
+			line_items_list = list(line_items_group)
+			if not line_items_list and not consumption_records_by_product.get(product_id):
+				continue
+
+			# Get product config data efficiently
+			product_config = product_configs.get(product_id)
 			cumulative_quantity, cumulative_cost = 0, 0
-			if hasattr(product_config, 'metadata') and product_config.metadata:
+			if product_config and hasattr(product_config, 'metadata') and product_config.metadata:
 				cumulative_quantity = product_config.metadata.get('inital_quantity', 0)
 				cumulative_cost = product_config.metadata.get('initial_cost', 0) * cumulative_quantity
-			
-			# Get all orders for the current product and order by date received
-			orders_for_product = GoodsReceivedLineItem.objects.filter(purchase_order_line_item__product_id=product_id).order_by('date_received')
-			# If a date was supplied in the request, filter for only orders on or before that date
-			if request.query_params.get('date'):
-				orders_for_product = orders_for_product.filter(
-					date_received__lte=datetime.strptime(
-						request.query_params.get('date'),
-						'%Y-%m-%d'
-					)
-				)
-				# If no orders were found for the given date, continue to the next product
-				if not orders_for_product:
-					continue
-			
-			# Calculate and add the WAC for the current product to the results list
+
+			events = []
+			for line_item in line_items_list:
+				events.append({
+					"type": "receive",
+					"date": line_item.date_received,
+					"line_item": line_item,
+					"product_id": product_id,
+				})
+			for record in consumption_records_by_product.get(product_id, []):
+				events.append({
+					"type": "consumption",
+					"date": record.date_consumed,
+					"record": record,
+					"product_id": product_id,
+				})
+
+			events.sort(key=lambda event: event["date"])
+
+			product_name = (
+				line_items_list[0].purchase_order_line_item.product_name
+				if line_items_list else
+				product_config.product_name if product_config else
+				product_id
+			)
+
 			products_wac.append(
-				calculate_wac(orders_for_product, cumulative_quantity, cumulative_cost)
-			) if orders_for_product else None
+				calculate_wac(events, product_name, product_id, cumulative_quantity, cumulative_cost)
+			)
 			
-		# # Paginate the results
+		# Paginate the results
 		paginated = paginator.paginate_queryset(products_wac, request)
 		paginated_data = paginator.get_paginated_response(paginated).data
 		return APIResponse("Weighted Averages Calculated", status.HTTP_200_OK, data=paginated_data)

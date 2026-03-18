@@ -165,7 +165,6 @@ class VendorProfileView(APIView):
 		else:
 			return APIResponse(vendor_profile_serializer.errors, status.HTTP_400_BAD_REQUEST)
 
-	
 # View for retrieving purchase orders
 @api_view(['GET'])
 @permission_classes((IsAuthenticated,))

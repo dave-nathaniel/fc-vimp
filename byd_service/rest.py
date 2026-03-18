@@ -91,15 +91,22 @@ class RESTServices:
 
 	def get_vendor_by_id(self, vendor_id, id_type='email'):
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=10"
-		query_url = f"{action_url}&$filter=EMail/URI eq '{vendor_id}'"
+		id_type = id_type.lower()
+
+		if id_type not in ['email', 'phone', 'internal_id']:
+			raise ValueError(f"Unsupported ID type: {id_type}")
 
 		if id_type == 'phone':
 			vendor_id = vendor_id.strip()[-10:]
 			query_url = f"{action_url}&$filter=substringof('{vendor_id}',ConventionalPhone/NormalisedNumberDescription)"
-
+		elif id_type == 'email':
+			query_url = f"{action_url}&$filter=EMail/URI eq '{vendor_id}'"
+		elif id_type == 'internal_id':
+			query_url = f"{action_url}&$filter=BusinessPartner/InternalID eq '{vendor_id}'"
+		
 		# Make a request with HTTP Basic Authentication
 		response = self.__get__(query_url)
-
+		
 		if response.status_code == 200:
 			try:
 				response_json = json.loads(response.text)
@@ -212,6 +219,9 @@ class RESTServices:
 		calculate_tax = f"{self.endpoint}/sap/byd/odata/cust/v1/khsupplierinvoice/CalculateTaxAmount?ObjectID="
 		try:
 			self.refresh_csrf_token()
+			# Limit invoice description to 40 chars per ByD's rule
+			invoice_data["InvoiceDescription"] = invoice_data["InvoiceDescription"][:40] or "Inv Frm eGRN Sys"
+			
 			response = self.__post__(action_url, json=invoice_data)
 			if response.status_code == 201:
 				response_data = response.json()
@@ -350,6 +360,31 @@ class RESTServices:
 		except Exception as e:
 			logger.error(f"Error fetching sales orders for store {store_id}: {str(e)}")
 			raise
+
+	def get_product_details(self, material_id: str) -> dict:
+		'''
+			Fetch product/material details from SAP ByD by InternalID
+		'''
+		action_url = (
+			f"{self.endpoint}/sap/byd/odata/cust/v1/vmumaterial/MaterialCollection?"
+			f"$filter=InternalID eq '{material_id}'"
+			f"&$format=json&sap-language=EN"
+			f"&$select=InternalID,Description,DescriptionLanguageCode,DescriptionLanguageCodeText,"
+			f"BaseMeasureUnitCode,BaseMeasureUnitCodeText,IdentifiedStockTypeCode,IdentifiedStockTypeCodeText"
+		)
+		
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				results = response_json["d"]["results"]
+				return results[0] if results else None
+			else:
+				logger.error(f"Failed to fetch product {material_id}: {response.text}")
+				return None
+		except Exception as e:
+			logger.error(f"Error fetching product {material_id}: {str(e)}")
+			raise
 	
 	def get_delivery_by_id(self, delivery_id: str) -> dict:
 		'''
@@ -359,13 +394,32 @@ class RESTServices:
 					  f"&$expand=Item/ItemDeliveryQuantity,ProductRecipientParty/ProductRecipientDisplayName,"
 					  f"ShipFromLocation,ShippingPeriod,ArrivalPeriod"
 					  f"&$filter=ID eq '{delivery_id}'")
-		
 		try:
 			response = self.__get__(action_url)
 			if response.status_code == 200:
 				response_json = json.loads(response.text)
 				results = response_json["d"]["results"]
-				return results[0] if results else None
+				delivery = results[0] if results else None
+				if delivery and "Item" in delivery:
+					items = delivery["Item"]
+					if isinstance(items, dict):
+						items = items.get("results", [])
+					if isinstance(items, list):
+						for item in items:
+							material_id = item.get("ProductID") or item.get("ItemProduct", {}).get("ProductID")
+							if material_id:
+								product_details = self.get_product_details(material_id)
+								if product_details:
+									item.update(product_details)
+
+								# Get pricing from material valuation
+								material_valuation = self.get_material_valuation(material_id)
+								if material_valuation:
+									item["unit_price"] = material_valuation.get("unit_price", 0)
+									item["currency_code"] = material_valuation.get("currency_code", "NGN")
+									item["valuation_date"] = material_valuation.get("valuation_date")
+						delivery["Item"] = items
+				return delivery
 			else:
 				logger.error(f"Failed to fetch delivery {delivery_id}: {response.text}")
 				return None
@@ -378,7 +432,7 @@ class RESTServices:
 			Search for outbound deliveries (warehouse-to-store) assigned to a specific store
 		'''
 		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khoutbounddelivery/OutboundDeliveryCollection?$format=json"
-					  f"&$expand=Item/ItemDeliveryQuantity,Item/ItemSalesOrderReference,ProductRecipientParty/ProductRecipientDisplayName,"
+					  f"&$expand=Item/ItemDeliveryQuantity,ProductRecipientParty/ProductRecipientDisplayName,"
 					  f"ShipFromLocation,ShippingPeriod,ArrivalPeriod"
 					  f"&$filter=ProductRecipientParty/PartyID eq '{store_id}' and DeliveryTypeCode eq 'STOD'")
 		
@@ -442,4 +496,136 @@ class RESTServices:
 				
 		except Exception as e:
 			logger.error(f"Error completing transfer for sales order {sales_order_id}: {str(e)}")
+			raise
+
+	def get_material_valuation(self, material_id: str) -> dict:
+		'''
+		Fetch material valuation/standard cost from SAP ByD.
+		Uses the MaterialValuationDataCollection endpoint with ValuationPrice expansion.
+
+		Args:
+			material_id: The material/product ID to fetch valuation for
+
+		Returns:
+			dict with unit_price, currency_code, and valuation_date, or None if not found
+		'''
+		from datetime import datetime
+
+		# Use MaterialValuationDataCollection endpoint with ValuationPrice expanded
+		action_url = (
+			f"{self.endpoint}/sap/byd/odata/cust/v1/vmumaterialvaluationdata/"
+			f"MaterialValuationDataCollection?$format=json"
+			f"&$filter=MateriallID eq '{material_id}'"
+			f"&$expand=ValuationPrice"
+		)
+
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				results = response_json.get("d", {}).get("results", [])
+
+				if not results:
+					logger.warning(f"No material valuation found for material {material_id}")
+					return None
+
+				# Get the first valuation record
+				valuation_record = results[0]
+
+				# Check if ValuationPrice is expanded
+				valuation_prices = valuation_record.get("ValuationPrice", {})
+				if isinstance(valuation_prices, dict) and "results" in valuation_prices:
+					price_records = valuation_prices["results"]
+				elif isinstance(valuation_prices, list):
+					price_records = valuation_prices
+				else:
+					logger.warning(f"No ValuationPrice data for material {material_id}")
+					return None
+
+				if not price_records:
+					logger.warning(f"Empty ValuationPrice array for material {material_id}")
+					return None
+
+				# Helper function to parse SAP ByD date format: /Date(milliseconds)/
+				def parse_sap_date(date_string):
+					if not date_string:
+						return None
+					try:
+						# Extract milliseconds from /Date(1234567890000)/
+						if isinstance(date_string, str) and date_string.startswith("/Date("):
+							ms = int(date_string.replace("/Date(", "").replace(")/", ""))
+							return datetime.fromtimestamp(ms / 1000.0)
+					except Exception as e:
+						logger.warning(f"Failed to parse date {date_string}: {e}")
+					return None
+
+				# Filter for valid prices with date ranges
+				now = datetime.now()
+				valid_prices = []
+
+				for price_record in price_records:
+					# Get TypeCode - it might be in different formats
+					type_code = price_record.get("TypeCode") or price_record.get("TypeCode_content")
+
+					# Check if price type is inventory cost (TypeCode == "1")
+					# Accept if TypeCode is "1" or if TypeCode is missing (less strict)
+					if type_code and type_code != "1":
+						continue
+
+					start_date = parse_sap_date(price_record.get("StartDate"))
+					end_date = parse_sap_date(price_record.get("EndDate"))
+
+					# Check if price is currently valid
+					is_valid = True
+					if start_date and start_date > now:
+						is_valid = False
+					if end_date and end_date < now:
+						is_valid = False
+
+					if is_valid:
+						# Get amount - can be string, number, or dict
+						amount = price_record.get("Amount")
+						currency = price_record.get("AmountCurrencyCode", "NGN")
+
+						try:
+							if isinstance(amount, str):
+								price_value = float(amount)
+							elif isinstance(amount, dict):
+								price_value = float(amount.get("content", 0))
+								currency = amount.get("currencyCode", currency)
+							elif isinstance(amount, (int, float)):
+								price_value = float(amount)
+							else:
+								price_value = 0.0
+						except (ValueError, TypeError):
+							price_value = 0.0
+
+						if price_value > 0:
+							valid_prices.append({
+								"unit_price": price_value,
+								"currency_code": currency,
+								"start_date": start_date,
+								"end_date": end_date,
+								"valuation_date": start_date.isoformat() if start_date else None
+							})
+
+				if not valid_prices:
+					logger.warning(f"No valid price records found for material {material_id}")
+					return None
+
+				# Return the price with the most recent start_date
+				valid_prices.sort(key=lambda x: x["start_date"] or datetime.min, reverse=True)
+				selected_price = valid_prices[0]
+
+				return {
+					"unit_price": selected_price["unit_price"],
+					"currency_code": selected_price["currency_code"],
+					"valuation_date": selected_price["valuation_date"]
+				}
+
+			else:
+				logger.error(f"Failed to fetch material valuation for {material_id}: {response.text}")
+				return None
+		except Exception as e:
+			logger.error(f"Error fetching material valuation for {material_id}: {str(e)}")
 			raise
