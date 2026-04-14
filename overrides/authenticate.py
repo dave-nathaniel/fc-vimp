@@ -10,24 +10,27 @@ class CombinedAuthentication(BaseAuthentication):
 		jwt_auth = JWTAuthentication()
 		adfs_auth = AdfsAccessTokenAuthentication()
 
-		# Try to authenticate using JWTAuthentication
 		try:
-			user, jwt_token = jwt_auth.authenticate(request)
-			if user is not None:
-				return (user, jwt_token)
-		except AuthenticationFailed:
-			pass
+			# Try to authenticate using JWTAuthentication
+			try:
+				user, jwt_token = jwt_auth.authenticate(request)
+				if user is not None:
+					return (user, jwt_token)
+			except AuthenticationFailed:
+				pass
 
-		# If JWTAuthentication fails, try to authenticate using AdfsAccessTokenAuthentication
-		try:
-			print("Trying ADFS Authentication")
-			user, adfs_token = adfs_auth.authenticate(request)
-			if user is not None:
-				return (user, adfs_token)
-		except AuthenticationFailed:
-			pass
+			# If JWTAuthentication fails, try to authenticate using AdfsAccessTokenAuthentication
+			try:
+				user, adfs_token = adfs_auth.authenticate(request)
+				if user is not None:
+					return (user, adfs_token)
+			except AuthenticationFailed:
+				pass
 
-		# If both authentication methods fail, return None
+		except Exception as e:
+			print(f"Error authenticating: {e}")
+
+		# If both authentication methods fail or an error occurs, return None
 		return None
 
 	def authenticate_header(self, request):

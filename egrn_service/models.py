@@ -552,8 +552,8 @@ class StockConsumptionRecord(models.Model):
 
 	class Meta:
 		ordering = ['-date_consumed']
-		verbose_name = 'Stock Consumption Record'
-		verbose_name_plural = 'Stock Consumption Records'
+		verbose_name = '2.5 Stock Consumption Record'
+		verbose_name_plural = '2.5 Stock Consumption Records'
 
 
 class Conversion(models.Model):

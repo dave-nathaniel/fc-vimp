@@ -162,10 +162,24 @@ class GoodsReceivedLineItemAdmin(ModelAdmin):
 	]
 
 
+class StockConsumptionRecordAdmin(ModelAdmin):
+	# Search fields: product_id, product_name, quantity, unit_cost, unit_of_measurement, cost_center, external_item_id, metadata
+	search_fields = [
+		'product_id',
+		'product_name',
+		'quantity',
+		'unit_cost',
+		'unit_of_measurement',
+		'cost_center',
+		'external_item_id',
+		'metadata',
+	]
+
 admin.site.register(PurchaseOrder, PurchaseOrderAdmin)
 admin.site.register(PurchaseOrderLineItem, PurchaseOrderLineItemAdmin)
 admin.site.register(GoodsReceivedNote, GoodsReceivedNoteAdmin)
 admin.site.register(GoodsReceivedLineItem, GoodsReceivedLineItemAdmin)
+admin.site.register(StockConsumptionRecord, StockConsumptionRecordAdmin)
 
 
 @staff_member_required
@@ -185,18 +199,14 @@ def bulk_inventory_update_view(request):
 def process_bulk_inventory_update(request):
 	try:
 		# Get form data
-		external_id = request.POST.get('external_id', '').strip()
+		external_id = generate_external_id()
 		site_id = request.POST.get('site_id', '').strip()
 		cost_center_id = request.POST.get('cost_center_id', '').strip()
 		transaction_datetime = request.POST.get('transaction_datetime', '').strip()
 		
-		# Validate required fields
-		if not site_id:
-			return JsonResponse({'success': False, 'error': 'Site ID is required'})
-		
 		# Generate external ID if not provided
-		if not external_id:
-			external_id = generate_external_id()
+		# if not external_id:
+		# 	external_id = generate_external_id()
 		
 		# Default cost center to site ID if not provided
 		if not cost_center_id:
@@ -211,6 +221,10 @@ def process_bulk_inventory_update(request):
 			return JsonResponse({'success': False, 'error': 'No file uploaded'})
 		
 		file = request.FILES['excel_file']
+		
+		# Validate required fields
+		if not site_id and not file:
+			return JsonResponse({'success': False, 'error': 'Site ID is required'})
 		
 		# Read Excel file
 		try:
@@ -229,15 +243,20 @@ def process_bulk_inventory_update(request):
 		if missing_columns:
 			return JsonResponse({'success': False, 'error': f'Missing required columns: {", ".join(missing_columns)}'})
 		
-		# Process inventory items
-		inventory_items = []
-		consumption_records = []
-		for _, row in df.iterrows():
+		# Process inventory items grouped by site_id from the file
+		inventory_items_by_site = {}
+		consumption_records_by_site = {}
+		for index, row in df.iterrows():
 			try:
 				from byd_service.goods_issue import format_inventory_item
+
+				row_site_id = str(row['logistics_area_id']).strip()
+				
+				if not row_site_id:
+					return JsonResponse({'success': False, 'error': f'Site ID missing in row {index + 1}'})
 				
 				item = format_inventory_item(
-					external_item_id=str(row['external_item_id']),
+					external_item_id=f"{external_id}-{index+1}",
 					material_internal_id=str(row['material_internal_id']),
 					owner_party_internal_id=str(row['owner_party_internal_id']),
 					inventory_restricted_use_indicator=bool(row['inventory_restricted_use_indicator']),
@@ -245,37 +264,46 @@ def process_bulk_inventory_update(request):
 					quantity=float(row['quantity']),
 					unit_code=str(row['unit_code']),
 				)
-				inventory_items.append(item)
-				consumption_records.append({
+
+				inventory_items_by_site.setdefault(row_site_id, []).append(item)
+				consumption_records_by_site.setdefault(row_site_id, []).append({
 					"product_id": str(row['material_internal_id']),
 					"product_name": row.get('product_name') or "",
 					"quantity": float(row['quantity']),
 					"unit_cost": _get_latest_unit_price(str(row['material_internal_id'])),
 					"unit_of_measurement": str(row['unit_code']),
-					"cost_center": cost_center_id,
-					"external_item_id": str(row['external_item_id']),
+					"cost_center": cost_center_id if cost_center_id else row_site_id,
+					"external_item_id": f"{external_id}-{index+1}",
 					"metadata": row.to_dict(),
 				})
 			except Exception as e:
-				return JsonResponse({'success': False, 'error': f'Error processing row {len(inventory_items) + 1}: {str(e)}'})
+				return JsonResponse({'success': False, 'error': f'Error processing row {index + 1}: {str(e)}'})
 		
-		# Call goods issue service
+		# Call goods issue service for each site_id group
 		try:
 			from byd_service.goods_issue import post_goods_consumption_for_cost_center
-			
-			request_data = {
-				"external_id": external_id,
-				"site_id": site_id,
-				"inventory_movement_direction_code": "1",
-				"inventory_items": inventory_items,
-				"transaction_datetime": transaction_datetime,
-				"cost_center_id": cost_center_id
-			}
 
-			success = post_goods_consumption_for_cost_center(**request_data)
-			
-			if success:
-				for record in consumption_records:
+			failed_sites = []
+			for grouped_site_id, inventory_items in inventory_items_by_site.items():
+				request_data = {
+					"external_id": external_id,
+					"site_id": grouped_site_id,
+					"inventory_movement_direction_code": "1",
+					"inventory_items": inventory_items,
+					"transaction_datetime": transaction_datetime,
+					"cost_center_id": grouped_site_id
+				}
+
+				success = post_goods_consumption_for_cost_center(**request_data)
+				if not success:
+					failed_sites.append(grouped_site_id)
+
+			if failed_sites:
+				return JsonResponse({'success': False, 'error': f'Failed to post inventory updates to SAP for site(s): {", ".join(failed_sites)}'})
+
+			# Persist stock consumption records only after all site postings succeed
+			for site_group, site_records in consumption_records_by_site.items():
+				for record in site_records:
 					try:
 						StockConsumptionRecord.objects.create(
 							product_id=record["product_id"],
@@ -289,10 +317,10 @@ def process_bulk_inventory_update(request):
 						)
 					except Exception as e:
 						logging.error(f"Failed to persist stock consumption record: {e}")
-				messages.success(request, f'Successfully processed {len(inventory_items)} inventory items')
-				return JsonResponse({'success': True, 'message': f'Successfully processed {len(inventory_items)} inventory items'})
-			else:
-				return JsonResponse({'success': False, 'error': 'Failed to post inventory updates to SAP'})
+
+			total_items = sum(len(items) for items in inventory_items_by_site.values())
+			messages.success(request, f'Successfully processed {total_items} inventory items across {len(inventory_items_by_site)} site(s)')
+			return JsonResponse({'success': True, 'message': f'Successfully processed {total_items} inventory items across {len(inventory_items_by_site)} site(s)'})
 				
 		except Exception as e:
 			return JsonResponse({'success': False, 'error': f'Error calling goods issue service: {str(e)}'})

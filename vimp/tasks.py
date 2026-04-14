@@ -602,6 +602,194 @@ def send_vendor_setup_email(args):
 		return False
 
 
+def generate_weekly_report_task(week_start_date=None):
+	"""
+	Task to generate weekly reports automatically.
+	This task can be scheduled to run at the end of each week (e.g., Sunday night or Monday morning).
+	
+	Args:
+		week_start_date: Optional date string (YYYY-MM-DD) for the week to generate.
+					   If not provided, generates report for the previous completed week.
+	
+	Returns:
+		dict: Summary of the generated report or error details.
+	"""
+	from reports_service.views import calculate_weekly_report_data, get_week_boundaries
+	from reports_service.models import WeeklyReport
+	from datetime import datetime
+	
+	try:
+		# Determine the week boundaries
+		if week_start_date:
+			if isinstance(week_start_date, str):
+				week_start_date = datetime.strptime(week_start_date, '%Y-%m-%d').date()
+			monday, sunday = get_week_boundaries(week_start_date)
+		else:
+			# Default to previous completed week
+			monday, sunday = get_week_boundaries(previous_week=True)
+		
+		# Calculate ISO week info
+		week_number = monday.isocalendar()[1]
+		year = monday.isocalendar()[0]
+		
+		# Generate report data
+		report_data = calculate_weekly_report_data(monday, sunday)
+		
+		# Save or update the report
+		report, created = WeeklyReport.objects.update_or_create(
+			year=year,
+			week_number=week_number,
+			defaults=report_data
+		)
+		
+		# Return summary
+		return {
+			'success': True,
+			'created': created,
+			'report_id': report.id,
+			'week_number': week_number,
+			'year': year,
+			'week_start': monday.isoformat(),
+			'week_end': sunday.isoformat(),
+			'summary': {
+				'total_grns_received': report.total_grns_received,
+				'total_gross_value_received': float(report.total_gross_value_received),
+				'total_invoices_approved': report.total_invoices_approved,
+				'total_approved_payment_value': float(report.total_approved_payment_value),
+			}
+		}
+		
+	except Exception as e:
+		logger.error(f"Error generating weekly report: {e}")
+		return {
+			'success': False,
+			'error': str(e)
+		}
+
+
+def send_weekly_report_email(report_id=None):
+	"""
+	Task to send weekly report summary via email to configured recipients.
+	
+	Args:
+		report_id: Optional WeeklyReport ID. If not provided, sends the most recent report.
+	
+	Returns:
+		bool: True if email sent successfully, False otherwise.
+	"""
+	from reports_service.models import WeeklyReport
+	
+	try:
+		# Get the report
+		if report_id:
+			report = WeeklyReport.objects.get(id=report_id)
+		else:
+			report = WeeklyReport.objects.order_by('-year', '-week_number').first()
+		
+		if not report:
+			logger.warning("No weekly report found to send.")
+			return False
+		
+		# Prepare email content
+		subject = f"Weekly Activity Report - Week {report.week_number}, {report.year}"
+		
+		html_content = f"""
+		<html>
+		<body style="font-family: Arial, sans-serif; padding: 20px;">
+			<h1 style="color: #2957A4;">Weekly Activity Report</h1>
+			<h2>Week {report.week_number}, {report.year}</h2>
+			<p><strong>Period:</strong> {report.week_start_date} to {report.week_end_date}</p>
+			
+			<hr style="border: 1px solid #eee; margin: 20px 0;">
+			
+			<h3 style="color: #2957A4;">Goods Received Summary</h3>
+			<table style="border-collapse: collapse; width: 100%; max-width: 500px;">
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Total GRNs Received</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.total_grns_received}</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Total Line Items</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.total_grn_line_items}</td>
+				</tr>
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Total Net Value</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">&#8358;{report.total_net_value_received:,.2f}</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Total Gross Value</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">&#8358;{report.total_gross_value_received:,.2f}</td>
+				</tr>
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Unique Vendors</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.unique_vendors_received}</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Unique Stores</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.unique_stores_received}</td>
+				</tr>
+			</table>
+			
+			<h3 style="color: #2957A4; margin-top: 30px;">Vendor Payments Summary</h3>
+			<table style="border-collapse: collapse; width: 100%; max-width: 500px;">
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Invoices Approved</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.total_invoices_approved}</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Total Approved Value</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">&#8358;{report.total_approved_payment_value:,.2f}</td>
+				</tr>
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Invoices Rejected</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.total_invoices_rejected}</td>
+				</tr>
+				<tr>
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Invoices Pending</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.total_invoices_pending}</td>
+				</tr>
+				<tr style="background-color: #f5f5f5;">
+					<td style="padding: 10px; border: 1px solid #ddd;"><strong>Unique Vendors Paid</strong></td>
+					<td style="padding: 10px; border: 1px solid #ddd; text-align: right;">{report.unique_vendors_paid}</td>
+				</tr>
+			</table>
+			
+			<hr style="border: 1px solid #eee; margin: 20px 0;">
+			
+			<p style="color: #666; font-size: 12px;">
+				Report generated on {report.generated_at.strftime('%Y-%m-%d %H:%M:%S')} UTC<br>
+				This is an automated report from the VIMP system.
+			</p>
+		</body>
+		</html>
+		"""
+		
+		# Get recipients from environment or use default
+		recipients = os.getenv('WEEKLY_REPORT_RECIPIENTS', os.getenv('TEST_EMAILS', '')).split(',')
+		recipients = [r.strip() for r in recipients if r.strip()]
+		
+		if not recipients:
+			logger.warning("No recipients configured for weekly report email.")
+			return False
+		
+		# Send email
+		email = EmailMessage(
+			subject,
+			html_content,
+			'network@foodconceptsplc.com',
+			recipients
+		)
+		email.content_subtype = 'html'
+		email.send()
+		
+		logger.info(f"Weekly report email sent to {len(recipients)} recipients.")
+		return True
+		
+	except Exception as e:
+		logger.error(f"Error sending weekly report email: {e}")
+		return False
+
+
 if __name__ == "__main__":
 	# from pprint import pprint
 	# egrn = GoodsReceivedNote.objects.all().last()
