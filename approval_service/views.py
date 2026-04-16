@@ -612,6 +612,8 @@ def _build_search_signables_queryset(request: Request, target: dict):
 	max_total = request.query_params.get("max_total")
 
 	if q:
+		# q-search traverses line-item relations (1-to-many), which can duplicate
+		# invoice rows; use DISTINCT only for this query shape.
 		queryset = queryset.filter(
 			Q(description__icontains=q)
 			| Q(external_document_id__icontains=q)
@@ -670,7 +672,10 @@ def _build_search_signables_queryset(request: Request, target: dict):
 		).filter(last_signature_accepted=False)
 
 	order_by = request.query_params.get('order_by', '-date_created')
-	queryset = queryset.order_by(order_by)
+	secondary_order = '-id' if order_by.startswith('-') else 'id'
+	queryset = queryset.order_by(order_by, secondary_order)
+	if q:
+		queryset = queryset.distinct()
 
 	return queryset, content_type, relevant_permissions
 
@@ -694,7 +699,9 @@ def download_signables_excel_view(request, target_class):
 
 	try:
 		queryset, content_type, _ = _build_search_signables_queryset(request, target)
-		signable_ids = list(queryset.values_list('id', flat=True))
+		# Export ID collection should not inherit ORDER BY from the search queryset.
+		# This avoids DISTINCT+ORDER BY SQL edge cases on strict MySQL modes.
+		signable_ids = list(queryset.order_by().values_list('id', flat=True).distinct())
 
 		if not signable_ids:
 			return APIResponse(
