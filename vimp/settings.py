@@ -60,7 +60,7 @@ INSTALLED_APPS = [
 	'django.contrib.sessions',
 	'django.contrib.messages',
 	'django.contrib.staticfiles',
-	
+
 	'rest_framework',
 	'rest_framework_simplejwt',
 	'corsheaders',
@@ -74,7 +74,9 @@ INSTALLED_APPS = [
 	'approval_service',
 	'byd_service',
 	'app_settings',
+	'transfer_service',
 	'reports_service',
+	'imprest_service',
 ]
 
 JSON_EDITOR_JS = 'https://cdnjs.cloudflare.com/ajax/libs/jsoneditor/8.6.4/jsoneditor.js'
@@ -306,46 +308,18 @@ DATABASES = {
 }
 
 # Redis Cache Configuration
-CACHES = {
-	'default': {
-		'BACKEND': 'django_redis.cache.RedisCache',
-		'LOCATION': os.getenv('REDIS_URL', 'redis://127.0.0.1:6379'),
-		'OPTIONS': {
-			'CLIENT_CLASS': 'django_redis.client.DefaultClient',
-			'CONNECTION_POOL_KWARGS': {
-				'max_connections': 50,
-				'retry_on_timeout': True,
-				'socket_keepalive': True,
-				'socket_keepalive_options': {},
-				'health_check_interval': 30,
-			},
-			'COMPRESSOR': 'django_redis.compressors.zlib.ZlibCompressor',
-			'SERIALIZER': 'django_redis.serializers.pickle.PickleSerializer',
-		},
-		'TIMEOUT': 300,
-		'KEY_PREFIX': 'vimp_prod',
-		'VERSION': 1,
-	},
-}
+# CACHES = {}
 
 # Session and Cache Configuration
-SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
-SESSION_CACHE_ALIAS = 'default'
+# SESSION_ENGINE = 'django.contrib.sessions.backends.cache'
+# SESSION_CACHE_ALIAS = 'default'
 
 # Cachalot Configuration for ORM query caching
-# IMPORTANT: disable query caching during migrations/tests to avoid stale reads
-# (e.g. ContentType creation during post_migrate) causing duplicate inserts.
-RUNNING_TESTS = any(arg in sys.argv for arg in ["test", "pytest"])
-RUNNING_MIGRATIONS = any(arg in sys.argv for arg in ["migrate", "makemigrations"])
-CACHALOT_ENABLED = (
-	(not RUNNING_TESTS)
-	and (not RUNNING_MIGRATIONS)
-	and os.getenv("CACHALOT_ENABLED", "1") in ("1", "true", "True", "yes", "YES")
-)
-CACHALOT_TIMEOUT = 600  # 10 minutes default timeout
-CACHALOT_CACHE = 'default'
-CACHALOT_DATABASES = ['default']
-CACHALOT_UNCACHABLE_APPS = ['invoice_service', 'approval_service']
+# CACHALOT_ENABLED = False
+# CACHALOT_TIMEOUT = 600  # 10 minutes default timeout
+# CACHALOT_CACHE = 'default'
+# CACHALOT_DATABASES = ['default']
+# CACHALOT_UNCACHABLE_APPS = ['invoice_service', 'approval_service']
 
 CELERY_BROKER_URL = "memory://localhost"
 

@@ -790,10 +790,202 @@ def send_weekly_report_email(report_id=None):
 		return False
 
 
+# ─── Transfer Service: SAP Receipt Sync ───────────────────────────────────────
+import time as _transfer_time
+
+
+class SAPIntegrationError(Exception):
+	pass
+
+
+class RetryableError(Exception):
+	pass
+
+
+def _transfer_retry(max_retries=3, delay=5):
+	"""Retry decorator with exponential backoff for transfer tasks."""
+	def decorator(func):
+		def wrapper(*args, **kwargs):
+			last_exc = None
+			for attempt in range(max_retries):
+				try:
+					return func(*args, **kwargs)
+				except RetryableError as e:
+					last_exc = e
+					if attempt < max_retries - 1:
+						wait = delay * (2 ** attempt)
+						logger.warning(f"Attempt {attempt + 1} failed, retrying in {wait}s: {e}")
+						_transfer_time.sleep(wait)
+					else:
+						logger.error(f"All {max_retries} attempts failed for {func.__name__}")
+				except Exception as e:
+					logger.error(f"Non-retryable error in {func.__name__}: {e}")
+					raise
+			raise last_exc
+		return wrapper
+	return decorator
+
+
+def post_goods_receipt_on_byd(receipt):
+	"""
+	Post a Goods Receipt on ByD for a completed transfer receipt.
+
+	Two-step process:
+	1. Create an Inbound Delivery Notification with received quantities
+	2. Post the Goods Receipt to finalize it in ByD
+
+	Args:
+		receipt: TransferReceiptNote instance with line_items and inbound_delivery
+	"""
+	rest_client = byd_rest.RESTServices()
+
+	# Generate a unique notification ID
+	notification_id = f"TR{receipt.receipt_number}{''.join(random.choices(string.ascii_uppercase, k=2))}"
+
+	# Build line items, extracting the SAP unit code from the original ByD metadata
+	# (unit_of_measurement stores human-readable text like "Each", not the code "EA")
+	items = []
+	for index, line_item in enumerate(receipt.line_items.all()):
+		metadata = line_item.inbound_delivery_line_item.metadata
+		unit_code = (
+			metadata.get("ItemDeliveryQuantity", {}).get("UnitCode", "")
+			or metadata.get("QuantityUnitCode", "")
+		)
+		items.append({
+			"ID": str(index + 1),
+			"TypeCode": "14",
+			"ProductID": line_item.inbound_delivery_line_item.product_id,
+			"ItemDeliveryQuantity": {
+				"Quantity": str(float(line_item.quantity_received)),
+				"UnitCode": unit_code,
+			},
+		})
+
+	payload = {
+		"ID": notification_id,
+		"ProcessingTypeCode": "SD",
+		"Item": items,
+		"SenderParty": {
+			"PartyID": receipt.inbound_delivery.source_location_id
+		},
+		"ShipToParty": {
+			"PartyID": receipt.inbound_delivery.destination_store.byd_cost_center_code
+		},
+	}
+
+	posting_status = get_or_create_byd_posting_status(
+		receipt,
+		request_payload=payload,
+		task_name='vimp.tasks.post_goods_receipt_on_byd'
+	)
+
+	try:
+		# Step 1: Create the inbound delivery notification
+		response = rest_client.create_inbound_delivery_notification(payload)
+		object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+
+		receipt.metadata.update({
+			"byd_notification_id": notification_id,
+			"byd_object_id": object_id,
+			"create_response": response,
+		})
+		receipt.save(update_fields=['metadata'])
+
+		# Step 2: Wait for ByD to index, then post the goods receipt
+		time.sleep(5)
+
+		post_response = rest_client.post_delivery_notification(object_id)
+		receipt.metadata.update({
+			"post_response": post_response,
+		})
+		receipt.save(update_fields=['metadata'])
+
+		# Mark posting as successful
+		posting_status.mark_success(
+			response.get("d", {}).get("results", {})
+		)
+		logger.info(f"Goods receipt posted successfully for TR-{receipt.receipt_number}")
+		return True
+
+	except Exception as e:
+		error_msg = str(e)
+		logger.error(f"Error posting goods receipt for TR-{receipt.receipt_number}: {error_msg}")
+		posting_status.mark_failure(error_msg)
+		posting_status.increment_retry()
+		# Re-raise so callers (sync_approved_receipt_to_sap / _transfer_retry) can handle retries
+		raise
+
+
+@_transfer_retry(max_retries=3, delay=5)
+def sync_approved_receipt_to_sap(receipt_id: int):
+	"""
+	Sync an approved transfer receipt to SAP ByD.
+	Only called after SCD Team approves the receipt.
+
+	Delegates to post_goods_receipt_on_byd() which handles the two-step
+	ByD flow: create Inbound Delivery Notification → PostGoodsReceipt.
+	Updates synced_to_sap on success.
+	"""
+	from transfer_service.models import TransferReceiptNote
+
+	# Non-retryable SAP errors (no point retrying these)
+	NON_RETRYABLE_ERRORS = [
+		"action is disabled",
+		"object does not exist",
+		"not found",
+	]
+
+	try:
+		receipt = TransferReceiptNote.objects.select_related(
+			'inbound_delivery',
+			'inbound_delivery__destination_store'
+		).get(id=receipt_id)
+
+		logger.info(f"Processing SAP sync for approved receipt TR-{receipt.receipt_number}")
+
+		if receipt.approval_status != 'approved':
+			logger.warning(f"Receipt TR-{receipt.receipt_number} not approved, skipping SAP sync")
+			return
+
+		if receipt.synced_to_sap:
+			logger.info(f"Receipt TR-{receipt.receipt_number} already synced to SAP")
+			return
+
+		# Delegate to the two-step ByD posting function (raises on failure)
+		post_goods_receipt_on_byd(receipt)
+
+		# If we get here, the posting succeeded
+		receipt.refresh_from_db()
+		receipt.synced_to_sap = True
+		receipt.metadata['sap_sync'] = {
+			'synced_at': timezone.now().isoformat(),
+			'approved_by': receipt.approved_by.username if receipt.approved_by else None
+		}
+		receipt.save()
+
+		inbound_delivery = receipt.inbound_delivery
+		inbound_delivery.refresh_from_db()
+		if inbound_delivery.is_fully_received:
+			inbound_delivery.delivery_status_code = '3'
+			inbound_delivery.save()
+
+		logger.info(f"Receipt TR-{receipt.receipt_number} successfully synced to SAP ByD")
+
+	except TransferReceiptNote.DoesNotExist:
+		logger.error(f"Transfer receipt with ID {receipt_id} not found")
+		raise SAPIntegrationError(f"Transfer receipt with ID {receipt_id} not found")
+	except (SAPIntegrationError, RetryableError):
+		raise
+	except Exception as e:
+		error_msg = str(e).lower()
+		# Check if error is non-retryable (SAP state issues that won't resolve with retries)
+		if any(phrase in error_msg for phrase in NON_RETRYABLE_ERRORS):
+			logger.error(f"Non-retryable SAP error for receipt {receipt_id}: {e}")
+			raise SAPIntegrationError(f"SAP error (non-retryable): {e}")
+		# Retryable errors: auth, timeout, connection, object locked
+		logger.error(f"Retryable error syncing receipt {receipt_id} to SAP: {e}")
+		raise RetryableError(f"SAP sync failed for TR-{receipt_id}: {e}")
+
+
 if __name__ == "__main__":
-	# from pprint import pprint
-	# egrn = GoodsReceivedNote.objects.all().last()
-	# send_grn_to_email(egrn)
-	# invoice = Invoice.objects.get(id=323)
-	# print(create_invoice_on_byd(invoice))
 	...

@@ -7,16 +7,15 @@
     <meta name="title" property="og:title" content="Food Concepts">
     <meta name="description" content="Food Concepts Plc is a leading multi-brand QSR group, operating three of Nigeria’s most loved brands, Chicken Republic, PieXpress and The Chop Box.">
     <link rel="icon" href="https://foodconceptsplc.com/wp-content/uploads/2019/10/FoodConcepts_Favicon.png" type="image/png">
-    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@200;300;400;500;600;700;800&family=Pixelify+Sans:wght@400;500&family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;1,100;1,200;1,300;1,400;1,500;1,700&family=Roboto&display=swap" rel="stylesheet">
     <style>
         body {
-            font-family: 'Roboto', sans-serif;
-            background-color: #f0f2f5;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
+            font-family: 'Inter', sans-serif;
             margin: 0;
+            padding: 0;
+            background-color: #fff;
+            color: #0a0a0a;
+            box-sizing: border-box;
         }
         .welcome-container {
             background-color: #ffffff;
@@ -40,7 +39,7 @@
             margin-bottom: 30px;
             color: #555;
         }
-        button {
+        /* button {
             margin: 10px;
             padding: 15px 25px;
             font-size: 16px;
@@ -54,7 +53,193 @@
         }
         button:hover {
             background-color: #0056b3;
+        } */
+
+
+        .container {
+            margin: 0;
+            padding: 0;
+            height: 100vh; 
+            width: 100%;
+            display: flex;
+            flex-direction: column;
         }
+
+        .main {
+            height: 100%;
+            width: 100%;
+            display: flex;
+            flex-direction: row;
+            margin: 0;
+            padding: 0;
+        }
+
+        .left-side {
+            display: flex;
+            height: 100%;
+            width: 100%;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background-color: #ffffff;
+            padding: 32px 16px;
+            box-sizing: border-box;
+        }
+
+        .right-side {
+            position: fixed;
+            right: 0;
+            display: none;
+            height: auto;
+            width: auto;
+            overflow: hidden;
+        }
+
+        .right-side-image {
+            position: relative;
+            height: 100vh;
+            width: auto;
+            object-fit: cover;
+            object-position: right;
+            filter: brightness(1.1) contrast(1.05);
+        }
+
+        .right-side-overlay {
+            position: absolute;
+            inset: 0;
+            z-index: 10;
+            background: linear-gradient(to left, transparent, rgba(255, 255, 255, 0.2));
+        }
+
+        .right-side-pattern {
+            position: absolute;
+            inset: 0;
+            z-index: 5;
+            opacity: 0.05;
+            background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23000000' fill-opacity='1'%3E%3Ccircle cx='7' cy='7' r='1'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+        }
+
+        .portal-container {
+            width: 100%;
+            max-width: 448px;
+        }
+
+        .logo-section {
+            margin-bottom: 48px;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+            text-align: center;
+        }
+
+        .logo-wrapper {
+            transform: scale(1);
+            transition: transform 0.3s ease;
+        }
+
+        .logo-wrapper:hover {
+            transform: scale(1.05);
+        }
+
+        .logo-wrapper img {
+            margin: 0 auto;
+            height: 64px;
+            object-fit: contain;
+        }
+
+        .partners-wrapper {
+            opacity: 0.8;
+            transition: opacity 0.3s ease;
+        }
+
+        .partners-wrapper:hover {
+            opacity: 1;
+        }
+
+        .partners-wrapper img {
+            margin: 0 auto;
+            height: 24px;
+            object-fit: contain;
+        }
+
+        .portal-selection {
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+
+        .selection-header {
+            text-align: center;
+        }
+
+        .selection-header h3 {
+            margin: 0 0 8px 0;
+            font-size: 20px;
+            font-weight: 600;
+            color: #1f2937;
+        }
+
+        .selection-header p {
+            margin: 0;
+            font-size: 14px;
+            color: #4b5563;
+        }
+
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .portal-button {
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            white-space: nowrap;
+            border-radius: 6px;
+            font-size: 18px;
+            line-height: 1.556;
+            font-weight: 500;
+            font-family: 'Inter', sans-serif;
+            transition: all 0.2s ease;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            outline: none;
+            height: 56px;
+            width: 100%;
+            padding: 0;
+            background-color: #034ea2;
+            color: white;
+        }
+
+        .portal-button:hover {
+            background-color: #034ea2e6;
+        }
+
+        .portal-button:disabled {
+            pointer-events: none;
+            opacity: 0.5;
+        }
+
+        .portal-button:focus-visible {
+            border-color: #94a3b8;
+            box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.5);
+        }
+
+        .security-footer {
+            margin-top: 32px;
+            text-align: center;
+        }
+
+        .security-footer p {
+            margin: 0;
+            font-size: 12px;
+            line-height: 1.5;
+            color: #9ca3af;
+        }
+
         @media (max-width: 480px) {
             .welcome-container {
                 padding: 20px;
@@ -63,16 +248,102 @@
                 width: 100%;
                 margin: 10px 0;
             }
+            .logo-wrapper img {
+                height: 64px;
+            }
+            .partners-wrapper img {
+                height: 24px;
+            }
+            .left-side {
+                width: 100%;
+                padding: 32px 16px;
+            }
+        }
+
+        @media (min-width: 1024px) {
+            .logo-wrapper img {
+                height: 80px;
+            }
+            .partners-wrapper img {
+                height: 32px;
+            }
+            .left-side {
+                width: 50%;
+                padding: 64px;
+            }
+            .right-side {
+                display: block;
+                width: 50%;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="welcome-container">
+    <!-- <div class="welcome-container">
         <img src="https://foodconceptsplc.com/wp-content/uploads/2019/10/FoodConcepts_Logo-1.png" alt="Food Concepts Logo" class="logo">
-        <!-- <h1>Welcome!</h1> -->
+
         <p>Which system would you like to navigate to?</p>
         <button onclick="window.location.href='/grn'">eGRN</button>
         <button onclick="window.location.href='/wac'">WAC</button>
+    </div> -->
+    
+    <div class="container">
+        <!-- Left Side -->
+        <div class="left-side">
+            <div class="portal-container">
+                <!-- Logo and Brand Section -->
+                <div class="logo-section">
+                    <div class="logo-wrapper">
+                            <img src="logo.png" alt="Food Concept Logo">
+                        </div>
+                        <div class="partners-wrapper">
+                            <img src="partners.png" alt="Partner Brands">
+                        </div>
+                    </div>
+
+                    <!-- Portal Selection -->
+                    <div class="portal-selection">
+                        <div class="selection-header">
+                            <h3>Select Portal</h3>
+                            <p>Choose your module to continue</p>
+                        </div>
+
+                        <div class="button-group">
+                            <!-- Goods Receipt Management Button -->
+                            <!-- <button class="portal-button" onclick="window.location.href='/grn'">
+                                GRN (Direct Supply)
+                            </button> -->
+
+                            <button class="portal-button" onclick="window.location.href='/grn-transfer'">
+                                GRN (Stock Transfer)
+                            </button>
+
+                            <!-- Weighted Average Cost Portal Button -->
+                            <!-- <button class="portal-button" onclick="window.location.href='/wac'">
+                                Weighted Average Cost Portal
+                            </button> -->
+                        </div>
+
+                        <!-- Security Footer -->
+                        <div class="security-footer">
+                            <p>
+                                🔒 Secured with Microsoft Azure Active Directory
+                                <br>© <span id="year"></span> Food Concepts plc. All rights reserved.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+        <!-- Right Side -->
+        <div class="right-side">
+            <div class="right-side-overlay"></div>
+            <img src="auth_bg.png" alt="Decorative Graphic" class="right-side-image">
+            <div class="right-side-pattern"></div>
+        </div>
     </div>
+    <script>
+        document.getElementById('year').textContent = new Date().getFullYear();
+    </script>
 </body>
 </html>

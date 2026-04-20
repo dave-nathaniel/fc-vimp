@@ -1,0 +1,1 @@
+default_app_config = 'transfer_service.apps.TransferServiceConfig'

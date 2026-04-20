@@ -14,6 +14,12 @@ class RESTServicesTest(TestCase):
 		
 		# Assert that the response status code is 200 (OK)
 		self.assertEqual(type(results), dict)
+	
+	def test_get_sales_order_by_id(self):
+		results = self.main_model.get_sales_order_by_id('59391')
+		
+		# Assert that the response status code is 200 (OK)
+		self.assertEqual(type(results), dict)
 
 	# Define teardown method if needed
 	def tearDown(self):

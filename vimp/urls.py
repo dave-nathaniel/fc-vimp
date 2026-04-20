@@ -20,12 +20,14 @@ urlpatterns = [
     path('egrn/v1/', include('egrn_service.urls')),
     path('approvals/v1/', include('approval_service.urls')),
     path('reports/v1/', include('reports_service.urls')),
-    
+    path('imprest/v1/', include('imprest_service.urls')),
+
     # Performance monitoring endpoints
     path('health/performance/', performance_views.performance_dashboard, name='performance_dashboard'),
     path('health/performance/cache/', performance_views.cache_statistics, name='cache_statistics'),
     path('health/performance/database/', performance_views.database_statistics, name='database_statistics'),
     path('health/', performance_views.health_check, name='health_check'),
+    path('transfers/v1/', include('transfer_service.urls')),
 ]
 
 urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)

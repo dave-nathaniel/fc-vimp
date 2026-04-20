@@ -1,0 +1,6 @@
+external_item_id,material_internal_id,owner_party_internal_id,inventory_restricted_use_indicator,logistics_area_id,quantity,unit_code,inventory_stock_status_code,identified_stock_id
+ITEM001,RM1000072,FC-0001,FALSE,4100003-17,1.0,KGM,,
+ITEM002,RM1000073,FC-0001,FALSE,4100003-17,2.5,PCE,1,
+ITEM003,RM1000074,FC-0001,TRUE,4100003-17,3.0,LTR,2,STOCK001
+ITEM004,RM1000075,FC-0001,FALSE,4100003-17,0.5,KGM,,
+ITEM005,RM1000076,FC-0001,FALSE,4100003-17,10.0,PCE,1, 

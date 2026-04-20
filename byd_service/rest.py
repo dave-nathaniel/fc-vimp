@@ -5,6 +5,7 @@ import time
 from requests import get, post
 from pathlib import Path
 from dotenv import load_dotenv
+from django.utils import timezone
 
 from .authenticate import SAPAuthentication
 
@@ -84,6 +85,9 @@ class RESTServices:
 		}
 		headers.update(self.auth_headers)
 		return self.session.post(*args, **kwargs, headers=headers, auth=self.auth)
+	
+	def get_store_by_params(self, **kwargs):
+		action_url = f"{self.endpoint}"
 
 	def get_vendor_by_id(self, vendor_id, id_type='email'):
 		action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khbusinesspartner/CurrentDefaultAddressInformationCollection?$format=json&$expand=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$select=EMail,BusinessPartner,ConventionalPhone,MobilePhone&$top=10"
@@ -313,4 +317,315 @@ class RESTServices:
 				raise Exception(f"Error from SAP: {response.text}")
 		except Exception as e:
 			logger.error(f"Error posting Delivery Notification: {str(e)}")
+			raise
+	
+	# Sales Order methods for store-to-store transfers
+	def get_sales_order_by_id(self, sales_order_id: str) -> dict:
+		'''
+			Fetch a sales order from SAP ByD by ID
+		'''
+		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khsalesorder/SalesOrderCollection?$format=json"
+					  f"&$expand=BuyerParty/BuyerPartyName,SalesUnitParty/SalesUnitPartyName,PricingTerms,Item/ItemProduct,Item/ItemScheduleLine,Item&$filter=ID eq '{sales_order_id}'")
+		
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				results = response_json["d"]["results"]
+				return results[0] if results else None
+			else:
+				logger.error(f"Failed to fetch sales order {sales_order_id}: {response.text}")
+				return None
+		except Exception as e:
+			logger.error(f"Error fetching sales order {sales_order_id}: {str(e)}")
+			raise
+	
+	def get_store_sales_orders(self, store_id: str) -> list:
+		'''
+			Get sales orders for a specific store (as source or destination)
+		'''
+		# This assumes store_id maps to a cost center or similar identifier in SAP ByD
+		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khsalesorder/SalesOrderCollection?$format=json"
+					  f"&$expand=Item,BuyerParty,SellerParty"
+					  f"&$filter=BuyerParty/PartyID eq '{store_id}' or SellerParty/PartyID eq '{store_id}'")
+		
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				return response_json["d"]["results"]
+			else:
+				logger.error(f"Failed to fetch sales orders for store {store_id}: {response.text}")
+				return []
+		except Exception as e:
+			logger.error(f"Error fetching sales orders for store {store_id}: {str(e)}")
+			raise
+
+	def get_product_details(self, material_id: str) -> dict:
+		'''
+			Fetch product/material details from SAP ByD by InternalID
+		'''
+		action_url = (
+			f"{self.endpoint}/sap/byd/odata/cust/v1/vmumaterial/MaterialCollection?"
+			f"$filter=InternalID eq '{material_id}'"
+			f"&$format=json&sap-language=EN"
+			f"&$select=InternalID,Description,DescriptionLanguageCode,DescriptionLanguageCodeText,"
+			f"BaseMeasureUnitCode,BaseMeasureUnitCodeText,IdentifiedStockTypeCode,IdentifiedStockTypeCodeText"
+		)
+		
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				results = response_json["d"]["results"]
+				return results[0] if results else None
+			else:
+				logger.error(f"Failed to fetch product {material_id}: {response.text}")
+				return None
+		except Exception as e:
+			logger.error(f"Error fetching product {material_id}: {str(e)}")
+			raise
+	
+	def get_delivery_by_id(self, delivery_id: str) -> dict:
+		'''
+			Fetch an outbound delivery (warehouse-to-store) from SAP ByD by ID
+		'''
+		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khoutbounddelivery/OutboundDeliveryCollection?$format=json"
+					  f"&$expand=Item/ItemDeliveryQuantity,ProductRecipientParty/ProductRecipientDisplayName,"
+					  f"ShipFromLocation,ShippingPeriod,ArrivalPeriod"
+					  f"&$filter=ID eq '{delivery_id}'")
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				results = response_json["d"]["results"]
+				delivery = results[0] if results else None
+				if delivery and "Item" in delivery:
+					items = delivery["Item"]
+					if isinstance(items, dict):
+						items = items.get("results", [])
+					if isinstance(items, list):
+						for item in items:
+							material_id = item.get("ProductID") or item.get("ItemProduct", {}).get("ProductID")
+							if material_id:
+								product_details = self.get_product_details(material_id)
+								if product_details:
+									item.update(product_details)
+
+								# Get pricing from material valuation
+								material_valuation = self.get_material_valuation(material_id)
+								if material_valuation:
+									item["unit_price"] = material_valuation.get("unit_price", 0)
+									item["currency_code"] = material_valuation.get("currency_code", "NGN")
+									item["valuation_date"] = material_valuation.get("valuation_date")
+						delivery["Item"] = items
+				return delivery
+			else:
+				logger.error(f"Failed to fetch delivery {delivery_id}: {response.text}")
+				return None
+		except Exception as e:
+			logger.error(f"Error fetching delivery {delivery_id}: {str(e)}")
+			raise
+	
+	def search_deliveries_by_store(self, store_id: str, status: str = None) -> list:
+		'''
+			Search for outbound deliveries (warehouse-to-store) assigned to a specific store
+		'''
+		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khoutbounddelivery/OutboundDeliveryCollection?$format=json"
+					  f"&$expand=Item/ItemDeliveryQuantity,ProductRecipientParty/ProductRecipientDisplayName,"
+					  f"ShipFromLocation,ShippingPeriod,ArrivalPeriod"
+					  f"&$filter=ProductRecipientParty/PartyID eq '{store_id}' and DeliveryTypeCode eq 'STOD'")
+		
+		if status:
+			action_url += f" and DeliveryProcessingStatusCode eq '{status}'"
+		
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				return response_json["d"]["results"]
+			else:
+				logger.error(f"Failed to fetch deliveries for store {store_id}: {response.text}")
+				return []
+		except Exception as e:
+			logger.error(f"Error fetching deliveries for store {store_id}: {str(e)}")
+			raise
+
+	def complete_transfer_in_sap(self, sales_order_id: str, goods_issue_object_id: str = None) -> dict:
+		'''
+			Complete a store-to-store transfer in SAP ByD by updating sales order status
+			and linking goods issue document
+		'''
+		try:
+			# First get the sales order to get its ObjectID
+			sales_order = self.get_sales_order_by_id(sales_order_id)
+			if not sales_order:
+				logger.error(f"Sales order {sales_order_id} not found")
+				raise Exception(f"Sales order {sales_order_id} not found")
+			
+			object_id = sales_order.get("ObjectID")
+			if not object_id:
+				logger.error(f"ObjectID not found for sales order {sales_order_id}")
+				raise Exception(f"ObjectID not found for sales order {sales_order_id}")
+			
+			# Update the delivery status to completely delivered
+			action_url = f"{self.endpoint}/sap/byd/odata/cust/v1/khsalesorder/SalesOrderCollection('{object_id}')"
+			update_data = {
+				"DeliveryStatusCode": "3"  # Completely Delivered
+			}
+			
+			# Add goods issue document reference if provided
+			if goods_issue_object_id:
+				update_data["GoodsIssueReference"] = goods_issue_object_id
+			
+			self.refresh_csrf_token()
+			response = self.session.patch(action_url, json=update_data, headers=self.auth_headers, auth=self.auth)
+			
+			if response.status_code == 204:  # PATCH typically returns 204 No Content on success
+				logger.info(f"Transfer completed for sales order {sales_order_id}")
+				return {
+					"success": True,
+					"sales_order_id": sales_order_id,
+					"object_id": object_id,
+					"status": "Completely Delivered",
+					"goods_issue_reference": goods_issue_object_id
+				}
+			else:
+				logger.error(f"Failed to complete transfer: {response.text}")
+				raise Exception(f"Error from SAP: {response.text}")
+				
+		except Exception as e:
+			logger.error(f"Error completing transfer for sales order {sales_order_id}: {str(e)}")
+			raise
+
+	def get_material_valuation(self, material_id: str) -> dict:
+		'''
+		Fetch material valuation/standard cost from SAP ByD.
+		Uses the MaterialValuationDataCollection endpoint with ValuationPrice expansion.
+
+		Args:
+			material_id: The material/product ID to fetch valuation for
+
+		Returns:
+			dict with unit_price, currency_code, and valuation_date, or None if not found
+		'''
+		from datetime import datetime
+
+		# Use MaterialValuationDataCollection endpoint with ValuationPrice expanded
+		action_url = (
+			f"{self.endpoint}/sap/byd/odata/cust/v1/vmumaterialvaluationdata/"
+			f"MaterialValuationDataCollection?$format=json"
+			f"&$filter=MateriallID eq '{material_id}'"
+			f"&$expand=ValuationPrice"
+		)
+
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				response_json = json.loads(response.text)
+				results = response_json.get("d", {}).get("results", [])
+
+				if not results:
+					logger.warning(f"No material valuation found for material {material_id}")
+					return None
+
+				# Get the first valuation record
+				valuation_record = results[0]
+
+				# Check if ValuationPrice is expanded
+				valuation_prices = valuation_record.get("ValuationPrice", {})
+				if isinstance(valuation_prices, dict) and "results" in valuation_prices:
+					price_records = valuation_prices["results"]
+				elif isinstance(valuation_prices, list):
+					price_records = valuation_prices
+				else:
+					logger.warning(f"No ValuationPrice data for material {material_id}")
+					return None
+
+				if not price_records:
+					logger.warning(f"Empty ValuationPrice array for material {material_id}")
+					return None
+
+				# Helper function to parse SAP ByD date format: /Date(milliseconds)/
+				def parse_sap_date(date_string):
+					if not date_string:
+						return None
+					try:
+						# Extract milliseconds from /Date(1234567890000)/
+						if isinstance(date_string, str) and date_string.startswith("/Date("):
+							ms = int(date_string.replace("/Date(", "").replace(")/", ""))
+							return datetime.fromtimestamp(ms / 1000.0)
+					except Exception as e:
+						logger.warning(f"Failed to parse date {date_string}: {e}")
+					return None
+
+				# Filter for valid prices with date ranges
+				now = datetime.now()
+				valid_prices = []
+
+				for price_record in price_records:
+					# Get TypeCode - it might be in different formats
+					type_code = price_record.get("TypeCode") or price_record.get("TypeCode_content")
+
+					# Check if price type is inventory cost (TypeCode == "1")
+					# Accept if TypeCode is "1" or if TypeCode is missing (less strict)
+					if type_code and type_code != "1":
+						continue
+
+					start_date = parse_sap_date(price_record.get("StartDate"))
+					end_date = parse_sap_date(price_record.get("EndDate"))
+
+					# Check if price is currently valid
+					is_valid = True
+					if start_date and start_date > now:
+						is_valid = False
+					if end_date and end_date < now:
+						is_valid = False
+
+					if is_valid:
+						# Get amount - can be string, number, or dict
+						amount = price_record.get("Amount")
+						currency = price_record.get("AmountCurrencyCode", "NGN")
+
+						try:
+							if isinstance(amount, str):
+								price_value = float(amount)
+							elif isinstance(amount, dict):
+								price_value = float(amount.get("content", 0))
+								currency = amount.get("currencyCode", currency)
+							elif isinstance(amount, (int, float)):
+								price_value = float(amount)
+							else:
+								price_value = 0.0
+						except (ValueError, TypeError):
+							price_value = 0.0
+
+						if price_value > 0:
+							valid_prices.append({
+								"unit_price": price_value,
+								"currency_code": currency,
+								"start_date": start_date,
+								"end_date": end_date,
+								"valuation_date": start_date.isoformat() if start_date else None
+							})
+
+				if not valid_prices:
+					logger.warning(f"No valid price records found for material {material_id}")
+					return None
+
+				# Return the price with the most recent start_date
+				valid_prices.sort(key=lambda x: x["start_date"] or datetime.min, reverse=True)
+				selected_price = valid_prices[0]
+
+				return {
+					"unit_price": selected_price["unit_price"],
+					"currency_code": selected_price["currency_code"],
+					"valuation_date": selected_price["valuation_date"]
+				}
+
+			else:
+				logger.error(f"Failed to fetch material valuation for {material_id}: {response.text}")
+				return None
+		except Exception as e:
+			logger.error(f"Error fetching material valuation for {material_id}: {str(e)}")
 			raise
