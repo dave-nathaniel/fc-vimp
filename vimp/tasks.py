@@ -113,10 +113,10 @@ def send_grn_to_email(created_grn, ):
 	# Set the emails to receive this GRN
 	recepient_emails = list(set([item.purchase_order_line_item.delivery_store.store_email for item in created_grn.line_items.all()]))
 	# Try to add the vendor's email if a user profile exists for the vendor
-	try:
-		recepient_emails.append(created_grn.purchase_order.vendor.user.email)
-	except Exception as e:
-		pass
+	# try:
+	# 	recepient_emails.append(created_grn.purchase_order.vendor.user.email)
+	# except Exception as e:
+	# 	pass
 	recepient_emails.append(os.getenv('TEST_EMAILS'))
 	# Send the HTML content via email
 	email = EmailMessage(
@@ -180,7 +180,7 @@ def create_grn_on_byd(grn: GoodsReceivedNote):
 	# Initialize the REST client
 	rest_client = byd_rest.RESTServices()
 	payload = {
-		"GSR_Integration_KUT": "YES",
+		# "GSR_Integration_KUT": "YES",
 		"Item": [
 			{
 				"ProductID": line_item.purchase_order_line_item.product_id,
