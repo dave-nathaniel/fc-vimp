@@ -183,7 +183,7 @@ class InboundDelivery(models.Model):
 		"""
 		Find store by various identifier fields
 		"""
-		store = Store()
+		store = Store
 		try:
 			delivery_store = store.objects.get(byd_cost_center_code=identifier)
 		except ObjectDoesNotExist:
