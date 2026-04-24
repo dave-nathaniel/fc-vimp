@@ -1,5 +1,19 @@
-RewriteEngine On
-RewriteBase /grn-transfer/
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteCond %{REQUEST_FILENAME} !-d
-RewriteRule ^(.*)$ index.html [L,QSA]
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /grn-transfer/
+  
+  # Don't rewrite files or directories
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  
+  # Don't rewrite for assets
+  RewriteCond %{REQUEST_URI} !^/grn-transfer/assets/
+  
+  # Rewrite everything else to index.html to allow html5 state links
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+# Fallback for servers without mod_rewrite
+<IfModule !mod_rewrite.c>
+  ErrorDocument 404 /grn-transfer/index.html
+</IfModule>
