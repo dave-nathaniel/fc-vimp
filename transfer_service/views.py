@@ -253,13 +253,14 @@ def get_inbound_delivery(request, pk):
 		refresh = request.query_params.get('refresh', '').lower() == 'true'
 
 		delivery = None
+		refresh = True
+
 		if not refresh:
 			try:
 				# Check if delivery exists locally
 				delivery = InboundDelivery.objects.get(delivery_id=pk)
 			except InboundDelivery.DoesNotExist:
 				pass
-		refresh = True
 		# If refresh requested or delivery not found, fetch from SAP ByD
 		if refresh or delivery is None:
 			byd_rest = RESTServices()
