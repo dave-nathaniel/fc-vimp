@@ -2,7 +2,7 @@ import os
 import json
 import logging
 import time
-from requests import get, post
+from requests import get, post, auth as requests_auth
 from pathlib import Path
 from dotenv import load_dotenv
 from django.utils import timezone
@@ -31,6 +31,11 @@ class RESTServices:
 	# Initialize the SAP token to None initially
 	auth = None
 	
+	comm_auth = requests_auth.HTTPBasicAuth(
+		os.getenv('SAP_COMM_USER'),
+		os.getenv('SAP_COMM_PASS'),
+	)
+
 	def __init__(self):
 		self.last_token_refresh = 0
 		self.token_refresh_interval = 300  # 5 minutes
@@ -374,7 +379,7 @@ class RESTServices:
 		)
 		
 		try:
-			response = self.__get__(action_url)
+			response = self.session.get(action_url, auth=self.comm_auth)
 			if response.status_code == 200:
 				response_json = json.loads(response.text)
 				results = response_json["d"]["results"]
@@ -520,7 +525,7 @@ class RESTServices:
 		)
 
 		try:
-			response = self.__get__(action_url)
+			response = self.session.get(action_url, auth=self.comm_auth)
 			if response.status_code == 200:
 				response_json = json.loads(response.text)
 				results = response_json.get("d", {}).get("results", [])
