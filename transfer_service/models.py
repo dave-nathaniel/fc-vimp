@@ -180,16 +180,21 @@ class InboundDelivery(models.Model):
 	
 	@staticmethod
 	def _find_store_by_identifier(identifier):
+		from django.db.models import Q
 		"""
 		Find store by various identifier fields
 		"""
 		store = Store
 		try:
-			delivery_store = store.objects.get(byd_cost_center_code=identifier)
+			# Find the store in the DB by the byd_cost_center_code OR the byd_bill_to_party_id key in the metadata
+			delivery_store = store.objects.get(Q(byd_cost_center_code=identifier) | Q(metadata__contains={'byd_bill_to_party_id': identifier}))
 		except ObjectDoesNotExist:
 			middleware = Middleware()
-			store_data = middleware.get_store(byd_cost_center_code=identifier)
-			# If the store is not found, create a new store or use the default store
+			store_data = middleware.get_store(byd_bill_to_party_id=identifier)
+			if not store_data:
+				store_data = middleware.get_store(byd_cost_center_code=identifier)
+			
+			# If the store is found, use the store data to create a new store
 			if store_data:
 				delivery_store = store().create_store(store_data[0])
 			else:
