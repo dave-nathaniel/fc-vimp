@@ -259,7 +259,7 @@ def get_inbound_delivery(request, pk):
 				delivery = InboundDelivery.objects.get(delivery_id=pk)
 			except InboundDelivery.DoesNotExist:
 				pass
-
+		refresh = True
 		# If refresh requested or delivery not found, fetch from SAP ByD
 		if refresh or delivery is None:
 			byd_rest = RESTServices()
