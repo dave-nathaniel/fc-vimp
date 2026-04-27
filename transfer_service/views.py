@@ -253,7 +253,6 @@ def get_inbound_delivery(request, pk):
 		refresh = request.query_params.get('refresh', '').lower() == 'true'
 
 		delivery = None
-		refresh = True
 
 		if not refresh:
 			try:
