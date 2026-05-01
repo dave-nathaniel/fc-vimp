@@ -180,7 +180,7 @@ def create_grn_on_byd(grn: GoodsReceivedNote):
 	# Initialize the REST client
 	rest_client = byd_rest.RESTServices()
 	payload = {
-		"GSR_Integration_KUT": "YES",
+		"GSR_Integration": "YES",
 		"Item": [
 			{
 				"ProductID": line_item.purchase_order_line_item.product_id,
