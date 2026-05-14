@@ -1,0 +1,12 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  
+  # Handle grn-transfer SPA routes
+  RewriteCond %{REQUEST_URI} ^/grn-transfer/
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule ^grn-transfer/(.*)$ grn-transfer/index.html [L]
+  
+  # Handle other SPA subdirectories if needed
+  # Add similar rules for /grn/, /wac/, etc. if they are also SPAs
+</IfModule>
