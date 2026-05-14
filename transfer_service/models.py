@@ -120,7 +120,8 @@ class InboundDelivery(models.Model):
 		delivery = cls()
 		delivery.object_id = delivery_data["ObjectID"]
 		delivery.delivery_id = delivery_data["ID"]
-		delivery.delivery_status_code = delivery_data.get("DeliveryProcessingStatusCode", "1")
+		# Force the delivery status code to 1 (Open)
+		delivery.delivery_status_code = "1"
 		delivery.delivery_type_code = delivery_data.get("DeliveryTypeCode", "")
 		
 		# Handle date conversion - use shipping period or creation date
