@@ -163,10 +163,10 @@ AUTH_ADFS = {
 	'CLIENT_SECRET': os.getenv('CLIENT_SECRET'),
 	'CLAIM_MAPPING': {'first_name': 'given_name',
 					  'last_name': 'family_name',
-					  'email': 'upn'},
+					  'email': 'unique_name'},
 	'GROUPS_CLAIM': 'roles',
 	'MIRROR_GROUPS': True,
-	'USERNAME_CLAIM': 'upn',
+	'USERNAME_CLAIM': 'unique_name',
 	'TENANT_ID': os.getenv('TENANT_ID'),
 	'RELYING_PARTY_ID': os.getenv('CLIENT_ID'),
 	'LOGIN_EXEMPT_URLS': [
