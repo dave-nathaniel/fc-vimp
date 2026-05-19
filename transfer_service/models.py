@@ -449,3 +449,42 @@ class StoreAuthorization(models.Model):
 
 	def __str__(self):
 		return f"{self.user.username} - {self.store.store_name} ({self.role})"
+
+
+class SourceLocationAuthorization(models.Model):
+	"""
+	Links users (typically SCD_Team members) to authorized source locations
+	(warehouses) with roles. Mirrors StoreAuthorization, which scopes users to
+	destination stores; this scopes them to the warehouses they may approve
+	receipts from.
+	"""
+	SOURCE_ROLE_CHOICES = [
+		('approver', 'Approver'),
+		('viewer', 'Viewer Only'),
+	]
+
+	user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='source_location_authorizations')
+	source_location_id = models.CharField(max_length=50, help_text="Warehouse/Location ID from SAP ByD")
+	source_location_name = models.CharField(max_length=100, blank=True, help_text="Auto-populated from SAP on save")
+	role = models.CharField(max_length=50, choices=SOURCE_ROLE_CHOICES, default='approver')
+	created_date = models.DateTimeField(auto_now_add=True)
+
+	class Meta:
+		unique_together = ('user', 'source_location_id')
+		verbose_name = "Source Location Authorization"
+		verbose_name_plural = "Source Location Authorizations"
+
+	def __str__(self):
+		label = self.source_location_name or self.source_location_id
+		return f"{self.user.username} - {label} ({self.role})"
+
+	def save(self, *args, **kwargs):
+		# Auto-populate the location name from SAP when missing or when the ID changes.
+		if self.source_location_id and not self.source_location_name:
+			try:
+				location = RESTServices().get_location_by_id(self.source_location_id)
+				if location and location.get("Name"):
+					self.source_location_name = location["Name"]
+			except Exception as e:
+				logger.warning(f"Could not fetch location name for {self.source_location_id}: {e}")
+		super().save(*args, **kwargs)

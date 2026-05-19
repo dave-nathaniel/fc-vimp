@@ -6,7 +6,7 @@ from django.db.models import QuerySet
 from django.core.exceptions import ValidationError
 from core_service.models import CustomUser
 from egrn_service.models import Store
-from .models import InboundDelivery, StoreAuthorization
+from .models import InboundDelivery, StoreAuthorization, SourceLocationAuthorization
 
 logger = logging.getLogger(__name__)
 
@@ -157,34 +157,30 @@ class AuthorizationService:
     @staticmethod
     def get_user_authorized_source_locations(user: CustomUser) -> list:
         """
-        Get source locations (warehouses/stores) user can approve receipts for.
-        - SCD_Team members can approve for ALL source locations
-        - Other users use StoreAuthorization with manager/assistant roles
+        Get source location (warehouse) IDs a user can approve receipts for.
+        Sourced from SourceLocationAuthorization. Membership in SCD_Team alone
+        no longer grants global access — each user must be assigned to specific
+        warehouses, mirroring how StoreAuthorization scopes destination stores.
         """
-        # SCD_Team members can approve for all locations
-        if AuthorizationService.is_scd_team_member(user):
-            return None  # None indicates all locations
-
-        authorized_stores = Store.objects.filter(
-            authorized_users__user=user,
-            authorized_users__role__in=['manager', 'assistant']
-        ).values_list('byd_cost_center_code', flat=True)
-
-        return list(authorized_stores)
+        return list(
+            SourceLocationAuthorization.objects.filter(
+                user=user,
+                role__in=['approver'],
+            ).values_list('source_location_id', flat=True)
+        )
 
     @staticmethod
     def validate_source_location_access(user: CustomUser, source_location_id: str) -> bool:
         """
         Validate if user can approve receipts from a specific source location.
-        - SCD_Team members can approve for ALL locations
-        - Other users use StoreAuthorization model
         """
-        # SCD_Team members have access to all locations
-        if AuthorizationService.is_scd_team_member(user):
-            return True
-
-        authorized_locations = AuthorizationService.get_user_authorized_source_locations(user)
-        return source_location_id in (authorized_locations or [])
+        if not source_location_id:
+            return False
+        return SourceLocationAuthorization.objects.filter(
+            user=user,
+            source_location_id=source_location_id,
+            role__in=['approver'],
+        ).exists()
 
 
 class DeliveryService:

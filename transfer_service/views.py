@@ -506,6 +506,15 @@ def approve_delivery_receipt(request, receipt_id):
 				message=f"Receipt {receipt_id} not found"
 			)
 
+		# Validate the user is authorized for this receipt's source warehouse
+		if not AuthorizationService.validate_source_location_access(
+			request.user, receipt.inbound_delivery.source_location_id
+		):
+			return APIResponse(
+				status=status.HTTP_403_FORBIDDEN,
+				message="You are not authorized to approve receipts from this source location"
+			)
+
 		# Validate receipt is in a state that can be approved
 		if receipt.approval_status not in ['receipt_submitted', 'resubmitted']:
 			return APIResponse(
@@ -574,6 +583,15 @@ def reject_delivery_receipt(request, receipt_id):
 			return APIResponse(
 				status=status.HTTP_404_NOT_FOUND,
 				message=f"Receipt {receipt_id} not found"
+			)
+
+		# Validate the user is authorized for this receipt's source warehouse
+		if not AuthorizationService.validate_source_location_access(
+			request.user, receipt.inbound_delivery.source_location_id
+		):
+			return APIResponse(
+				status=status.HTTP_403_FORBIDDEN,
+				message="You are not authorized to reject receipts from this source location"
 			)
 
 		# Validate receipt is in a state that can be rejected
@@ -736,37 +754,24 @@ def update_rejected_receipt(request, receipt_id):
 @authentication_classes([CombinedAuthentication])
 def get_pending_approvals(request):
 	"""
-	Get receipts pending approval for source locations (warehouses/stores)
-	the user has access to. SCD_Team members can see all pending approvals.
+	Get receipts pending approval for the source locations (warehouses) the
+	user is assigned to via SourceLocationAuthorization.
 	"""
 	try:
 		user = request.user
-
-		# Get source locations user can approve for
-		# Returns None for SCD_Team (all locations), or a list for other users
 		authorized_locations = AuthorizationService.get_user_authorized_source_locations(user)
 
-		# If authorized_locations is an empty list (not None), user has no access
-		if authorized_locations is not None and len(authorized_locations) == 0:
+		if not authorized_locations:
 			return APIResponse(
 				status=status.HTTP_200_OK,
 				message='No pending approvals',
 				data={'count': 0, 'results': []}
 			)
 
-		# Build query for pending receipts
 		pending_receipts = TransferReceiptNote.objects.filter(
-			approval_status__in=['receipt_submitted', 'resubmitted']
-		)
-
-		# If authorized_locations is None (SCD_Team), show all pending receipts
-		# Otherwise, filter by authorized source locations
-		if authorized_locations is not None:
-			pending_receipts = pending_receipts.filter(
-				inbound_delivery__source_location_id__in=authorized_locations
-			)
-
-		pending_receipts = pending_receipts.select_related(
+			approval_status__in=['receipt_submitted', 'resubmitted'],
+			inbound_delivery__source_location_id__in=authorized_locations,
+		).select_related(
 			'inbound_delivery',
 			'inbound_delivery__destination_store',
 			'created_by'

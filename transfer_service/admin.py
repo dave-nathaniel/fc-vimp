@@ -3,7 +3,7 @@ from unfold.admin import ModelAdmin
 from .models import (
     InboundDelivery, InboundDeliveryLineItem,
     TransferReceiptNote, TransferReceiptLineItem,
-    StoreAuthorization
+    StoreAuthorization, SourceLocationAuthorization
 )
 
 
@@ -42,3 +42,12 @@ class StoreAuthorizationAdmin(ModelAdmin):
     list_filter = ('role', 'created_date', 'store')
     search_fields = ('user__username', 'user__email', 'store__store_name')
     readonly_fields = ('created_date',)
+
+
+@admin.register(SourceLocationAuthorization)
+class SourceLocationAuthorizationAdmin(ModelAdmin):
+    list_display = ('user', 'source_location_id', 'source_location_name', 'role', 'created_date')
+    list_filter = ('role', 'created_date', 'source_location_id')
+    search_fields = ('user__username', 'user__email', 'source_location_id', 'source_location_name')
+    readonly_fields = ('source_location_name', 'created_date')
+    autocomplete_fields = ('user',)
