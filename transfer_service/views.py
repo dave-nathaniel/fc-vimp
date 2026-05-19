@@ -205,10 +205,12 @@ def get_inbound_deliveries(request):
 	"""
 	try:
 		user = request.user
-		# Filter deliveries by user's authorized stores (as destination stores)
-		authorized_stores = AuthorizationService.get_user_authorized_stores(user)
-		queryset = InboundDelivery.objects.filter(destination_store__in=authorized_stores)
-		
+		# Visible deliveries = destination StoreAuthorization (Restaurant Manager)
+		# UNION source-location auth (SCD); Finance bypasses entirely.
+		queryset = AuthorizationService.filter_deliveries_for_user(
+			user, InboundDelivery.objects.all()
+		)
+
 		try:
 			queryset = _apply_delivery_filters(queryset, request.query_params)
 		except ValidationError as e:
@@ -282,8 +284,8 @@ def get_inbound_delivery(request, pk):
 			# Create delivery record with fresh data
 			delivery = InboundDelivery.create_from_byd_data(delivery_data)
 
-		# Check user authorization for the delivery's destination store
-		if not AuthorizationService.validate_store_access(request.user, delivery.destination_store.byd_cost_center_code):
+		# Authorized if user can access via destination store OR source warehouse
+		if not AuthorizationService.user_can_access_delivery(request.user, delivery):
 			return APIResponse(
 				status=status.HTTP_403_FORBIDDEN,
 				message="You are not authorized to access this delivery"
@@ -320,8 +322,9 @@ def search_deliveries(request):
 	"""
 	
 	user = request.user
-	authorized_stores = AuthorizationService.get_user_authorized_stores(user)
-	queryset = InboundDelivery.objects.filter(destination_store__in=authorized_stores)
+	queryset = AuthorizationService.filter_deliveries_for_user(
+		user, InboundDelivery.objects.all()
+	)
 	download_requested = request.query_params.get('download', '').lower() == 'true'
 
 	try:

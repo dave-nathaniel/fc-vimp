@@ -2,7 +2,7 @@
 Business logic services for warehouse-to-store transfers
 """
 import logging
-from django.db.models import QuerySet
+from django.db.models import QuerySet, Q
 from django.core.exceptions import ValidationError
 from core_service.models import CustomUser
 from egrn_service.models import Store
@@ -147,11 +147,47 @@ class AuthorizationService:
     def has_global_delivery_access(user: CustomUser) -> bool:
         """
         Check if user has global access to view all deliveries.
-        SCD_Team and Finance members can view all stores' deliveries.
+
+        Only Finance retains blanket read access. SCD_Team membership used to
+        imply this too, but SCD users are now scoped to specific warehouses
+        via SourceLocationAuthorization — leaving the blanket grant in place
+        would defeat that scoping on listing endpoints.
         """
-        return (
-            AuthorizationService.is_scd_team_member(user) or
-            AuthorizationService.is_finance_member(user)
+        return AuthorizationService.is_finance_member(user)
+
+    @staticmethod
+    def user_can_access_delivery(user: CustomUser, delivery: 'InboundDelivery') -> bool:
+        """
+        True if the user can view a specific delivery via any of:
+        - Finance (global)
+        - StoreAuthorization on the destination store (Restaurant Manager)
+        - SourceLocationAuthorization on the source warehouse (SCD)
+        """
+        if AuthorizationService.has_global_delivery_access(user):
+            return True
+        if delivery.destination_store_id and AuthorizationService.validate_store_access(
+            user, delivery.destination_store.byd_cost_center_code
+        ):
+            return True
+        if AuthorizationService.validate_source_location_access(user, delivery.source_location_id):
+            return True
+        return False
+
+    @staticmethod
+    def filter_deliveries_for_user(user: CustomUser, queryset: QuerySet) -> QuerySet:
+        """
+        Restrict an InboundDelivery queryset to the rows a user is allowed to
+        see: union of destination-store auth (Restaurant Manager) and
+        source-location auth (SCD). Finance bypasses the filter entirely.
+        """
+        if AuthorizationService.has_global_delivery_access(user):
+            return queryset
+
+        authorized_stores = AuthorizationService.get_user_authorized_stores(user)
+        authorized_source_ids = AuthorizationService.get_user_authorized_source_locations(user)
+        return queryset.filter(
+            Q(destination_store__in=authorized_stores) |
+            Q(source_location_id__in=authorized_source_ids)
         )
 
     @staticmethod
