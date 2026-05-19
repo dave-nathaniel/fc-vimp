@@ -8,6 +8,7 @@ from django.utils import timezone
 from core_service.models import CustomUser
 from egrn_service.models import Store
 from byd_service.util import to_python_time
+from byd_service.rest import RESTServices
 from egrn_service.services import Middleware
 from django.core.exceptions import ObjectDoesNotExist
 
@@ -142,8 +143,13 @@ class InboundDelivery(models.Model):
 		ship_from_location = delivery_data.get("ShipFromLocation", {})
 		if ship_from_location:
 			delivery.source_location_id = ship_from_location.get("LocationID", "")
-			# You might want to add logic to get location name from a mapping or API
-			delivery.source_location_name = f"Warehouse {delivery.source_location_id}"
+			# ShipFromLocation only exposes the ID; the descriptive name lives on the
+			# Location master data collection (khlocation/LocationCollection).
+			location = RESTServices().get_location_by_id(delivery.source_location_id)
+			delivery.source_location_name = (
+				location.get("Name") if location and location.get("Name")
+				else f"Warehouse {delivery.source_location_id}"
+			)
 		
 		# Extract destination store information
 		product_recipient_party = delivery_data.get("ProductRecipientParty", {})

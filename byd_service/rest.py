@@ -6,6 +6,7 @@ from requests import get, post, auth as requests_auth
 from pathlib import Path
 from dotenv import load_dotenv
 from django.utils import timezone
+from django.core.cache import cache
 
 from .authenticate import SAPAuthentication
 
@@ -391,6 +392,37 @@ class RESTServices:
 			logger.error(f"Error fetching product {material_id}: {str(e)}")
 			raise
 	
+	def get_location_by_id(self, location_id: str) -> dict:
+		'''
+			Fetch location master data from SAP ByD by ID. Cached for 24h since warehouse
+			details change rarely and the same locations are looked up repeatedly.
+		'''
+		if not location_id:
+			return None
+
+		cache_key = f"byd:location:{location_id}"
+		cached = cache.get(cache_key)
+		if cached is not None:
+			return cached
+
+		action_url = (
+			f"{self.endpoint}/sap/byd/odata/cust/v1/khlocation/LocationCollection?"
+			f"$format=json&$filter=ID eq '{location_id}'&$top=1"
+		)
+		try:
+			response = self.session.get(action_url, auth=self.comm_auth)
+			if response.status_code == 200:
+				results = json.loads(response.text)["d"]["results"]
+				location = results[0] if results else None
+				if location:
+					cache.set(cache_key, location, 60 * 60 * 24)
+				return location
+			logger.error(f"Failed to fetch location {location_id}: {response.text}")
+			return None
+		except Exception as e:
+			logger.error(f"Error fetching location {location_id}: {str(e)}")
+			raise
+
 	def get_delivery_by_id(self, delivery_id: str) -> dict:
 		'''
 			Fetch an outbound delivery (warehouse-to-store) from SAP ByD by ID
