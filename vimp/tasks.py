@@ -7,6 +7,7 @@ import os
 import logging
 import random
 import string
+import uuid
 from copy import deepcopy
 from dotenv import load_dotenv
 from django.template.loader import render_to_string
@@ -25,13 +26,37 @@ import byd_service.util as byd_util
 from byd_service.models import get_or_create_byd_posting_status
 
 import time
+from datetime import timedelta
 from django.utils import timezone
-from django_q.tasks import async_task
+from django_q.tasks import schedule
+from django_q.models import Schedule
 
 load_dotenv()
 
 logger = logging.getLogger()
 users = get_user_model()
+
+# Maximum number of automatic lock-conflict retries before a posting is left failed.
+MAX_BYD_RETRIES = 6
+
+
+def _schedule_byd_lock_retry(func_path: str, object_id: int, retry_count: int, label: str):
+	"""
+		Schedule a single future re-run of a ByD posting task using exponential
+		backoff with jitter. Used when a posting fails due to an object lock so the
+		retry waits for the lock to clear instead of immediately dog-piling.
+	"""
+	delay = byd_util.compute_backoff_seconds(retry_count)
+	# UUID suffix guarantees a unique schedule name even when many tasks fail in the
+	# same second under lock contention (avoids any name collision on the Schedule row).
+	schedule(
+		func_path,
+		object_id,
+		schedule_type=Schedule.ONCE,
+		next_run=timezone.now() + timedelta(seconds=delay),
+		name=f"{label}-lock-retry-{retry_count}-{uuid.uuid4().hex[:8]}",
+	)
+	logger.warning(f"{label}: ByD object locked. Scheduled retry #{retry_count} in {delay}s.")
 
 def post_to_icg(instance, ):
 	'''
@@ -177,6 +202,9 @@ def post_to_gl(args):
 
 
 def create_grn_on_byd(grn: GoodsReceivedNote):
+	# Allow being called with either a GRN instance (initial dispatch) or its id (scheduled retry).
+	if isinstance(grn, int):
+		grn = GoodsReceivedNote.objects.get(id=grn)
 	# Initialize the REST client
 	rest_client = byd_rest.RESTServices()
 	payload = {
@@ -200,61 +228,69 @@ def create_grn_on_byd(grn: GoodsReceivedNote):
 	}
 	
 	status = get_or_create_byd_posting_status(grn, request_payload=payload, task_name='vimp.tasks.create_grn_on_byd')
+	po_id = grn.purchase_order.po_id
 	
 	try:
-		response = rest_client.create_grn(payload)
-		# Get the object ID from the response and post the GRN
-		try:
-			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
-			response = rest_client.post_grn(object_id)
-		except Exception as e:
-			raise Exception(f"Error posting GRN {grn.grn_number}: {e}")
-		# Mark as success
-		status.mark_success(
-			response.get("d", {})
-			.get("results", {})
-		)
+		# Serialise writes per purchase order so concurrent workers don't lock each other out.
+		with byd_util.po_write_lock(po_id) as acquired:
+			if not acquired:
+				raise byd_util.ByDObjectLockedError(
+					f"PO {po_id} is being posted by another worker; deferring GRN {grn.grn_number}."
+				)
+			response = rest_client.create_grn(payload)
+			# Get the object ID from the response and post the GRN
+			try:
+				object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+				response = rest_client.post_grn(object_id)
+			except Exception as e:
+				raise Exception(f"Error posting GRN {grn.grn_number}: {e}")
+			# Mark as success
+			status.mark_success(
+				response.get("d", {})
+				.get("results", {})
+			)
+		return True
 	except Exception as e:
 		logging.error(f"Error creating GRN {grn.grn_number}: {e}")
 		# Mark as failure
-		status.mark_failure(e)
+		status.mark_failure(str(e))
 		# Increment retry count
 		status.increment_retry()
+		# If the failure is a ByD object lock, schedule a backoff retry (until capped).
+		if byd_util.is_byd_lock_error(e) and status.retry_count <= MAX_BYD_RETRIES:
+			_schedule_byd_lock_retry(
+				'vimp.tasks.create_grn_on_byd',
+				grn.id, status.retry_count, f'Create-GRN-{grn.grn_number}'
+			)
 		return False
-	return True
 
 
 def handle_delivery_notification_result(task):
-	"""Handle the result of a delivery notification task"""
+	"""
+		Log the result of a delivery notification task. Lock-conflict retries are
+		owned by the task itself (backoff via _schedule_byd_lock_retry), so this
+		hook no longer re-queues to avoid duplicate concurrent attempts.
+	"""
 	if task.success:
 		logger.info(f"Delivery notification task completed successfully: {task.id}")
 	else:
 		logger.error(f"Delivery notification task failed: {task.id}, Error: {task.result}")
-		# If the error is due to object lock, retry after 30 seconds
-		if "Object is locked" in str(task.result):
-			async_task(
-				'vimp.tasks.create_inbound_delivery_notification_on_byd',
-				task.args[0],
-				hook='vimp.tasks.handle_delivery_notification_result',
-				retry=30
-			)
 
 def handle_invoice_result(task):
-	"""Handle the result of an invoice task"""
+	"""
+		Log the result of an invoice task. Lock-conflict retries are owned by the
+		task itself (backoff via _schedule_byd_lock_retry), so this hook no longer
+		re-queues to avoid duplicate concurrent attempts.
+	"""
 	if task.success:
 		logger.info(f"Invoice task completed successfully: {task.id}")
 	else:
 		logger.error(f"Invoice task failed: {task.id}, Error: {task.result}")
-		# If the error is due to object lock, retry after 30 seconds
-		if "Object is locked" in str(task.result):
-			async_task(
-				'vimp.tasks.create_invoice_on_byd',
-				task.args[0],
-				hook='vimp.tasks.handle_invoice_result',
-				retry=30
-			)
 
 def create_inbound_delivery_notification_on_byd(grn: GoodsReceivedNote):
+	# Allow being called with either a GRN instance (initial dispatch) or its id (scheduled retry).
+	if isinstance(grn, int):
+		grn = GoodsReceivedNote.objects.get(id=grn)
 	# Initialize the REST client
 	rest_client = byd_rest.RESTServices()
 	
@@ -301,59 +337,67 @@ def create_inbound_delivery_notification_on_byd(grn: GoodsReceivedNote):
 	}
 	
 	status = get_or_create_byd_posting_status(grn, request_payload=payload, task_name='vimp.tasks.create_inbound_delivery_notification_on_byd')
+	po_id = grn.purchase_order.po_id
 	
 	try:
-		# Create the notification
-		response = rest_client.create_inbound_delivery_notification(payload)
-		object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+		# Serialise writes per purchase order so concurrent workers don't lock each other out.
+		with byd_util.po_write_lock(po_id) as acquired:
+			if not acquired:
+				raise byd_util.ByDObjectLockedError(
+					f"PO {po_id} is being posted by another worker; deferring GRN {grn.grn_number}."
+				)
+			# Create the notification
+			response = rest_client.create_inbound_delivery_notification(payload)
+			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
 
-		grn.inbound_delivery_object_id = object_id
-		grn.inbound_delivery_notification_id = notification_id
-		grn.inbound_delivery_metadata = {
-			"payload": payload,
-			"create_response": response
-		}
-		grn.save(update_fields=[
-			'inbound_delivery_object_id',
-			'inbound_delivery_notification_id',
-			'inbound_delivery_metadata'
-		])
-		
-		# Add a delay before posting
-		time.sleep(5)
-		
-		# Post the notification
-		post_response = rest_client.post_delivery_notification(object_id)
-		grn.inbound_delivery_metadata.update({
-			"post_response": post_response,
-		})
-		grn.save(update_fields=['inbound_delivery_metadata'])
-		
-		# Mark as success
-		status.mark_success(
-			response.get("d", {})
-			.get("results", {})
-		)
+			grn.inbound_delivery_object_id = object_id
+			grn.inbound_delivery_notification_id = notification_id
+			grn.inbound_delivery_metadata = {
+				"payload": payload,
+				"create_response": response
+			}
+			grn.save(update_fields=[
+				'inbound_delivery_object_id',
+				'inbound_delivery_notification_id',
+				'inbound_delivery_metadata'
+			])
+			
+			# Add a delay before posting
+			time.sleep(5)
+			
+			# Post the notification
+			post_response = rest_client.post_delivery_notification(object_id)
+			grn.inbound_delivery_metadata.update({
+				"post_response": post_response,
+			})
+			grn.save(update_fields=['inbound_delivery_metadata'])
+			
+			# Mark as success
+			status.mark_success(
+				response.get("d", {})
+				.get("results", {})
+			)
 		return True
 		
 	except Exception as e:
 		logger.error(f"Error creating GRN {grn.grn_number}: {e}")
 		# Mark as failure
-		status.mark_failure(e)
+		status.mark_failure(str(e))
 		# Increment retry count
 		status.increment_retry()
 		
-		# If the error is due to object lock, retry after 30 seconds
-		if "Object is locked" in str(e):
-			async_task(
+		# If the failure is a ByD object lock, schedule a backoff retry (until capped).
+		if byd_util.is_byd_lock_error(e) and status.retry_count <= MAX_BYD_RETRIES:
+			_schedule_byd_lock_retry(
 				'vimp.tasks.create_inbound_delivery_notification_on_byd',
-				grn,
-				hook='vimp.tasks.handle_delivery_notification_result',
-				retry=30
+				grn.id, status.retry_count, f'Create-Inbound-Notif-{grn.grn_number}'
 			)
 		return False
 
 def create_invoice_on_byd(invoice: Invoice):
+	# Allow being called with either an Invoice instance (initial dispatch) or its id (scheduled retry).
+	if isinstance(invoice, int):
+		invoice = Invoice.objects.get(id=invoice)
 	# Initialize the REST client
 	rest_client = byd_rest.RESTServices()
 		
@@ -391,39 +435,45 @@ def create_invoice_on_byd(invoice: Invoice):
 	}
 	
 	status = get_or_create_byd_posting_status(invoice, request_payload=payload, task_name='vimp.tasks.create_invoice_on_byd')
+	po_id = invoice.purchase_order.po_id
 	
 	try:
-		# Create the invoice
-		response = rest_client.create_supplier_invoice(payload)
-		object_id = response.get("d", {}).get("results", {}).get("ObjectID")
-		
-		# Add a delay before posting
-		time.sleep(5)
-		
-		# Post the invoice
-		response = rest_client.post_invoice(object_id)
-		
-		# Mark as success
-		status.mark_success(
-			response.get("d", {})
-			.get("results", {})
-		)
+		# Serialise writes per purchase order so an invoice and a delivery posting for the
+		# same PO don't run concurrently and lock each other out in ByD.
+		with byd_util.po_write_lock(po_id) as acquired:
+			if not acquired:
+				raise byd_util.ByDObjectLockedError(
+					f"PO {po_id} is being posted by another worker; deferring invoice {invoice.id}."
+				)
+			# Create the invoice
+			response = rest_client.create_supplier_invoice(payload)
+			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+			
+			# Add a delay before posting
+			time.sleep(5)
+			
+			# Post the invoice
+			response = rest_client.post_invoice(object_id)
+			
+			# Mark as success
+			status.mark_success(
+				response.get("d", {})
+				.get("results", {})
+			)
 		return True
 		
 	except Exception as e:
 		logger.error(f"Error creating Invoice {invoice.id}: {e}")
 		# Mark as failure
-		status.mark_failure(e)
+		status.mark_failure(str(e))
 		# Increment retry count
 		status.increment_retry()
 		
-		# If the error is due to object lock, retry after 30 seconds
-		if "Object is locked" in str(e):
-			async_task(
+		# If the failure is a ByD object lock, schedule a backoff retry (until capped).
+		if byd_util.is_byd_lock_error(e) and status.retry_count <= MAX_BYD_RETRIES:
+			_schedule_byd_lock_retry(
 				'vimp.tasks.create_invoice_on_byd',
-				invoice,
-				hook='vimp.tasks.handle_invoice_result',
-				retry=30
+				invoice.id, status.retry_count, f'Create-Invoice-{invoice.id}'
 			)
 		return False
 
@@ -516,32 +566,42 @@ def cancel_inbound_delivery_notification_on_byd(grn_id: int, cancel_payload: dic
 		task_name='vimp.tasks.cancel_inbound_delivery_notification_on_byd'
 	)
 
+	po_id = grn.purchase_order.po_id
+
 	try:
-		response = rest_client.create_inbound_delivery_notification(cancel_payload)
-		object_id = response.get("d", {}).get("results", {}).get("ObjectID")
-		if not object_id:
-			raise ValueError("ByD did not return ObjectID for cancellation.")
+		# Serialise against any concurrent create/post for the same PO.
+		with byd_util.po_write_lock(po_id) as acquired:
+			if not acquired:
+				raise byd_util.ByDObjectLockedError(
+					f"PO {po_id} is being posted by another worker; cannot cancel GRN {grn.grn_number} yet."
+				)
+			response = rest_client.create_inbound_delivery_notification(cancel_payload)
+			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+			if not object_id:
+				raise ValueError("ByD did not return ObjectID for cancellation.")
 
-		time.sleep(5)
+			time.sleep(5)
 
-		post_response = rest_client.post_delivery_notification(object_id)
+			post_response = rest_client.post_delivery_notification(object_id)
 
-		status.mark_success({
-			"object_id": object_id,
-			"post_response": post_response,
-		})
+			status.mark_success({
+				"object_id": object_id,
+				"post_response": post_response,
+			})
 
-		grn.inbound_delivery_metadata.setdefault("nullifications", []).append({
-			"payload": cancel_payload,
-			"create_response": response,
-			"post_response": post_response,
-			"posting_status_id": status.id,
-			"cancelled_on": timezone.now().isoformat(),
-		})
-		grn.save(update_fields=['inbound_delivery_metadata'])
-		grn.mark_nullified(reason="Admin-triggered nullification")
+			# Keep bookkeeping that consumes the ByD responses inside the lock scope so
+			# the variables are always bound; failures short-circuit straight to except.
+			grn.inbound_delivery_metadata.setdefault("nullifications", []).append({
+				"payload": cancel_payload,
+				"create_response": response,
+				"post_response": post_response,
+				"posting_status_id": status.id,
+				"cancelled_on": timezone.now().isoformat(),
+			})
+			grn.save(update_fields=['inbound_delivery_metadata'])
+			grn.mark_nullified(reason="Admin-triggered nullification")
 
-		return True
+			return True
 
 	except Exception as exc:
 		status.mark_failure(str(exc))
