@@ -13,6 +13,12 @@ load_dotenv(dotenv_path)
 
 logger = logging.getLogger(__name__)
 
+# A purchase order fetched from ByD is only valid for processing if it is in
+# one of these lifecycle states:
+#   "6" -> Sent
+#   "9" -> Follow-Up Document Created
+VALID_PO_LIFECYCLE_STATUS_CODES = ("6", "9")
+
 # Initialize the authentication class
 sap_auth = SAPAuthentication()
 
@@ -160,7 +166,18 @@ class RESTServices:
 			try:
 				response_json = json.loads(response.text)
 				results = response_json["d"]["results"]
-				return results[0] if results else False
+				if not results:
+					return False
+				purchase_order = results[0]
+				# Only consider the PO valid if it is in an accepted lifecycle state
+				if str(purchase_order.get("LifeCycleStatusCode")) not in VALID_PO_LIFECYCLE_STATUS_CODES:
+					logger.info(
+						f"PO {PurchaseOrderID} rejected: LifeCycleStatusCode "
+						f"'{purchase_order.get('LifeCycleStatusCode')}' "
+						f"('{purchase_order.get('LifeCycleStatusCodeText')}') is not valid."
+					)
+					return False
+				return purchase_order
 			except Exception as e:
 				raise e
 

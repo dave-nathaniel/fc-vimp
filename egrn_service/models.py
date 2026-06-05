@@ -324,6 +324,10 @@ class GoodsReceivedNote(models.Model):
 		except ObjectDoesNotExist:
 			# Create the Purchase Order
 			po_data = byd_rest_services.get_purchase_order_by_id(po_id)
+			if not po_data:
+				raise Exception(
+					f"Purchase Order {po_id} not found or is not in a valid state for processing."
+				)
 			new_po = PurchaseOrder()
 			self.purchase_order = new_po.create_purchase_order(po_data)
 		except Exception as e:
