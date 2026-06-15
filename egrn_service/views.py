@@ -144,6 +144,10 @@ def get_purchase_order(request, po_id):
 					f"Order with ID {po_id} not found or is not in a valid state for processing.",
 					status.HTTP_404_NOT_FOUND
 				)
+		# Recreate any line items that previously failed (e.g. a store that did
+		# not exist when the PO was first fetched but is now available).
+		if orders.failed_line_items:
+			orders.retry_failed_line_items()
 		# Serialize the PurchaseOrder object
 		serializer = PurchaseOrderSerializer(orders).data
 		serializer["Item"] = list(

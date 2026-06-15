@@ -35,6 +35,8 @@ def _get_latest_unit_price(product_id):
 
 
 class PurchaseOrderAdmin(ModelAdmin):
+	list_display = ['po_id', 'vendor', 'date', 'failed_line_items_count']
+	actions = ['retry_failed_line_items']
 	# Search fields: vendor, object_id, po_id
 	search_fields = [
 		'vendor__user__first_name',
@@ -51,6 +53,38 @@ class PurchaseOrderAdmin(ModelAdmin):
         'line_items__delivery_store__byd_cost_center_code',
 		
 	]
+
+	def failed_line_items_count(self, obj):
+		return len(obj.failed_line_items or [])
+	failed_line_items_count.short_description = 'Failed Line Items'
+
+	@admin.action(description='Retry failed line items')
+	def retry_failed_line_items(self, request, queryset):
+		total_recovered = 0
+		total_remaining = 0
+		for purchase_order in queryset:
+			result = purchase_order.retry_failed_line_items()
+			total_recovered += result['recovered']
+			total_remaining += result['remaining']
+
+		if total_recovered:
+			self.message_user(
+				request,
+				f"Recovered {total_recovered} line item(s).",
+				level=messages.SUCCESS,
+			)
+		if total_remaining:
+			self.message_user(
+				request,
+				f"{total_remaining} line item(s) still failing.",
+				level=messages.WARNING,
+			)
+		if not total_recovered and not total_remaining:
+			self.message_user(
+				request,
+				"No failed line items to retry.",
+				level=messages.INFO,
+			)
 
 
 class PurchaseOrderLineItemAdmin(ModelAdmin):
