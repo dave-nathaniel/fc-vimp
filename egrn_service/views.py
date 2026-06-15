@@ -138,8 +138,12 @@ def get_purchase_order(request, po_id):
 				po = PurchaseOrder()
 				orders = po.create_purchase_order(byd_orders)
 			else:
-				# If the order does not exist in ByD, return an error
-				return APIResponse(f"Order with ID {po_id} not found.", status.HTTP_404_NOT_FOUND)
+				# The order was not found in ByD, or it exists but is not in a
+				# valid lifecycle state (Sent or Follow-Up Document Created).
+				return APIResponse(
+					f"Order with ID {po_id} not found or is not in a valid state for processing.",
+					status.HTTP_404_NOT_FOUND
+				)
 		# Serialize the PurchaseOrder object
 		serializer = PurchaseOrderSerializer(orders).data
 		serializer["Item"] = list(
