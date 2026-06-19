@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from rest_framework import serializers
 from .models import Invoice, InvoiceLineItem
 from core_service.serializers import VendorProfileSerializer
@@ -22,8 +24,11 @@ class InvoiceLineItemSerializer(serializers.ModelSerializer):
 	
 	def to_representation(self, instance):
 		serialized = super().to_representation(instance)
-		# Use a lightweight GRN line item representation to avoid deep nested expansions
-		grn_line_item = GoodsReceivedLineItemBriefSerializer(instance.grn_line_item).data
+		# Use a lightweight GRN line item representation to avoid deep nested expansions.
+		# Forward context so optimisation maps reach the nested PO line item serializer.
+		grn_line_item = GoodsReceivedLineItemBriefSerializer(
+			instance.grn_line_item, context=self.context
+		).data if instance.grn_line_item else None
 		serialized['grn_line_item'] = grn_line_item
 		return serialized
 	
@@ -62,24 +67,49 @@ class InvoiceSerializer(serializers.ModelSerializer):
 			signatures_list = signatures_by_id.get(obj.id, [])
 			signatures = SignatureSerializer(signatures_list, many=True).data
 		else:
-			signatures = SignatureSerializer(obj.get_signatures(), many=True).data
+			signatures_list = list(obj.get_signatures())
+			signatures = SignatureSerializer(signatures_list, many=True).data
 		# We don't want to expose sensitive information about the signatories
 		for signature in signatures:
 			signature['signer'].pop('username')
 			signature.pop('predecessor')
+		# Derive completion/approval from the prefetched signature list instead of
+		# obj.is_completely_signed / obj.is_accepted, which each re-query signatures
+		# per row (get_signatures + get_last_signature), defeating the prefetch.
+		completed, approved = self._workflow_state(obj, signatures_list)
 		# Return details about the workflow and signatures
 		return {
 			"signatories": obj.signatories,
 			"pending_approval_from": obj.current_pending_signatory,
-			"completed": obj.is_completely_signed,
-			"approved": obj.is_accepted,
+			"completed": completed,
+			"approved": approved,
 			"signatures": signatures,
 		}
+
+	def _workflow_state(self, obj, signatures_list):
+		"""
+		Compute (completed, approved) from an in-memory signature list ordered by
+		-date_signed (latest first), mirroring Signable.is_completely_signed /
+		is_rejected / is_accepted without hitting the database.
+		"""
+		signatories = obj.signatories or []
+		num_signed = len(signatures_list)
+		# is_rejected: latest signature was a rejection.
+		latest = signatures_list[0] if signatures_list else None
+		is_rejected = (latest.accepted is False) if latest is not None else False
+		# is_completely_signed: every signatory has signed, OR it was rejected.
+		completed = (num_signed == len(signatories)) or is_rejected
+		# is_accepted: completed and not rejected.
+		approved = (is_rejected is False) if completed else False
+		return completed, approved
 	
 	def to_representation(self, instance):
 		serialized = super().to_representation(instance)
-		# Use a lightweight GRN serializer to avoid constructing heavy nested structures we later drop
-		grn = GoodsReceivedNoteBriefSerializer(instance.grn).data if instance.grn else None
+		# Use a lightweight GRN serializer to avoid constructing heavy nested structures we later drop.
+		# Forward context so optimisation maps (e.g. product_config_map) reach nested serializers.
+		grn = GoodsReceivedNoteBriefSerializer(
+			instance.grn, context=self.context
+		).data if instance.grn else None
 		if serialized.get('vendor') and 'byd_metadata' in serialized['vendor']:
 			serialized['vendor'].pop('byd_metadata')
 		serialized['grn'] = grn
@@ -94,6 +124,29 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
 class PurchaseOrderLineItemBriefSerializer(serializers.ModelSerializer):
 	"""Lightweight PO line item serializer without nested GRN line items."""
+	# Both of these were model properties that ran one query PER line item:
+	#   - delivered_quantity -> .aggregate(Sum('quantity_received'))
+	#   - extra_fields       -> ProductConfiguration.objects.get(product_id=...)
+	# Resolve them from prefetched / context-provided data instead. Falls back to
+	# the model property when the optimisation context is absent (e.g. other callers).
+	delivered_quantity = serializers.SerializerMethodField()
+	extra_fields = serializers.SerializerMethodField()
+
+	def get_delivered_quantity(self, obj):
+		grn_items = getattr(obj, '_prefetched_objects_cache', {}).get('grn_line_item')
+		if grn_items is None:
+			return obj.delivered_quantity  # fallback: model property (its own aggregate)
+		return sum(float(g.quantity_received) for g in grn_items) or 0.0
+
+	def get_extra_fields(self, obj):
+		# A {product_id: conversion_field} map can be supplied via context to avoid
+		# a ProductConfiguration query per line item.
+		config_map = self.context.get('product_config_map') if hasattr(self, 'context') else None
+		if config_map is not None:
+			product_id = (obj.metadata or {}).get('ProductID')
+			return config_map.get(product_id, [])
+		return obj.extra_fields  # fallback: model property (its own query)
+
 	class Meta:
 		model = PurchaseOrderLineItem
 		fields = [
@@ -107,9 +160,32 @@ class GoodsReceivedLineItemBriefSerializer(serializers.ModelSerializer):
 	purchase_order_line_item = serializers.SerializerMethodField()
 	grn_number = serializers.SerializerMethodField()
 	tax_value = serializers.SerializerMethodField()
+	# Model properties invoiced_quantity / is_invoiced each run an aggregate per
+	# line item. Resolve from the prefetched invoice_items cache instead.
+	invoiced_quantity = serializers.SerializerMethodField()
+	is_invoiced = serializers.SerializerMethodField()
+
+	def _invoiced_quantity_decimal(self, obj):
+		# Keep Decimal precision: the original is_invoiced compared exact Decimals,
+		# and float summation can flip a fully-invoiced line's status.
+		inv_items = getattr(obj, '_prefetched_objects_cache', {}).get('invoice_items')
+		if inv_items is None:
+			return obj.invoiced_quantity  # fallback: model property (Decimal aggregate)
+		return sum((inv.quantity for inv in inv_items), Decimal('0'))
+
+	def get_invoiced_quantity(self, obj):
+		# Field historically serialized as a number; preserve that shape.
+		return float(self._invoiced_quantity_decimal(obj))
+
+	def get_is_invoiced(self, obj):
+		return self._invoiced_quantity_decimal(obj) == obj.quantity_received
 
 	def get_purchase_order_line_item(self, obj):
-		po_data = PurchaseOrderLineItemBriefSerializer(obj.purchase_order_line_item, many=False).data
+		# Forward context so product_config_map / prefetch optimisations reach the
+		# PO line item serializer (manual instantiation does not inherit context).
+		po_data = PurchaseOrderLineItemBriefSerializer(
+			obj.purchase_order_line_item, many=False, context=self.context
+		).data
 		# Flatten commonly used location field out of metadata if present
 		if 'metadata' in po_data and isinstance(po_data['metadata'], dict):
 			# Drop heavy metadata block
@@ -167,16 +243,68 @@ class GoodsReceivedNoteBriefSerializer(serializers.ModelSerializer):
 	
 	def get_purchase_order(self, obj):
 		po = obj.purchase_order
+		# Compute delivery status ONCE from prefetched data instead of calling
+		# po.delivery_status (a model property whose per-line .aggregate() bypasses
+		# the prefetch cache and fired ~1700 SUM queries per page). The parent
+		# queryset prefetches grn__purchase_order__line_items__grn_line_item, so the
+		# received quantities are already in memory.
+		status_code, status_text = self._po_delivery_status(po)
 		return {
 			'po_id': po.po_id,
 			'object_id': po.object_id,
 			'vendor': getattr(po.vendor, 'byd_internal_id', None),
 			'total_net_amount': po.total_net_amount,
 			'date': getattr(po, 'date', None),
-			'delivery_status_code': po.delivery_status[0] if getattr(po, 'delivery_status', None) else None,
-			'delivery_status_text': po.delivery_status[1] if getattr(po, 'delivery_status', None) else None,
-			'delivery_completed': True if getattr(po, 'delivery_status', None) and po.delivery_status[0] == '3' else False,
+			'delivery_status_code': status_code,
+			'delivery_status_text': status_text,
+			'delivery_completed': status_code == '3',
 		}
+
+	def _po_delivery_status(self, po):
+		"""
+		Derive a PurchaseOrder's (code, text) delivery status from prefetched line
+		items. Faithfully mirrors PurchaseOrder.delivery_status (which relies on
+		PurchaseOrderLineItem.delivery_status) but consumes the prefetch cache, so
+		it costs zero queries per row instead of one SUM aggregate per line item.
+
+		Per-line status (from the model):
+		  delivered == 0            -> '1' (Not Delivered)
+		  0 < delivered < ordered   -> '2' (Partially Delivered)
+		  delivered == ordered      -> '3' (Completely Delivered)
+		PO rollup (from the model):
+		  all lines '3'                       -> '3'
+		  else any line '2' or '3'            -> '2'
+		  else                                -> '1'
+		"""
+		status_codes = po.delivery_status_code  # [('1', ...), ('2', ...), ('3', ...)]
+		po_line_items = getattr(po, '_prefetched_objects_cache', {}).get('line_items')
+		if po_line_items is None:
+			po_line_items = po.line_items.all()
+
+		per_line = []
+		for po_li in po_line_items:
+			grn_items = getattr(po_li, '_prefetched_objects_cache', {}).get('grn_line_item')
+			if grn_items is None:
+				grn_items = po_li.grn_line_item.all()
+			# Decimal precision mirrors the model property's exact comparison.
+			delivered = sum((g.quantity_received for g in grn_items), Decimal('0'))
+			ordered = po_li.quantity
+			if delivered == 0:
+				per_line.append('1')
+			elif delivered < ordered:
+				per_line.append('2')
+			elif delivered == ordered:
+				per_line.append('3')
+			else:
+				# Over-delivery: model's elif chain leaves status undefined (None);
+				# treat as complete to avoid a missing code in the payload.
+				per_line.append('3')
+
+		if per_line and all(code == '3' for code in per_line):
+			return status_codes[2]
+		if any(code in ('2', '3') for code in per_line):
+			return status_codes[1]
+		return status_codes[0]
 
 	def _prefetched_line_items(self, obj):
 		"""Return prefetched GRN line items if available, else fallback to DB."""

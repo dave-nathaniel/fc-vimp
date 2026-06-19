@@ -291,14 +291,23 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 			for sig in signature_list:
 				signatures_by_id[sig.signable_id].append(sig)
 
-		# Serialize with prefetched data and pass signatures map via context
+		# Build a {product_id: conversion_field} map once for the whole page so the
+		# serializer's extra_fields does not run a ProductConfiguration query per line item.
+		product_config_map = build_product_config_map(paginated)
+
+		# Serialize with prefetched data and pass maps via context
 		serialized_signables = signable_serializer(
-			paginated, many=True, context={'signatures_by_id': dict(signatures_by_id)}
+			paginated,
+			many=True,
+			context={
+				'signatures_by_id': dict(signatures_by_id),
+				'product_config_map': product_config_map,
+			},
 		).data
-		
+
 		# Build paginated payload
 		paginated_data = paginator.get_paginated_response(serialized_signables).data
-		
+
 		return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=paginated_data)
 		
 	except Exception as e:
@@ -996,6 +1005,39 @@ def make_base_signable_queryset_key(signable_class: object, relevant_permissions
 	)
 
 
+def build_product_config_map(invoices: list) -> dict:
+	"""
+	Build a {product_id: conversion_field} lookup for every product referenced by
+	the given invoices' line items, in a single query. Mirrors the bulk-load idiom
+	in egrn_service.views and lets the serializer resolve `extra_fields` without a
+	per-line-item ProductConfiguration query.
+
+	Reads product IDs from prefetched relations (invoice_line_items ->
+	po_line_item.metadata) so collecting the IDs costs no extra queries.
+	"""
+	from egrn_service.models import ProductConfiguration
+
+	product_ids = set()
+	for invoice in invoices:
+		for li in invoice.invoice_line_items.all():
+			po_li = li.po_line_item
+			product_id = (getattr(po_li, 'metadata', None) or {}).get('ProductID')
+			if product_id:
+				product_ids.add(product_id)
+
+	if not product_ids:
+		return {}
+
+	config_map = {}
+	configs = ProductConfiguration.objects.filter(
+		product_id__in=product_ids
+	).select_related('conversion')
+	for config in configs:
+		conversion = config.conversion
+		config_map[config.product_id] = conversion.conversion_field if conversion else []
+	return config_map
+
+
 def make_base_signable_queryset(signable_class: object, content_type: ContentType, relevant_permissions: list) -> QuerySet:
 	q_objects = [Q(signatories__contains=perm) for perm in relevant_permissions]
 	query = reduce(operator.or_, q_objects)
@@ -1008,13 +1050,22 @@ def make_base_signable_queryset(signable_class: object, content_type: ContentTyp
 		).prefetch_related(
 			'invoice_line_items',
 			'invoice_line_items__po_line_item',
+			# PO line item -> its GRN receipts, so the serializer's delivered_quantity
+			# field resolves from cache instead of a per-item Sum aggregate.
+			'invoice_line_items__po_line_item__grn_line_item',
 			'invoice_line_items__grn_line_item',
+			# GRN line item -> its invoice receipts, so invoiced_quantity / is_invoiced
+			# on the brief serializer resolve from cache instead of a per-item aggregate.
+			'invoice_line_items__grn_line_item__invoice_items',
 			'grn__purchase_order__line_items',
 			'grn__purchase_order__line_items__delivery_store',
 			'grn__purchase_order__line_items__grn_line_item',
 			# Prefetch GRN line items and their delivery stores to support GRN.stores property
 			'grn__line_items',
 			'grn__line_items__purchase_order_line_item__delivery_store',
+			# Same as above, for PO line items reached via the GRN line item path
+			# (GoodsReceivedLineItemBriefSerializer.get_purchase_order_line_item).
+			'grn__line_items__purchase_order_line_item__grn_line_item',
 			'grn__line_items__invoice_items',
 		).distinct().filter(
 			# signatories__contains=relevant_permissions
