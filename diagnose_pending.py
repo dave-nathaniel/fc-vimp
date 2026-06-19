@@ -240,6 +240,97 @@ finally:
     reset_queries()
 
 # ---------------------------------------------------------------------------
+# 2B. SUMMARY VIEW (/approvals/v1/summary/invoice) — the ACTUAL slow endpoint.
+#     Decompose into (a) the unbounded Count x5 aggregate and (b) the top-10
+#     serialization, and verify a proposed cheap-counter rewrite is equivalent.
+# ---------------------------------------------------------------------------
+print("\n[2B] SUMMARY VIEW decomposition (the endpoint the screen actually calls)")
+_old_debug2 = settings.DEBUG
+settings.DEBUG = True
+try:
+    from django.db.models import Count, Q, Subquery, BooleanField, Exists, OuterRef
+    from approval_service.views import make_base_signable_queryset, make_filtered_signable_queryset, \
+        hydrate_signables_by_ids, build_product_config_map
+    from invoice_service.models import Invoice, WORKFLOW_RULES
+    from invoice_service.serializers import InvoiceSerializer
+
+    relevant_permissions = sorted({r for v in WORKFLOW_RULES.values() for r in v["roles"]})
+    content_type = ContentType.objects.get_for_model(Invoice)
+
+    def db_ms():
+        return sum(float(q['time']) for q in connection.queries) * 1000
+
+    # --- (a) CURRENT aggregate: heavy queryset + last_signature_accepted subquery,
+    #     unbounded, wrapped in Count x5. This is the suspected ~60s operation. ---
+    reset_queries()
+    ta = time.time()
+    heavy = make_base_signable_queryset(Invoice, content_type, relevant_permissions)
+    latest_sig_sub = Signature.objects.filter(
+        signable_type=content_type, signable_id=OuterRef('pk'),
+        metadata__acting_as__in=relevant_permissions,
+    ).order_by('-date_signed').values('accepted')[:1]
+    heavy = heavy.annotate(last_signature_accepted=Subquery(latest_sig_sub, output_field=BooleanField()))
+    old_counters = heavy.aggregate(
+        total_count=Count('id'),
+        pending_count=Count('id', filter=Q(current_pending_signatory__in=relevant_permissions)),
+        completed_count=Count('id', filter=Q(user_has_signed=True)),
+        rejected_count=Count('id', filter=Q(last_signature_accepted=False)),
+        accepted_count=Count('id', filter=Q(last_signature_accepted=True)),
+    )
+    agg_wall = (time.time() - ta) * 1000
+    agg_db = db_ms()
+    print(f"  (a) CURRENT aggregate(Count x5):  {agg_wall:8.0f} ms wall | {agg_db:8.0f} ms db | {len(connection.queries)} q")
+    print(f"      counters = {old_counters}")
+
+    # --- (b) CURRENT top-10 pending serialization (heavy queryset, no LIMIT push) ---
+    reset_queries()
+    tb = time.time()
+    recent = list(heavy.filter(current_pending_signatory__in=relevant_permissions).order_by('-date_created')[:10])
+    _ = InvoiceSerializer(recent, many=True).data
+    top10_wall = (time.time() - tb) * 1000
+    top10_db = db_ms()
+    print(f"  (b) CURRENT top-10 serialize:     {top10_wall:8.0f} ms wall | {top10_db:8.0f} ms db | {len(connection.queries)} q")
+
+    print(f"\n  SUMMARY VIEW server-side total (a+b): {agg_wall + top10_wall:.0f} ms")
+    print("  (Browser showed ~1.1 min; if this is far less, the rest is auth/preflight.)")
+
+    # --- PROPOSED cheap rewrite: counters as independent light counts ---
+    reset_queries()
+    tc = time.time()
+    light = make_filtered_signable_queryset(Invoice, relevant_permissions)
+    new_total = light.count()
+    new_pending = light.filter(current_pending_signatory__in=relevant_permissions).count()
+    sig_exists = Exists(Signature.objects.filter(
+        signable_type=content_type, signable_id=OuterRef('pk'),
+        metadata__acting_as__in=relevant_permissions))
+    new_completed = light.filter(sig_exists).count()
+    # rejected/accepted: latest signature among the user's roles was rejected/accepted
+    light_acc = light.annotate(last_signature_accepted=Subquery(latest_sig_sub, output_field=BooleanField()))
+    new_rejected = light_acc.filter(last_signature_accepted=False).count()
+    new_accepted = light_acc.filter(last_signature_accepted=True).count()
+    new_wall = (time.time() - tc) * 1000
+    new_db = db_ms()
+    new_counters = {
+        'total_count': new_total, 'pending_count': new_pending, 'completed_count': new_completed,
+        'rejected_count': new_rejected, 'accepted_count': new_accepted,
+    }
+    print(f"\n  PROPOSED cheap counters:          {new_wall:8.0f} ms wall | {new_db:8.0f} ms db | {len(connection.queries)} q")
+    print(f"      counters = {new_counters}")
+    match = all(old_counters[k] == new_counters[k] for k in old_counters)
+    print("\n  COUNTER EQUIVALENCE (old aggregate vs proposed):")
+    for k in old_counters:
+        ok = old_counters[k] == new_counters[k]
+        print(f"    {k:16} old={old_counters[k]:>6}  new={new_counters[k]:>6}  {'OK' if ok else '*** MISMATCH ***'}")
+    print(f"  => {'ALL MATCH — rewrite is safe' if match else 'MISMATCH — do NOT ship rewrite as-is'}")
+except Exception as e:
+    import traceback
+    print(f"  ERROR in summary decomposition: {e}")
+    traceback.print_exc()
+finally:
+    settings.DEBUG = _old_debug2
+    reset_queries()
+
+# ---------------------------------------------------------------------------
 # 3. REDIS HEALTH + CACHALOT FOOTPRINT
 # ---------------------------------------------------------------------------
 print("\n[3] REDIS HEALTH")
