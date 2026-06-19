@@ -50,15 +50,22 @@ class InvoiceSerializer(serializers.ModelSerializer):
 		invoice = Invoice.objects.create(**validated_data)
 		return invoice
 	
-	# Prefer values pre-annotated on the queryset to avoid per-row aggregates
+	# Prefer values pre-annotated on the queryset to avoid per-row aggregates.
+	# NOTE: getattr(obj, 'x', obj.gross_total) would ALWAYS evaluate obj.gross_total
+	# (the property's live aggregate) because Python evaluates the default argument
+	# before getattr runs. Guard the annotation explicitly so the fallback aggregate
+	# only runs when the annotation is genuinely absent.
 	def get_gross_total(self, obj):
-		return getattr(obj, 'gross_total_annotated', obj.gross_total)
+		annotated = getattr(obj, 'gross_total_annotated', None)
+		return annotated if annotated is not None else obj.gross_total
 
 	def get_total_tax_amount(self, obj):
-		return getattr(obj, 'total_tax_amount_annotated', obj.total_tax_amount)
+		annotated = getattr(obj, 'total_tax_amount_annotated', None)
+		return annotated if annotated is not None else obj.total_tax_amount
 
 	def get_net_total(self, obj):
-		return getattr(obj, 'net_total_annotated', obj.net_total)
+		annotated = getattr(obj, 'net_total_annotated', None)
+		return annotated if annotated is not None else obj.net_total
 	
 	def get_workflow(self, obj):
 		# Prefer prefetched signatures passed in via context to avoid N+1 queries

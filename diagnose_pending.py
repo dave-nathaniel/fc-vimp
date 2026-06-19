@@ -1,0 +1,244 @@
+"""
+VIMP pending-approval slowness diagnostic.
+
+RUN IT TWICE so the comparison is meaningful:
+
+  # (a) cachalot OFF — shows the TRUE query count (N+1 exposed, cache cannot hide it)
+  CACHALOT_ENABLED=0 python manage.py shell < diagnose_pending.py
+
+  # (b) cachalot ON (normal) — shows DB queries when the cache is masking the N+1
+  python manage.py shell < diagnose_pending.py
+
+WHY TWICE: section [2] counts connection.queries, which is DB-only. With cachalot
+warm, the per-row aggregate queries are served from Redis and never reach MySQL,
+so they do NOT appear in the count. Run (a) to see the real shape; the gap between
+(a) and (b) is exactly the work cachalot is absorbing (and stops absorbing when
+its cache goes cold). The Redis section [3] is valid in either run.
+
+Read-only. Touches no data. Prints a report covering:
+  1. Data volumes (the "did we cross a threshold" question)
+  2. Live query count to render one pending page (the N+1 question)
+  3. Redis health: memory, evictions, keyspace, cachalot footprint (the "this week" question)
+"""
+import time
+from django.db import connection, reset_queries
+from django.conf import settings
+from django.contrib.contenttypes.models import ContentType
+
+print("\n" + "=" * 70)
+print("VIMP PENDING-APPROVAL DIAGNOSTIC")
+print("=" * 70)
+
+# ---------------------------------------------------------------------------
+# 1. DATA VOLUMES
+# ---------------------------------------------------------------------------
+print("\n[1] DATA VOLUMES")
+try:
+    from invoice_service.models import Invoice, InvoiceLineItem
+    from approval_service.models import Signature
+    from egrn_service.models import (
+        PurchaseOrder, PurchaseOrderLineItem,
+        GoodsReceivedNote, GoodsReceivedLineItem,
+    )
+
+    print(f"  Invoices total .................. {Invoice.objects.count():,}")
+    print(f"  Invoices pending (cps not null) . "
+          f"{Invoice.objects.filter(current_pending_signatory__isnull=False).count():,}")
+    print(f"  InvoiceLineItems ................ {InvoiceLineItem.objects.count():,}")
+    print(f"  Signatures ...................... {Signature.objects.count():,}")
+    print(f"  PurchaseOrders .................. {PurchaseOrder.objects.count():,}")
+    print(f"  PurchaseOrderLineItems .......... {PurchaseOrderLineItem.objects.count():,}")
+    print(f"  GoodsReceivedNotes .............. {GoodsReceivedNote.objects.count():,}")
+    print(f"  GoodsReceivedLineItems .......... {GoodsReceivedLineItem.objects.count():,}")
+
+    # failed_line_items blob size — the new field from commit 040a6dd
+    pos_with_failures = PurchaseOrder.objects.exclude(failed_line_items=[]).count()
+    print(f"  POs with failed_line_items ...... {pos_with_failures:,}")
+    if pos_with_failures:
+        import json
+        sizes = [
+            len(json.dumps(po.failed_line_items))
+            for po in PurchaseOrder.objects.exclude(failed_line_items=[])[:200]
+        ]
+        print(f"    avg blob bytes (first 200) .... {sum(sizes)//max(len(sizes),1):,}")
+        print(f"    max blob bytes ................ {max(sizes):,}")
+except Exception as e:
+    print(f"  ERROR collecting volumes: {e}")
+
+# ---------------------------------------------------------------------------
+# 2. LIVE QUERY COUNT FOR ONE PENDING PAGE
+# ---------------------------------------------------------------------------
+print("\n[2] QUERY COUNT — rendering one 'pending' page (size=15)")
+_cachalot_on = getattr(settings, "CACHALOT_ENABLED", False)
+print(f"    cachalot ENABLED = {_cachalot_on}  "
+      f"({'queries hidden by cache — re-run with CACHALOT_ENABLED=0' if _cachalot_on else 'TRUE query count exposed'})")
+print("    (DEBUG must capture queries; we force it on for this block)")
+_old_debug = settings.DEBUG
+settings.DEBUG = True
+try:
+    from approval_service.views import make_base_signable_queryset, build_product_config_map
+    from approval_service.utils import ApprovalUtilities
+    from invoice_service.models import Invoice, WORKFLOW_RULES
+    from invoice_service.serializers import InvoiceSerializer
+    from collections import defaultdict
+
+    # Use the union of all signatory roles so the queryset isn't empty,
+    # regardless of which user we are. This mirrors a privileged approver.
+    relevant_permissions = sorted({r for v in WORKFLOW_RULES.values() for r in v["roles"]})
+    content_type = ContentType.objects.get_for_model(Invoice)
+
+    def db_time_ms():
+        # Sum of all captured query execution times (DEBUG must be on).
+        return sum(float(q['time']) for q in connection.queries) * 1000
+
+    # --- PHASE A: build queryset + evaluate page (incl. prefetch + any
+    #     per-row work that fires during model __init__, e.g. set_identity) ---
+    reset_queries()
+    tA = time.time()
+    qs = make_base_signable_queryset(Invoice, content_type, relevant_permissions)
+    qs = qs.filter(current_pending_signatory__in=relevant_permissions)
+    qs = qs.order_by("date_created")
+    page = list(qs[:15])                      # LIMIT 15 — forces evaluation
+    phaseA_wall = (time.time() - tA) * 1000
+    phaseA_db = db_time_ms()
+    phaseA_q = len(connection.queries)
+
+    # --- PHASE B: signature prefetch + product config map (view setup) ---
+    reset_queries()
+    tB = time.time()
+    ids = [obj.id for obj in page]
+    sigs_by_id = defaultdict(list)
+    if ids:
+        for sig in Signature.objects.select_related("signer", "predecessor").filter(
+            signable_type=content_type, signable_id__in=ids
+        ).order_by("-date_signed"):
+            sigs_by_id[sig.signable_id].append(sig)
+    product_config_map = build_product_config_map(page)
+    phaseB_wall = (time.time() - tB) * 1000
+    phaseB_db = db_time_ms()
+    phaseB_q = len(connection.queries)
+
+    # --- PHASE C: serialization only ---
+    reset_queries()
+    tC = time.time()
+    data = InvoiceSerializer(
+        page, many=True,
+        context={
+            "signatures_by_id": dict(sigs_by_id),
+            "product_config_map": product_config_map,
+        },
+    ).data
+    phaseC_wall = (time.time() - tC) * 1000
+    phaseC_db = db_time_ms()
+    phaseC_q = len(connection.queries)
+
+    total_wall = phaseA_wall + phaseB_wall + phaseC_wall
+    total_db = phaseA_db + phaseB_db + phaseC_db
+    total_q = phaseA_q + phaseB_q + phaseC_q
+
+    print(f"  Rows serialized ................. {len(data)}")
+    print(f"  TOTAL QUERIES ................... {total_q}")
+    print(f"  TOTAL WALL ...................... {total_wall:.0f} ms")
+    print(f"  TOTAL DB TIME (sum of queries) .. {total_db:.0f} ms")
+    print(f"  PYTHON/NON-DB TIME .............. {total_wall - total_db:.0f} ms  "
+          f"({'DB-BOUND' if total_db > 0.6*total_wall else 'PYTHON/CPU-BOUND' if total_db < 0.4*total_wall else 'MIXED'})")
+    print("")
+    print(f"  Phase A (queryset eval + __init__):  {phaseA_wall:7.0f} ms wall | {phaseA_db:7.0f} ms db | {phaseA_q:4d} q")
+    print(f"  Phase B (signature/config setup):    {phaseB_wall:7.0f} ms wall | {phaseB_db:7.0f} ms db | {phaseB_q:4d} q")
+    print(f"  Phase C (serialization):             {phaseC_wall:7.0f} ms wall | {phaseC_db:7.0f} ms db | {phaseC_q:4d} q")
+
+    # Re-evaluate everything once more under a single capture so we can rank
+    # individual queries by DURATION (the metric that actually matters).
+    reset_queries()
+    qs2 = make_base_signable_queryset(Invoice, content_type, relevant_permissions)
+    qs2 = qs2.filter(current_pending_signatory__in=relevant_permissions).order_by("date_created")
+    page2 = list(qs2[:15])
+    ids2 = [o.id for o in page2]
+    if ids2:
+        list(Signature.objects.select_related("signer", "predecessor").filter(
+            signable_type=content_type, signable_id__in=ids2).order_by("-date_signed"))
+    _ = InvoiceSerializer(page2, many=True, context={
+        "signatures_by_id": {}, "product_config_map": build_product_config_map(page2)}).data
+
+    ranked = sorted(connection.queries, key=lambda q: float(q['time']), reverse=True)
+    print("\n  SLOWEST queries by execution time (the real cost):")
+    for q in ranked[:6]:
+        print(f"    {float(q['time'])*1000:7.1f} ms  {q['sql'][:95]}")
+
+    # Also show the time grouped by query shape (count x cumulative time).
+    from collections import defaultdict as _dd
+    shape_time = _dd(lambda: [0, 0.0])
+    for q in connection.queries:
+        k = q['sql'][:70]
+        shape_time[k][0] += 1
+        shape_time[k][1] += float(q['time']) * 1000
+    print("\n  Cumulative time by query shape (count x total ms):")
+    for k, (c, t) in sorted(shape_time.items(), key=lambda kv: kv[1][1], reverse=True)[:8]:
+        print(f"    x{c:>4}  {t:8.1f} ms total  {k}")
+except Exception as e:
+    import traceback
+    print(f"  ERROR measuring queries: {e}")
+    traceback.print_exc()
+finally:
+    settings.DEBUG = _old_debug
+    reset_queries()
+
+# ---------------------------------------------------------------------------
+# 3. REDIS HEALTH + CACHALOT FOOTPRINT
+# ---------------------------------------------------------------------------
+print("\n[3] REDIS HEALTH")
+try:
+    from django_redis import get_redis_connection
+    r = get_redis_connection("default")
+
+    info_mem = r.info("memory")
+    info_stats = r.info("stats")
+    used = info_mem.get("used_memory_human")
+    maxmem = info_mem.get("maxmemory_human")
+    policy = info_mem.get("maxmemory_policy")
+    evicted = info_stats.get("evicted_keys")
+    hits = info_stats.get("keyspace_hits", 0)
+    misses = info_stats.get("keyspace_misses", 0)
+    dbsize = r.dbsize()
+
+    print(f"  used_memory ..................... {used}")
+    print(f"  maxmemory ....................... {maxmem}  (0 = unlimited)")
+    print(f"  maxmemory_policy ................ {policy}")
+    print(f"  evicted_keys .................... {evicted:,}")
+    total_lookups = hits + misses
+    hit_rate = (hits / total_lookups * 100) if total_lookups else 0
+    print(f"  keyspace_hits ................... {hits:,}")
+    print(f"  keyspace_misses ................. {misses:,}")
+    print(f"  hit_rate ........................ {hit_rate:.1f}%")
+    print(f"  DBSIZE (total keys) ............. {dbsize:,}")
+
+    if evicted and int(evicted) > 0:
+        print("  >>> EVICTIONS PRESENT: Redis is full and dropping keys.")
+        print("      This makes the 'cache' cold — every approval read recomputes.")
+
+    # Cachalot vs manual-cache key breakdown (SCAN, non-blocking-ish, capped)
+    prefix = settings.CACHES["default"].get("KEY_PREFIX", "")
+    patterns = {
+        "cachalot": f"*cachalot*",
+        "signables (manual)": f"*signables*",
+        "count (manual)": f"*count*",
+        "sessions": f"*session*",
+    }
+    print("\n  Key population by category (SCAN sample, capped 50k each):")
+    for label, pat in patterns.items():
+        full = f"{prefix}:{pat}" if prefix else pat
+        count = 0
+        for _ in r.scan_iter(match=full, count=1000):
+            count += 1
+            if count >= 50000:
+                break
+        suffix = "+" if count >= 50000 else ""
+        print(f"    {label:<22} {count:,}{suffix}")
+except Exception as e:
+    import traceback
+    print(f"  ERROR reading Redis: {e}")
+    traceback.print_exc()
+
+print("\n" + "=" * 70)
+print("END OF DIAGNOSTIC")
+print("=" * 70 + "\n")
