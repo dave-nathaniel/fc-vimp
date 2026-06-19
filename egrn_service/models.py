@@ -102,6 +102,9 @@ class PurchaseOrder(models.Model):
 	total_net_amount = models.DecimalField(max_digits=15, decimal_places=3, blank=False, null=False)
 	date = models.DateField()
 	metadata = models.JSONField(default=dict)
+	# Raw ByD line items that could not be created (e.g. unresolved store). Each
+	# entry retains the original ByD payload so the item can be retried later.
+	failed_line_items = models.JSONField(default=list, blank=True)
 	
 	delivery_status_code = [('1', 'Not Delivered'), ('2', 'Partially Delivered'), ('3', 'Completely Delivered')]
 	
@@ -137,34 +140,107 @@ class PurchaseOrder(models.Model):
 		self.date = to_python_time(po["LastChangeDateTime"])
 		po_items = po.pop("Item")
 		self.metadata = po
+		self.failed_line_items = []
 		self.save()
 		
+		if not po_items:
+			self.delete()
+			raise Exception("No line items were found for purchase order.")
+		
 		created = 0
-		try:
-			for line_item in po_items:
-				self.__create_line_items__(line_item)
+		for line_item in po_items:
+			success, error = self.__create_line_items__(line_item)
+			if success:
 				created += 1
-		except Exception as e:
-			self.delete()
-			raise Exception(f"Error creating line items for purchase order: {e}")
-		if created == 0:
-			self.delete()
-			raise Exception("No line items were created for purchase order.")
+			else:
+				# Keep the raw payload so the item can be retried later instead of
+				# silently dropping it.
+				self.__record_failed_line_item__(line_item, error)
+				logging.warning(
+					f"PO {self.po_id}: could not create line item "
+					f"{line_item.get('ObjectID')} - {error}"
+				)
+		
+		self.save(update_fields=['failed_line_items'])
 		return self
 	
 	def __create_line_items__(self, line_item):
-		po_line_item = PurchaseOrderLineItem()
+		'''
+			Attempts to create a single line item from its raw ByD payload.
+			Returns a (success, error) tuple: (True, None) on success or
+			(False, <reason>) when the item could not be created.
+		'''
+		try:
+			po_line_item = PurchaseOrderLineItem()
+			
+			po_line_item.purchase_order = self
+			po_line_item.object_id = line_item["ObjectID"]
+			po_line_item.product_name = line_item["Description"]
+			po_line_item.product_id = line_item["ProductID"]
+			po_line_item.quantity = float(line_item["Quantity"])
+			po_line_item.unit_price = line_item["ListUnitPriceAmount"]
+			po_line_item.unit_of_measurement = line_item["QuantityUnitCodeText"]
+			po_line_item.metadata = line_item
+			
+			# `save` returns False (without persisting) when the delivery store
+			# cannot be resolved.
+			if po_line_item.save() is False:
+				location_id = (line_item.get("ItemShipToLocation") or {}).get("LocationID")
+				return False, f"Delivery store not found for cost center '{location_id}'."
+			return True, None
+		except Exception as e:
+			return False, str(e)
+	
+	def __build_failed_entry__(self, line_item, error):
+		return {
+			"object_id": line_item.get("ObjectID"),
+			"product_id": line_item.get("ProductID"),
+			"product_name": line_item.get("Description"),
+			"error": str(error),
+			"last_attempt": timezone.now().isoformat(),
+			"data": line_item,
+		}
+	
+	def __record_failed_line_item__(self, line_item, error):
+		'''
+			Records (or refreshes) a failed line item entry, keyed by ByD ObjectID.
+		'''
+		object_id = line_item.get("ObjectID")
+		self.failed_line_items = [
+			entry for entry in (self.failed_line_items or [])
+			if entry.get("object_id") != object_id
+		]
+		self.failed_line_items.append(self.__build_failed_entry__(line_item, error))
+	
+	def retry_failed_line_items(self):
+		'''
+			Re-attempts creation of any previously failed line items. Items that
+			succeed are removed from `failed_line_items`; those that still fail are
+			kept with an updated error and timestamp. Returns a summary dict.
+		'''
+		pending = self.failed_line_items or []
+		if not pending:
+			return {"recovered": 0, "remaining": 0}
 		
-		po_line_item.purchase_order = self
-		po_line_item.object_id = line_item["ObjectID"]
-		po_line_item.product_name = line_item["Description"]
-		po_line_item.product_id = line_item["ProductID"]
-		po_line_item.quantity = float(line_item["Quantity"])
-		po_line_item.unit_price = line_item["ListUnitPriceAmount"]
-		po_line_item.unit_of_measurement = line_item["QuantityUnitCodeText"]
-		po_line_item.metadata = line_item
+		existing_object_ids = set(self.line_items.values_list('object_id', flat=True))
+		still_failed = []
+		recovered = 0
+		for entry in pending:
+			line_item = entry.get("data") or {}
+			object_id = line_item.get("ObjectID") or entry.get("object_id")
+			# Already created in a previous attempt; just drop the stale record.
+			if object_id in existing_object_ids:
+				recovered += 1
+				continue
+			success, error = self.__create_line_items__(line_item)
+			if success:
+				recovered += 1
+			else:
+				still_failed.append(self.__build_failed_entry__(line_item, error))
 		
-		po_line_item.save()
+		self.failed_line_items = still_failed
+		self.save(update_fields=['failed_line_items'])
+		return {"recovered": recovered, "remaining": len(still_failed)}
 	
 	def __str__(self):
 		return f"PO-{self.po_id}"
@@ -332,6 +408,11 @@ class GoodsReceivedNote(models.Model):
 			self.purchase_order = new_po.create_purchase_order(po_data)
 		except Exception as e:
 			raise e
+		
+		# Recreate any line items that previously failed so the GRN can be matched
+		# against them (e.g. a delivery store that now exists).
+		if self.purchase_order.failed_line_items:
+			self.purchase_order.retry_failed_line_items()
 		
 		# Create the GRN Number by appending a number to the end of the PO ID
 		self.grn_number = int(str(po_id) + '1')
