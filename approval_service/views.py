@@ -537,35 +537,96 @@ def get_signable_summary_view(request, target_class):
 	# Get content type for signatures
 	content_type = ContentType.objects.get_for_model(signable_class)
 
-	# Base queryset carrying all signables relevant to the user's roles
-	summary_queryset = make_base_signable_queryset(signable_class, content_type, relevant_permissions)
+	# Counters are computed cheaply, NOT via .aggregate(Count x5) over the heavy queryset
+	# (which wrapped the Sum-annotated + DISTINCT + 6-way-joined queryset PLUS a per-row
+	# correlated Subquery in COUNT(*), unbounded: measured at ~71 SECONDS).
+	light = make_filtered_signable_queryset(signable_class, relevant_permissions)
 
-	# Annotate whether the latest signature on each signable was accepted or rejected
-	latest_sig_sub = Signature.objects.filter(
+	# total/pending/completed: scalar counts and an Exists() that short-circuits.
+	total_count = light.count()
+	pending_count = light.filter(current_pending_signatory__in=relevant_permissions).count()
+	completed_count = light.filter(
+		Exists(Signature.objects.filter(
 			signable_type=content_type,
 			signable_id=OuterRef('pk'),
-			metadata__acting_as__in=relevant_permissions # Filter by the user's relevant permissions
-		).order_by('-date_signed').values('accepted')[:1]
-	summary_queryset = summary_queryset.annotate(
-		last_signature_accepted=Subquery(latest_sig_sub, output_field=BooleanField())
+			metadata__acting_as__in=relevant_permissions,
+		))
+	).count()
+
+	# rejected/accepted ("latest signature among the user's roles was rejected/accepted"):
+	# computing this as a per-invoice correlated ORDER BY subquery is pathological - the
+	# JSON metadata__acting_as lookup is unindexable and "latest" can't short-circuit, so
+	# it scans+sorts the whole Signature table PER invoice (~104s for the pair). Instead,
+	# scan the relevant signatures ONCE and reduce to latest-per-signable in Python.
+	signed_ids = set(
+		light.filter(
+			Exists(Signature.objects.filter(
+				signable_type=content_type,
+				signable_id=OuterRef('pk'),
+				metadata__acting_as__in=relevant_permissions,
+			))
+		).values_list('id', flat=True)
 	)
- 
-	# Single aggregate to fetch all required counters in one DB hit
-	counters = summary_queryset.aggregate(
-		total_count=Count('id'),
-		pending_count=Count('id', filter=Q(current_pending_signatory__in=relevant_permissions)),
-		completed_count=Count('id', filter=Q(user_has_signed=True)), # User role
-		rejected_count=Count('id', filter=Q(last_signature_accepted=False)),
-		accepted_count=Count('id', filter=Q(last_signature_accepted=True)),
+	latest_accepted_by_signable = {}
+	if signed_ids:
+		for signable_id, accepted in (
+			Signature.objects
+			.filter(signable_type=content_type, metadata__acting_as__in=relevant_permissions)
+			.order_by('signable_id', '-date_signed')
+			.values_list('signable_id', 'accepted')
+		):
+			# First row seen per signable_id is its latest signature (date_signed DESC).
+			if signable_id not in latest_accepted_by_signable:
+				latest_accepted_by_signable[signable_id] = accepted
+	# Restrict to signables that are role-relevant (mirrors the old queryset scope).
+	rejected_count = sum(
+		1 for sid, acc in latest_accepted_by_signable.items()
+		if sid in signed_ids and acc is False
+	)
+	accepted_count = sum(
+		1 for sid, acc in latest_accepted_by_signable.items()
+		if sid in signed_ids and acc is True
 	)
 
-	# Top-10 most recent pending signables (uses same base queryset, no extra annotations)
-	recent_pending_signables = (
-		summary_queryset
-		.filter(current_pending_signatory__in=relevant_permissions)
-		.order_by('-date_created')[:10]
+	counters = {
+		'total_count': total_count,
+		'pending_count': pending_count,
+		'completed_count': completed_count,
+		'rejected_count': rejected_count,
+		'accepted_count': accepted_count,
+	}
+
+	# Top-10 most recent pending signables: page the IDs cheaply on the light queryset,
+	# then hydrate only those rows (annotations/prefetch) - same pattern as the list view,
+	# keeping the serializer's N+1 fixes via the context maps.
+	order_by = '-date_created'
+	recent_ids = list(
+		light.filter(current_pending_signatory__in=relevant_permissions)
+		.order_by(order_by)
+		.values_list('id', flat=True)[:10]
 	)
-	serialized_recent_pending_signables = signable_serializer(recent_pending_signables, many=True).data
+	recent_pending_signables = hydrate_signables_by_ids(
+		signable_class, content_type, relevant_permissions, recent_ids, order_by
+	)
+
+	# Prefetch signatures + product config map for the top-10, so get_workflow and
+	# extra_fields resolve from cache instead of per-row queries.
+	signatures_by_id = defaultdict(list)
+	if recent_ids:
+		for sig in Signature.objects.select_related('signer', 'predecessor').filter(
+			signable_type=content_type, signable_id__in=recent_ids,
+		).order_by('-date_signed'):
+			signatures_by_id[sig.signable_id].append(sig)
+	product_config_map = build_product_config_map(recent_pending_signables)
+
+	serialized_recent_pending_signables = signable_serializer(
+		recent_pending_signables,
+		many=True,
+		context={
+			'signatures_by_id': dict(signatures_by_id),
+			'product_config_map': product_config_map,
+		},
+	).data
 
 	return APIResponse(
 		"Data retrieved.",

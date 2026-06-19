@@ -260,15 +260,24 @@ try:
     def db_ms():
         return sum(float(q['time']) for q in connection.queries) * 1000
 
-    # --- (a) CURRENT aggregate: heavy queryset + last_signature_accepted subquery,
-    #     unbounded, wrapped in Count x5. This is the suspected ~60s operation. ---
-    reset_queries()
-    ta = time.time()
-    heavy = make_base_signable_queryset(Invoice, content_type, relevant_permissions)
     latest_sig_sub = Signature.objects.filter(
         signable_type=content_type, signable_id=OuterRef('pk'),
         metadata__acting_as__in=relevant_permissions,
     ).order_by('-date_signed').values('accepted')[:1]
+
+    # --- FREEZE the invoice id set ONCE so the old/new comparison is race-free.
+    #     (Earlier runs drifted by +1 because new invoices were created on the live
+    #     DB during the ~3 minutes the slow queries took.) ---
+    frozen_ids = list(
+        make_filtered_signable_queryset(Invoice, relevant_permissions).values_list('id', flat=True)
+    )
+    frozen_set = set(frozen_ids)
+    print(f"  Frozen invoice id set: {len(frozen_ids)} ids (comparison scoped to these)")
+
+    # --- (a) OLD aggregate, scoped to frozen ids. The ~71s cost. ---
+    reset_queries()
+    ta = time.time()
+    heavy = make_base_signable_queryset(Invoice, content_type, relevant_permissions).filter(id__in=frozen_ids)
     heavy = heavy.annotate(last_signature_accepted=Subquery(latest_sig_sub, output_field=BooleanField()))
     old_counters = heavy.aggregate(
         total_count=Count('id'),
@@ -278,50 +287,71 @@ try:
         accepted_count=Count('id', filter=Q(last_signature_accepted=True)),
     )
     agg_wall = (time.time() - ta) * 1000
-    agg_db = db_ms()
-    print(f"  (a) CURRENT aggregate(Count x5):  {agg_wall:8.0f} ms wall | {agg_db:8.0f} ms db | {len(connection.queries)} q")
+    print(f"  (a) OLD aggregate(Count x5):      {agg_wall:8.0f} ms wall | {db_ms():8.0f} ms db | {len(connection.queries)} q")
     print(f"      counters = {old_counters}")
 
-    # --- (b) CURRENT top-10 pending serialization (heavy queryset, no LIMIT push) ---
-    reset_queries()
-    tb = time.time()
-    recent = list(heavy.filter(current_pending_signatory__in=relevant_permissions).order_by('-date_created')[:10])
-    _ = InvoiceSerializer(recent, many=True).data
-    top10_wall = (time.time() - tb) * 1000
-    top10_db = db_ms()
-    print(f"  (b) CURRENT top-10 serialize:     {top10_wall:8.0f} ms wall | {top10_db:8.0f} ms db | {len(connection.queries)} q")
-
-    print(f"\n  SUMMARY VIEW server-side total (a+b): {agg_wall + top10_wall:.0f} ms")
-    print("  (Browser showed ~1.1 min; if this is far less, the rest is auth/preflight.)")
-
-    # --- PROPOSED cheap rewrite: counters as independent light counts ---
+    # --- (NEW) Rewritten counter logic (Signature-side reduction), scoped to frozen ids ---
     reset_queries()
     tc = time.time()
-    light = make_filtered_signable_queryset(Invoice, relevant_permissions)
-    new_total = light.count()
-    new_pending = light.filter(current_pending_signatory__in=relevant_permissions).count()
+    light = make_filtered_signable_queryset(Invoice, relevant_permissions).filter(id__in=frozen_ids)
     sig_exists = Exists(Signature.objects.filter(
         signable_type=content_type, signable_id=OuterRef('pk'),
         metadata__acting_as__in=relevant_permissions))
-    new_completed = light.filter(sig_exists).count()
-    # rejected/accepted: latest signature among the user's roles was rejected/accepted
-    light_acc = light.annotate(last_signature_accepted=Subquery(latest_sig_sub, output_field=BooleanField()))
-    new_rejected = light_acc.filter(last_signature_accepted=False).count()
-    new_accepted = light_acc.filter(last_signature_accepted=True).count()
+    n_total = light.count()
+    n_pending = light.filter(current_pending_signatory__in=relevant_permissions).count()
+    signed_ids = set(light.filter(sig_exists).values_list('id', flat=True))
+    n_completed = len(signed_ids)
+    latest_acc = {}
+    for sid, accepted in (Signature.objects
+            .filter(signable_type=content_type, metadata__acting_as__in=relevant_permissions)
+            .order_by('signable_id', '-date_signed')
+            .values_list('signable_id', 'accepted')):
+        if sid not in latest_acc:
+            latest_acc[sid] = accepted
+    n_rejected = sum(1 for sid, a in latest_acc.items() if sid in signed_ids and a is False)
+    n_accepted = sum(1 for sid, a in latest_acc.items() if sid in signed_ids and a is True)
     new_wall = (time.time() - tc) * 1000
-    new_db = db_ms()
     new_counters = {
-        'total_count': new_total, 'pending_count': new_pending, 'completed_count': new_completed,
-        'rejected_count': new_rejected, 'accepted_count': new_accepted,
+        'total_count': n_total, 'pending_count': n_pending, 'completed_count': n_completed,
+        'rejected_count': n_rejected, 'accepted_count': n_accepted,
     }
-    print(f"\n  PROPOSED cheap counters:          {new_wall:8.0f} ms wall | {new_db:8.0f} ms db | {len(connection.queries)} q")
+    print(f"  (NEW) Signature-side counters:    {new_wall:8.0f} ms wall | {db_ms():8.0f} ms db | {len(connection.queries)} q")
     print(f"      counters = {new_counters}")
+
+    # --- (b) OLD top-10 serialization (heavy unbounded queryset) ---
+    reset_queries()
+    tb = time.time()
+    recent_old = list(make_base_signable_queryset(Invoice, content_type, relevant_permissions)
+                      .filter(current_pending_signatory__in=relevant_permissions).order_by('-date_created')[:10])
+    _ = InvoiceSerializer(recent_old, many=True).data
+    top10_old_wall = (time.time() - tb) * 1000
+    print(f"  (b) OLD top-10 serialize:         {top10_old_wall:8.0f} ms wall | {db_ms():8.0f} ms db | {len(connection.queries)} q")
+
+    # --- (NEW) top-10 via light->hydrate + context maps ---
+    reset_queries()
+    td = time.time()
+    rids = list(light.filter(current_pending_signatory__in=relevant_permissions)
+                .order_by('-date_created').values_list('id', flat=True)[:10])
+    rhyd = hydrate_signables_by_ids(Invoice, content_type, relevant_permissions, rids, '-date_created')
+    sby = defaultdict(list)
+    if rids:
+        for s in Signature.objects.select_related('signer', 'predecessor').filter(
+                signable_type=content_type, signable_id__in=rids).order_by('-date_signed'):
+            sby[s.signable_id].append(s)
+    _ = InvoiceSerializer(rhyd, many=True, context={
+        'signatures_by_id': dict(sby), 'product_config_map': build_product_config_map(rhyd)}).data
+    top10_new_wall = (time.time() - td) * 1000
+    print(f"  (NEW) top-10 light->hydrate:      {top10_new_wall:8.0f} ms wall | {db_ms():8.0f} ms db | {len(connection.queries)} q")
+
+    print(f"\n  OLD summary server-side total:    {agg_wall + top10_old_wall:8.0f} ms")
+    print(f"  NEW summary server-side total:    {new_wall + top10_new_wall:8.0f} ms")
+
     match = all(old_counters[k] == new_counters[k] for k in old_counters)
-    print("\n  COUNTER EQUIVALENCE (old aggregate vs proposed):")
+    print("\n  COUNTER EQUIVALENCE (frozen ids, old aggregate vs new reduction):")
     for k in old_counters:
         ok = old_counters[k] == new_counters[k]
         print(f"    {k:16} old={old_counters[k]:>6}  new={new_counters[k]:>6}  {'OK' if ok else '*** MISMATCH ***'}")
-    print(f"  => {'ALL MATCH — rewrite is safe' if match else 'MISMATCH — do NOT ship rewrite as-is'}")
+    print(f"  => {'ALL MATCH — rewrite is correct' if match else 'MISMATCH — do NOT ship rewrite as-is'}")
 except Exception as e:
     import traceback
     print(f"  ERROR in summary decomposition: {e}")
