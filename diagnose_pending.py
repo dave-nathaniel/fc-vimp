@@ -76,7 +76,9 @@ print("    (DEBUG must capture queries; we force it on for this block)")
 _old_debug = settings.DEBUG
 settings.DEBUG = True
 try:
-    from approval_service.views import make_base_signable_queryset, build_product_config_map
+    from approval_service.views import (
+        make_filtered_signable_queryset, hydrate_signables_by_ids, build_product_config_map,
+    )
     from approval_service.utils import ApprovalUtilities
     from invoice_service.models import Invoice, WORKFLOW_RULES
     from invoice_service.serializers import InvoiceSerializer
@@ -87,18 +89,45 @@ try:
     relevant_permissions = sorted({r for v in WORKFLOW_RULES.values() for r in v["roles"]})
     content_type = ContentType.objects.get_for_model(Invoice)
 
+    # --- COUNT EQUIVALENCE: the fix changed which queryset .count() runs on
+    #     (heavy aggregate+distinct -> light filter-only). Prove they're equal. ---
+    from approval_service.views import make_base_signable_queryset
+    from django.db.models import Exists as _Exists, OuterRef as _OuterRef
+    heavy_pending = make_base_signable_queryset(
+        Invoice, content_type, relevant_permissions
+    ).filter(current_pending_signatory__in=relevant_permissions).count()
+    light_pending = make_filtered_signable_queryset(
+        Invoice, relevant_permissions
+    ).filter(current_pending_signatory__in=relevant_permissions).count()
+    # completed branch: old user_has_signed=True annotation vs new Exists filter
+    heavy_completed = make_base_signable_queryset(
+        Invoice, content_type, relevant_permissions
+    ).filter(user_has_signed=True).count()
+    light_completed = make_filtered_signable_queryset(
+        Invoice, relevant_permissions
+    ).filter(_Exists(Signature.objects.filter(
+        signable_type=content_type, signable_id=_OuterRef('pk'),
+        metadata__acting_as__in=relevant_permissions))).count()
+    print("  COUNT EQUIVALENCE (must match):")
+    print(f"    pending   heavy={heavy_pending}  light={light_pending}  "
+          f"{'OK' if heavy_pending == light_pending else '*** MISMATCH ***'}")
+    print(f"    completed heavy={heavy_completed}  light={light_completed}  "
+          f"{'OK' if heavy_completed == light_completed else '*** MISMATCH ***'}")
+    print("")
+
     def db_time_ms():
         # Sum of all captured query execution times (DEBUG must be on).
         return sum(float(q['time']) for q in connection.queries) * 1000
 
-    # --- PHASE A: build queryset + evaluate page (incl. prefetch + any
-    #     per-row work that fires during model __init__, e.g. set_identity) ---
+    # --- PHASE A: mirror the view's two-phase flow — light filter+paginate,
+    #     then hydrate only the page (annotations/Exists/prefetch on <=15 rows) ---
     reset_queries()
     tA = time.time()
-    qs = make_base_signable_queryset(Invoice, content_type, relevant_permissions)
-    qs = qs.filter(current_pending_signatory__in=relevant_permissions)
-    qs = qs.order_by("date_created")
-    page = list(qs[:15])                      # LIMIT 15 — forces evaluation
+    light = make_filtered_signable_queryset(Invoice, relevant_permissions)
+    light = light.filter(current_pending_signatory__in=relevant_permissions)
+    light = light.order_by("date_created")
+    page_ids = list(light.values_list("id", flat=True)[:15])   # cheap LIMIT 15
+    page = hydrate_signables_by_ids(Invoice, content_type, relevant_permissions, page_ids, "date_created")
     phaseA_wall = (time.time() - tA) * 1000
     phaseA_db = db_time_ms()
     phaseA_q = len(connection.queries)
@@ -150,9 +179,10 @@ try:
     # Re-evaluate everything once more under a single capture so we can rank
     # individual queries by DURATION (the metric that actually matters).
     reset_queries()
-    qs2 = make_base_signable_queryset(Invoice, content_type, relevant_permissions)
-    qs2 = qs2.filter(current_pending_signatory__in=relevant_permissions).order_by("date_created")
-    page2 = list(qs2[:15])
+    light2 = make_filtered_signable_queryset(Invoice, relevant_permissions)\
+        .filter(current_pending_signatory__in=relevant_permissions).order_by("date_created")
+    page2_ids = list(light2.values_list("id", flat=True)[:15])
+    page2 = hydrate_signables_by_ids(Invoice, content_type, relevant_permissions, page2_ids, "date_created")
     ids2 = [o.id for o in page2]
     if ids2:
         list(Signature.objects.select_related("signer", "predecessor").filter(

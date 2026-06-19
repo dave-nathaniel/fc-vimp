@@ -239,10 +239,10 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 		relevant_permissions = approval_utilities.get_relevant_permissions(request.user)
 		# Get content type for signatures
 		content_type = ContentType.objects.get_for_model(signable_class)
-		# Make the base signable queryset
-		signables_queryset = make_base_signable_queryset(signable_class, content_type, relevant_permissions)
-
-		# signables_queryset = signables_queryset
+		# Build a LIGHT queryset for filtering/pagination only (no Sum annotations,
+		# no Exists, no prefetch, no DISTINCT). The expensive annotations/joins are
+		# applied later, to only the paginated page, by hydrate_signables_by_ids.
+		signables_queryset = make_filtered_signable_queryset(signable_class, relevant_permissions)
 
 		# Apply status filters at database level
 		if status_filter == "pending":
@@ -252,11 +252,20 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 			)
 			# Status: pending
 		elif status_filter == "completed":
+			# "completed" == the user's role has already signed this signable. Express
+			# this directly as a filter (cheap) rather than via the user_has_signed
+			# annotation, which only exists on the heavy queryset.
 			signables_queryset = signables_queryset.filter(
-				user_has_signed=True
+				Exists(
+					Signature.objects.filter(
+						signable_type=content_type,
+						signable_id=OuterRef('pk'),
+						metadata__acting_as__in=relevant_permissions,
+					)
+				)
 			)
 			# Status: completed
-		
+
 		# Apply approval filter if provided
 		if verdict_filter:
 			verdict_bool = bool(int(verdict_filter))
@@ -267,8 +276,8 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 				id__in=signatures_queryset.values_list('signable_id', flat=True)
 			)
 			# Verdict filter applied
-		
-		# Order the queryset
+
+		# Order the (light) queryset
 		order_by = request.query_params.get('order_by', target.get("order_by"))
 		signables_queryset = signables_queryset.order_by(order_by)
 
@@ -276,12 +285,16 @@ def get_user_signable_view(request, target_class, status_filter="all"):
 		if page == '1' and page_size == '1':
 			paginated_data = {'count': signables_queryset.count(), 'next': None, 'previous': None, 'results': []}
 			return APIResponse("Data retrieved.", status=status.HTTP_200_OK, data=paginated_data)
-		
-		# Paginate efficiently - CustomPagination now automatically computes and caches the true count
+
+		# Paginate the LIGHT queryset (fast: LIMIT can short-circuit a single-table scan).
 		paginated = paginator.paginate_queryset(signables_queryset, request)
 
-		# Prefetch all signatures for the paginated objects in a single query to avoid N+1
+		# Hydrate ONLY the paginated rows with the heavy annotations + prefetch, then
+		# preserve page order. This is where the Sum/Exists/joins run - on <= page_size rows.
 		ids = [obj.id for obj in paginated]
+		paginated = hydrate_signables_by_ids(
+			signable_class, content_type, relevant_permissions, ids, order_by
+		)
 		signatures_by_id = defaultdict(list)
 		if ids:
 			signature_list = Signature.objects.select_related('signer', 'predecessor').filter(
@@ -1036,6 +1049,43 @@ def build_product_config_map(invoices: list) -> dict:
 		conversion = config.conversion
 		config_map[config.product_id] = conversion.conversion_field if conversion else []
 	return config_map
+
+
+def make_filtered_signable_queryset(signable_class: object, relevant_permissions: list) -> QuerySet:
+	"""
+	Light queryset for FILTERING and PAGINATION only: the signatory filter plus an
+	ordering, with NO Sum() annotations, NO Exists, NO prefetch and NO .distinct().
+
+	The heavy version (make_base_signable_queryset) wraps three SUM aggregates and a
+	dependent Exists subquery in a GROUP BY + DISTINCT over six joined tables; MySQL
+	then cannot apply the LIMIT until it has built and filesorted that entire grouped
+	result. Measured at ~4.9s for a 15-row page. This light query is a single-table
+	scan the LIMIT can short-circuit (~40ms). Pair it with hydrate_signables_by_ids:
+	paginate cheaply here, then hydrate only the page's rows there.
+	"""
+	q_objects = [Q(signatories__contains=perm) for perm in relevant_permissions]
+	query = reduce(operator.or_, q_objects)
+	return signable_class.objects.filter(query)
+
+
+def hydrate_signables_by_ids(signable_class: object, content_type: ContentType,
+							 relevant_permissions: list, ids: list, order_by: str) -> list:
+	"""
+	Load FULL signable objects (Sum annotations, user_has_signed Exists, and all the
+	serializer prefetches) for a specific, already-paginated set of ids. Because this
+	runs against <= page_size rows, the annotations/Exists/joins are cheap. Returns a
+	list ordered to match `order_by` (id__in does not preserve order).
+	"""
+	if not ids:
+		return []
+	queryset = make_base_signable_queryset(
+		signable_class, content_type, relevant_permissions
+	).filter(id__in=ids)
+	# Re-apply ordering: filter(id__in=...) does not guarantee row order, and the
+	# caller already determined the correct page order on the light queryset.
+	if order_by:
+		queryset = queryset.order_by(order_by)
+	return list(queryset)
 
 
 def make_base_signable_queryset(signable_class: object, content_type: ContentType, relevant_permissions: list) -> QuerySet:
