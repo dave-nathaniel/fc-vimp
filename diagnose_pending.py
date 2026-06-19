@@ -115,6 +115,32 @@ try:
           f"{'OK' if heavy_completed == light_completed else '*** MISMATCH ***'}")
     print("")
 
+    # --- TOTALS EQUIVALENCE: the hydrate path now computes gross/tax/net via a
+    #     separate aggregate instead of the old SUM() annotation. Prove per-id equal. ---
+    _probe_ids = list(
+        make_filtered_signable_queryset(Invoice, relevant_permissions)
+        .filter(current_pending_signatory__in=relevant_permissions)
+        .order_by("date_created").values_list("id", flat=True)[:15]
+    )
+    old_totals = {
+        o.id: (o.gross_total_annotated, o.total_tax_amount_annotated, o.net_total_annotated)
+        for o in make_base_signable_queryset(Invoice, content_type, relevant_permissions)
+                    .filter(id__in=_probe_ids)
+    }
+    new_objs = hydrate_signables_by_ids(Invoice, content_type, relevant_permissions, _probe_ids, "date_created")
+    new_totals = {
+        o.id: (o.gross_total_annotated, o.total_tax_amount_annotated, o.net_total_annotated)
+        for o in new_objs
+    }
+    mismatches = [i for i in _probe_ids if old_totals.get(i) != new_totals.get(i)]
+    print("  TOTALS EQUIVALENCE (old annotation vs new hydrate, per id):")
+    print(f"    {len(_probe_ids)} invoices checked  "
+          f"{'OK — all match' if not mismatches else f'*** {len(mismatches)} MISMATCH: {mismatches[:5]} ***'}")
+    if mismatches:
+        for i in mismatches[:3]:
+            print(f"      id={i}  old={old_totals.get(i)}  new={new_totals.get(i)}")
+    print("")
+
     def db_time_ms():
         # Sum of all captured query execution times (DEBUG must be on).
         return sum(float(q['time']) for q in connection.queries) * 1000

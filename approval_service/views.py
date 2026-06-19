@@ -1018,6 +1018,32 @@ def make_base_signable_queryset_key(signable_class: object, relevant_permissions
 	)
 
 
+# Prefetch paths required by InvoiceSerializer / the brief GRN+PO serializers so
+# every nested field resolves from cache instead of a per-row query. Shared by the
+# hydrate path and the (summary-view) combined queryset to avoid drift.
+_SIGNABLE_PREFETCH_PATHS = (
+	'invoice_line_items',
+	'invoice_line_items__po_line_item',
+	# PO line item -> its GRN receipts, so the serializer's delivered_quantity
+	# field resolves from cache instead of a per-item Sum aggregate.
+	'invoice_line_items__po_line_item__grn_line_item',
+	'invoice_line_items__grn_line_item',
+	# GRN line item -> its invoice receipts, so invoiced_quantity / is_invoiced
+	# on the brief serializer resolve from cache instead of a per-item aggregate.
+	'invoice_line_items__grn_line_item__invoice_items',
+	'grn__purchase_order__line_items',
+	'grn__purchase_order__line_items__delivery_store',
+	'grn__purchase_order__line_items__grn_line_item',
+	# Prefetch GRN line items and their delivery stores to support GRN.stores property
+	'grn__line_items',
+	'grn__line_items__purchase_order_line_item__delivery_store',
+	# Same as above, for PO line items reached via the GRN line item path
+	# (GoodsReceivedLineItemBriefSerializer.get_purchase_order_line_item).
+	'grn__line_items__purchase_order_line_item__grn_line_item',
+	'grn__line_items__invoice_items',
+)
+
+
 def build_product_config_map(invoices: list) -> dict:
 	"""
 	Build a {product_id: conversion_field} lookup for every product referenced by
@@ -1071,21 +1097,56 @@ def make_filtered_signable_queryset(signable_class: object, relevant_permissions
 def hydrate_signables_by_ids(signable_class: object, content_type: ContentType,
 							 relevant_permissions: list, ids: list, order_by: str) -> list:
 	"""
-	Load FULL signable objects (Sum annotations, user_has_signed Exists, and all the
-	serializer prefetches) for a specific, already-paginated set of ids. Because this
-	runs against <= page_size rows, the annotations/Exists/joins are cheap. Returns a
-	list ordered to match `order_by` (id__in does not preserve order).
+	Load FULL signable objects (serializer prefetches + user_has_signed Exists +
+	gross/tax/net totals) for a specific, already-paginated set of ids. Totals are
+	computed via a separate single-table aggregate and attached as *_annotated attrs,
+	rather than annotated onto the row query (which would force the GROUP BY + DISTINCT
+	+ filesort that made this slow). Returns a list ordered to match `order_by`
+	(filter(id__in=...) does not preserve order).
 	"""
 	if not ids:
 		return []
-	queryset = make_base_signable_queryset(
-		signable_class, content_type, relevant_permissions
+	# Lean hydrate query: select_related + prefetch only. NO Sum() annotations (they
+	# force a LEFT JOIN invoice_line_items + GROUP BY across six tables, hence DISTINCT
+	# + a temporary table + filesort; ~214ms even for 15 ids), NO .distinct() (rows are
+	# fetched by unique primary key), and NO user_has_signed Exists (the list serializer
+	# derives workflow state from the prefetched signatures map, and the "completed"
+	# filter runs on the light queryset; nothing here reads the annotation). Totals are
+	# computed in one cheap separate aggregate below.
+	queryset = signable_class.objects.select_related(
+		'purchase_order',
+		'purchase_order__vendor',
+		'grn',
+		'grn__purchase_order',
+		'grn__purchase_order__vendor',
+	).prefetch_related(
+		*_SIGNABLE_PREFETCH_PATHS
 	).filter(id__in=ids)
 	# Re-apply ordering: filter(id__in=...) does not guarantee row order, and the
 	# caller already determined the correct page order on the light queryset.
 	if order_by:
 		queryset = queryset.order_by(order_by)
-	return list(queryset)
+
+	objects = list(queryset)
+
+	# Compute gross/tax/net totals for just these invoices in a single grouped
+	# aggregate (single-table, indexed FK) and attach them under the same attribute
+	# names the serializer and set_identity expect (gross_total_annotated, etc.).
+	totals_by_id = {
+		row['invoice']: row
+		for row in InvoiceLineItem.objects.filter(invoice_id__in=ids).values('invoice').annotate(
+			gross_total_annotated=Sum('gross_total'),
+			total_tax_amount_annotated=Sum('tax_amount'),
+			net_total_annotated=Sum('net_total'),
+		)
+	}
+	for obj in objects:
+		totals = totals_by_id.get(obj.id)
+		obj.gross_total_annotated = totals['gross_total_annotated'] if totals else None
+		obj.total_tax_amount_annotated = totals['total_tax_amount_annotated'] if totals else None
+		obj.net_total_annotated = totals['net_total_annotated'] if totals else None
+
+	return objects
 
 
 def make_base_signable_queryset(signable_class: object, content_type: ContentType, relevant_permissions: list) -> QuerySet:
@@ -1098,25 +1159,7 @@ def make_base_signable_queryset(signable_class: object, content_type: ContentTyp
 			'grn__purchase_order',
 			'grn__purchase_order__vendor',
 		).prefetch_related(
-			'invoice_line_items',
-			'invoice_line_items__po_line_item',
-			# PO line item -> its GRN receipts, so the serializer's delivered_quantity
-			# field resolves from cache instead of a per-item Sum aggregate.
-			'invoice_line_items__po_line_item__grn_line_item',
-			'invoice_line_items__grn_line_item',
-			# GRN line item -> its invoice receipts, so invoiced_quantity / is_invoiced
-			# on the brief serializer resolve from cache instead of a per-item aggregate.
-			'invoice_line_items__grn_line_item__invoice_items',
-			'grn__purchase_order__line_items',
-			'grn__purchase_order__line_items__delivery_store',
-			'grn__purchase_order__line_items__grn_line_item',
-			# Prefetch GRN line items and their delivery stores to support GRN.stores property
-			'grn__line_items',
-			'grn__line_items__purchase_order_line_item__delivery_store',
-			# Same as above, for PO line items reached via the GRN line item path
-			# (GoodsReceivedLineItemBriefSerializer.get_purchase_order_line_item).
-			'grn__line_items__purchase_order_line_item__grn_line_item',
-			'grn__line_items__invoice_items',
+			*_SIGNABLE_PREFETCH_PATHS
 		).distinct().filter(
 			# signatories__contains=relevant_permissions
 			query
