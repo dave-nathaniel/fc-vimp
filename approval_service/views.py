@@ -656,20 +656,62 @@ def search_signables_view(request, target_class):
 	if not target:
 		return APIResponse(f"No signable object of type {target_class}.", status=status.HTTP_400_BAD_REQUEST)
 
+	signable_class = target.get("class")
 	signable_serializer = target.get("serializer")
+
+	# Build a LIGHT filtered queryset (filters + ordering only, no Sum annotations, no
+	# correlated subqueries, no prefetch). The status=approved/declined branches that
+	# previously ran a per-row correlated ORDER BY subquery (the 71s pattern) are now
+	# resolved to an id__in set inside the helper.
 	qs, content_type, relevant_permissions = _build_search_signables_queryset(request, target)
 
-	# Efficient select/prefetch based on existing logic
-	qs = qs.select_related('purchase_order','purchase_order__vendor','grn','grn__purchase_order','grn__purchase_order__vendor')\
-		.prefetch_related('invoice_line_items','invoice_line_items__po_line_item','invoice_line_items__grn_line_item','grn__line_items','grn__line_items__purchase_order_line_item__delivery_store','grn__line_items__invoice_items')
-
-	# Pagination
-	page = int(request.query_params.get('page',1))
-	size = int(request.query_params.get('size',15))
-	start = (page-1)*size
-	end = start+size
+	# Pagination: count + a single cheap page-of-ids slice on the light queryset (the
+	# LIMIT short-circuits a single-table scan), then hydrate ONLY that page's rows.
+	page = int(request.query_params.get('page', 1))
+	size = int(request.query_params.get('size', 15))
+	start = (page - 1) * size
+	end = start + size
 	total_count = qs.count()
-	data = signable_serializer(qs[start:end], many=True).data
+
+	order_by = request.query_params.get('order_by', '-date_created')
+	# page_ids is ALREADY in the authoritative paginated order (it came off the ordered,
+	# sliced light queryset, including its compound -id tiebreak). hydrate's filter(id__in)
+	# does not preserve order, so re-sort the hydrated objects to match page_ids positionally
+	# rather than trusting a single-column re-order to reproduce the compound tiebreak.
+	#
+	# List full page rows then read ids in Python — do NOT .values_list('id') here: the q
+	# free-text path applies .distinct(), and `SELECT DISTINCT id ... ORDER BY date_created`
+	# raises MySQL 3065 (ORDER BY column not in SELECT list) under ONLY_FULL_GROUP_BY.
+	# `SELECT DISTINCT * ... ORDER BY date_created` keeps the order column in the projection.
+	# This mirrors get_user_signable_view and is only `size` rows.
+	page_objs = list(qs[start:end])
+	page_ids = [obj.id for obj in page_objs]
+	paginated = hydrate_signables_by_ids(
+		signable_class, content_type, relevant_permissions, page_ids, order_by
+	)
+	position = {sid: i for i, sid in enumerate(page_ids)}
+	paginated.sort(key=lambda obj: position.get(obj.id, len(page_ids)))
+
+	# Bulk-load the page's signatures and product config so the serializer resolves
+	# workflow state / extra_fields from context instead of per-row model-property queries.
+	signatures_by_id = defaultdict(list)
+	if page_ids:
+		signature_list = Signature.objects.select_related('signer', 'predecessor').filter(
+			signable_type=content_type,
+			signable_id__in=page_ids,
+		).order_by('-date_signed')
+		for sig in signature_list:
+			signatures_by_id[sig.signable_id].append(sig)
+	product_config_map = build_product_config_map(paginated)
+
+	data = signable_serializer(
+		paginated,
+		many=True,
+		context={
+			'signatures_by_id': dict(signatures_by_id),
+			'product_config_map': product_config_map,
+		},
+	).data
 	return APIResponse(
 		"Search results.",
 		status=status.HTTP_200_OK,
@@ -724,35 +766,43 @@ def _build_search_signables_queryset(request: Request, target: dict):
 	if status_str == "pending":
 		queryset = queryset.filter(current_pending_signatory__in=relevant_permissions)
 	elif status_str == "completed":
-		queryset = queryset.annotate(
-			user_has_signed=Exists(
+		# "completed" == the user's role has signed. Direct Exists filter (short-circuits)
+		# rather than an annotation, so it composes with the light queryset.
+		queryset = queryset.filter(
+			Exists(
 				Signature.objects.filter(
 					signable_type=content_type,
 					signable_id=OuterRef('pk'),
 					metadata__acting_as__in=relevant_permissions
 				)
 			)
-		).filter(user_has_signed=True)
-	elif status_str == "approved":
-		queryset = queryset.annotate(
-			last_signature_accepted=Subquery(
-				Signature.objects.filter(
-					signable_type=content_type,
-					signable_id=OuterRef('pk')
-				).order_by('-date_signed').values('accepted')[:1],
-				output_field=BooleanField(),
-			)
-		).filter(last_signature_accepted=True)
-	elif status_str == "declined":
-		queryset = queryset.annotate(
-			last_signature_accepted=Subquery(
-				Signature.objects.filter(
-					signable_type=content_type,
-					signable_id=OuterRef('pk')
-				).order_by('-date_signed').values('accepted')[:1],
-				output_field=BooleanField(),
-			)
-		).filter(last_signature_accepted=False)
+		)
+	elif status_str in ("approved", "declined"):
+		# approved == "the latest signature on this invoice, BY ANYONE, was accepted=True";
+		# declined == latest was accepted=False. (NB: this is role-UNSCOPED, unlike the
+		# summary view's accepted/rejected counters — there is no metadata__acting_as here,
+		# matching the original correlated subquery's semantics exactly.)
+		#
+		# The original used a per-row correlated ORDER BY subquery over Signatures, which
+		# MySQL re-ran for every candidate invoice on the unindexable JSON-filtered set —
+		# the same pattern that cost 71s in the summary view. Instead, scan the relevant
+		# signatures ONCE (ordered signable_id, -date_signed so the first row per id is the
+		# latest) and reduce the latest verdict per invoice in Python, then filter id__in.
+		latest_accepted = {}
+		for sid, accepted in (
+			Signature.objects
+			.filter(signable_type=content_type)
+			.order_by('signable_id', '-date_signed')
+			.values_list('signable_id', 'accepted')
+		):
+			latest_accepted.setdefault(sid, accepted)
+		# `is True`/`is False` matches the SQL `=True`/`=False`, which excludes NULL
+		# (a signature recorded with no verdict yet); a plain truthiness check would not.
+		if status_str == "approved":
+			verdict_ids = [sid for sid, acc in latest_accepted.items() if acc is True]
+		else:
+			verdict_ids = [sid for sid, acc in latest_accepted.items() if acc is False]
+		queryset = queryset.filter(id__in=verdict_ids)
 
 	order_by = request.query_params.get('order_by', '-date_created')
 	secondary_order = '-id' if order_by.startswith('-') else 'id'
