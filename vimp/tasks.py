@@ -394,6 +394,13 @@ def create_inbound_delivery_notification_on_byd(grn: GoodsReceivedNote):
 			)
 		return False
 
+def _get_invoice_description(invoice: Invoice) -> str:
+	first_signature = invoice.get_signatures().last()
+	if first_signature and first_signature.comment:
+		return first_signature.comment[:40]
+	return f"{invoice.purchase_order.vendor.user.first_name.title()} for {invoice.purchase_order}"[:40]
+
+
 def create_invoice_on_byd(invoice: Invoice):
 	# Allow being called with either an Invoice instance (initial dispatch) or its id (scheduled retry).
 	if isinstance(invoice, int):
@@ -406,7 +413,7 @@ def create_invoice_on_byd(invoice: Invoice):
 		"TypeCode": "004",
 		"DataOriginTypeCode": "1",
 		"ItemsGrossAmountIndicator": True,
-		"InvoiceDescription": invoice.description if invoice.description else f"{invoice.purchase_order.vendor.user.first_name.title()} for {invoice.purchase_order}"[:40],
+		"InvoiceDescription": _get_invoice_description(invoice),
 		"InvoiceDate": byd_util.format_datetime_to_iso8601(invoice.date_created),
 		"ExternalReference": {
 			"BusinessTransactionDocumentRelationshipRoleCode": "7",

@@ -178,10 +178,17 @@ def sign_signable_view(request, target_class, object_id):
 			status=status.HTTP_404_NOT_FOUND
 		)
 	
+	comment = (request.data.get('comment') or '').strip()
+	if not comment:
+		return APIResponse(
+			"A comment is required when signing.",
+			status=status.HTTP_400_BAD_REQUEST
+		)
+
 	try:
 		# Sign the object
 		signable.sign(request)
-		
+
 		# Invalidate related caches
 		invalidate_user_cache(request.user.id, "signables")
 		CacheManager.invalidate_pattern(f"*{target_class}*")
