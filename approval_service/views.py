@@ -135,15 +135,84 @@ class KeystoreAPIView(APIView):
 		return APIResponse("Keystore created.", status=status.HTTP_201_CREATED)
 
 
+# @api_view(['POST'])
+# @permission_classes([IsAuthenticated])
+# @authentication_classes([AdfsAccessTokenAuthentication])
+# def sign_signable_view(request, target_class, object_id):
+# 	"""
+# 	Optimized signing with caching and bulk operations.
+# 	"""
+	
+# 	# Cache target class lookup
+# 	target = get_signable_class(target_class)
+	
+# 	if not target:
+# 		return APIResponse(
+# 			f"A signable object of type {target_class} was not found.", 
+# 			status=status.HTTP_404_NOT_FOUND
+# 		)
+	
+# 	signable_class = target.get("class")
+# 	signable_app_label = target.get("app_label")
+	
+# 	# Check permissions (cached)
+# 	permission_key = f"user_permission_{request.user.id}_{signable_app_label}_can_sign_signable"
+# 	has_permission = get_or_set_cache(
+# 		permission_key,
+# 		lambda: request.user.has_perm(f"{signable_app_label}.can_sign_signable"),
+# 		CacheManager.TIMEOUT_MEDIUM
+# 	)
+	
+# 	if not has_permission:
+# 		return APIResponse(
+# 			f"You do not have permission to sign this {signable_class} object.", 
+# 			status=status.HTTP_403_FORBIDDEN
+# 		)
+	
+# 	# Get signable object with optimized query
+# 	try:
+# 		signable = signable_class.objects.select_related().get(id=object_id)
+# 	except ObjectDoesNotExist:
+# 		return APIResponse(
+# 			f"No {target_class} found with ID {object_id}.", 
+# 			status=status.HTTP_404_NOT_FOUND
+# 		)
+	
+# 	try:
+# 		# Sign the object
+# 		signable.sign(request)
+		
+# 		# Invalidate related caches
+# 		invalidate_user_cache(request.user.id, "signables")
+# 		CacheManager.invalidate_pattern(f"*{target_class}*")
+		
+# 	except PermissionError:
+# 		return APIResponse(
+# 			f"You do not have permission to sign this {target_class} object.", 
+# 			status=status.HTTP_403_FORBIDDEN
+# 		)
+# 	except ValidationError as ve:
+# 		return APIResponse(
+# 			f"Unable to sign this {target_class} object: {ve}", 
+# 			status=status.HTTP_400_BAD_REQUEST
+# 		)
+# 	except Exception as e:
+# 		return APIResponse(
+# 			f"Internal Error: {e}", 
+# 			status=status.HTTP_500_INTERNAL_SERVER_ERROR
+# 		)
+	
+# 	return APIResponse(message="Successful.", status=status.HTTP_200_OK)
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @authentication_classes([AdfsAccessTokenAuthentication])
-def sign_signable_view(request, target_class, object_id):
+def sign_signable_view(request, target_class):
 	"""
 	Optimized signing with caching and bulk operations.
+	Supports signing multiple objects in a single request.
 	"""
 	
-	# Cache target class lookup
 	target = get_signable_class(target_class)
 	
 	if not target:
@@ -169,42 +238,49 @@ def sign_signable_view(request, target_class, object_id):
 			status=status.HTTP_403_FORBIDDEN
 		)
 	
-	# Get signable object with optimized query
-	try:
-		signable = signable_class.objects.select_related().get(id=object_id)
-	except ObjectDoesNotExist:
+	# Accept either a single object_id or a list of object_ids
+	object_ids = request.data.get("object_ids")
+	if not object_ids:
 		return APIResponse(
-			f"No {target_class} found with ID {object_id}.", 
-			status=status.HTTP_404_NOT_FOUND
-		)
-	
-	try:
-		# Sign the object
-		signable.sign(request)
-		
-		# Invalidate related caches
-		invalidate_user_cache(request.user.id, "signables")
-		CacheManager.invalidate_pattern(f"*{target_class}*")
-		
-	except PermissionError:
-		return APIResponse(
-			f"You do not have permission to sign this {target_class} object.", 
-			status=status.HTTP_403_FORBIDDEN
-		)
-	except ValidationError as ve:
-		return APIResponse(
-			f"Unable to sign this {target_class} object: {ve}", 
+			"No object_ids provided.",
 			status=status.HTTP_400_BAD_REQUEST
 		)
-	except Exception as e:
-		return APIResponse(
-			f"Internal Error: {e}", 
-			status=status.HTTP_500_INTERNAL_SERVER_ERROR
-		)
+	if not isinstance(object_ids, list):
+		object_ids = [object_ids]
 	
-	return APIResponse(message="Successful.", status=status.HTTP_200_OK)
+	signed = []
+	failed = {}
+	
+	for object_id in object_ids:
+		try:
+			signable = signable_class.objects.select_related().get(id=object_id)
+		except ObjectDoesNotExist:
+			failed[object_id] = f"No {target_class} found with ID {object_id}."
+			continue
+		
+		try:
+			signable.sign(request)
+			signed.append(object_id)
+		except PermissionError:
+			failed[object_id] = f"You do not have permission to sign this {target_class} object."
+		except ValidationError as ve:
+			failed[object_id] = f"Unable to sign this {target_class} object: {ve}"
+		except Exception as e:
+			failed[object_id] = f"Internal Error: {e}"
+	
+	# Invalidate related caches once, after processing the batch
+	if signed:
+		invalidate_user_cache(request.user.id, "signables")
+		CacheManager.invalidate_pattern(f"*{target_class}*")
+	
+	if signed and not failed:
+		return APIResponse(message="Successful.", status=status.HTTP_200_OK, data={"signed": signed})
+	elif signed and failed:
+		return APIResponse(message="Partially successful.", status=status.HTTP_207_MULTI_STATUS, data={"signed": signed, "failed": failed})
+	else:
+		return APIResponse(message="Failed to sign objects.", status=status.HTTP_400_BAD_REQUEST, data={"failed": failed})
 
-
+		
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 @authentication_classes([AdfsAccessTokenAuthentication])
