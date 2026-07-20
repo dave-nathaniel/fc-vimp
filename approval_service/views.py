@@ -209,8 +209,9 @@ class KeystoreAPIView(APIView):
 @authentication_classes([AdfsAccessTokenAuthentication])
 def sign_signable_view(request, target_class):
 	"""
-	Optimized signing with caching and bulk operations.
-	Supports signing multiple objects in a single request.
+	Bulk signing.
+	accounts_payable is restricted to single-item signing with a mandatory comment;
+	all other roles may sign multiple objects in one request.
 	"""
 	
 	target = get_signable_class(target_class)
@@ -224,7 +225,6 @@ def sign_signable_view(request, target_class):
 	signable_class = target.get("class")
 	signable_app_label = target.get("app_label")
 	
-	# Check permissions (cached)
 	permission_key = f"user_permission_{request.user.id}_{signable_app_label}_can_sign_signable"
 	has_permission = get_or_set_cache(
 		permission_key,
@@ -238,15 +238,34 @@ def sign_signable_view(request, target_class):
 			status=status.HTTP_403_FORBIDDEN
 		)
 	
-	# Accept either a single object_id or a list of object_ids
 	object_ids = request.data.get("object_ids")
 	if not object_ids:
-		return APIResponse(
-			"No object_ids provided.",
-			status=status.HTTP_400_BAD_REQUEST
-		)
+		return APIResponse("No object_ids provided.", status=status.HTTP_400_BAD_REQUEST)
 	if not isinstance(object_ids, list):
 		object_ids = [object_ids]
+	
+	# Use the existing helper to determine which workflow roles this user holds
+	approval_utilities = ApprovalUtilities(target)
+	user_roles = approval_utilities.get_relevant_permissions(request.user)
+	
+	RESTRICTED_ROLE = "accounts_payable"
+	is_accounts_payable = RESTRICTED_ROLE in user_roles
+	
+	# accounts_payable cannot multi-select
+	if is_accounts_payable and len(object_ids) > 1:
+		return APIResponse(
+			"accounts_payable cannot sign multiple invoices at once. Please sign one at a time.",
+			status=status.HTTP_400_BAD_REQUEST
+		)
+	
+	# accounts_payable must always provide a comment
+	if is_accounts_payable:
+		comment = (request.data.get('comment') or '').strip()
+		if not comment:
+			return APIResponse(
+				"A comment is required for accounts_payable approval.",
+				status=status.HTTP_400_BAD_REQUEST
+			)
 	
 	signed = []
 	failed = {}
@@ -268,7 +287,6 @@ def sign_signable_view(request, target_class):
 		except Exception as e:
 			failed[object_id] = f"Internal Error: {e}"
 	
-	# Invalidate related caches once, after processing the batch
 	if signed:
 		invalidate_user_cache(request.user.id, "signables")
 		CacheManager.invalidate_pattern(f"*{target_class}*")
@@ -279,7 +297,6 @@ def sign_signable_view(request, target_class):
 		return APIResponse(message="Partially successful.", status=status.HTTP_207_MULTI_STATUS, data={"signed": signed, "failed": failed})
 	else:
 		return APIResponse(message="Failed to sign objects.", status=status.HTTP_400_BAD_REQUEST, data={"failed": failed})
-
 		
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
