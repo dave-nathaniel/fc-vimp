@@ -5,8 +5,6 @@ import os
 # django.setup()
 
 import logging
-import random
-import string
 import uuid
 from copy import deepcopy
 from dotenv import load_dotenv
@@ -229,7 +227,12 @@ def create_grn_on_byd(grn: GoodsReceivedNote):
 	
 	status = get_or_create_byd_posting_status(grn, request_payload=payload, task_name='vimp.tasks.create_grn_on_byd')
 	po_id = grn.purchase_order.po_id
-	
+
+	# Idempotency guard: see create_inbound_delivery_notification_on_byd.
+	if status.status == 'success':
+		logger.info(f"GRN {grn.grn_number}: GSA already posted to ByD; skipping.")
+		return True
+
 	try:
 		# Serialise writes per purchase order so concurrent workers don't lock each other out.
 		with byd_util.po_write_lock(po_id) as acquired:
@@ -237,18 +240,23 @@ def create_grn_on_byd(grn: GoodsReceivedNote):
 				raise byd_util.ByDObjectLockedError(
 					f"PO {po_id} is being posted by another worker; deferring GRN {grn.grn_number}."
 				)
-			response = rest_client.create_grn(payload)
-			# Get the object ID from the response and post the GRN
-			try:
+			# Resume support: don't create a second GSA if a prior attempt already did.
+			object_id = (status.response_data or {}).get("ObjectID")
+			if not object_id:
+				response = rest_client.create_grn(payload)
 				object_id = response.get("d", {}).get("results", {}).get("ObjectID")
-				response = rest_client.post_grn(object_id)
+				if not object_id:
+					raise ValueError(f"ByD did not return an ObjectID for GRN {grn.grn_number}.")
+				# Persist BEFORE posting so a failed post resumes instead of re-creating.
+				status.response_data = {"ObjectID": object_id, "stage": "created"}
+				status.save(update_fields=['response_data', 'updated_at'])
+			# Post the GRN
+			try:
+				rest_client.post_grn(object_id)
 			except Exception as e:
 				raise Exception(f"Error posting GRN {grn.grn_number}: {e}")
 			# Mark as success
-			status.mark_success(
-				response.get("d", {})
-				.get("results", {})
-			)
+			status.mark_success({"ObjectID": object_id, "stage": "posted"})
 		return True
 	except Exception as e:
 		logging.error(f"Error creating GRN {grn.grn_number}: {e}")
@@ -293,9 +301,13 @@ def create_inbound_delivery_notification_on_byd(grn: GoodsReceivedNote):
 		grn = GoodsReceivedNote.objects.get(id=grn)
 	# Initialize the REST client
 	rest_client = byd_rest.RESTServices()
-	
-	# Generate the notification ID by combining the GRN number two random alphabets
-	notification_id = f"{grn.grn_number}{''.join(random.choices(string.ascii_uppercase, k=2))}"
+
+	# The ByD-facing document ID is derived from the GRN number alone — no random
+	# component — so every attempt for this GRN presents the SAME external ID, and a
+	# re-send is recognisable in ByD as a duplicate instead of being accepted as a
+	# new document. GRNs already mid-flight keep their stored (legacy, random-
+	# suffixed) ID so retries stay consistent with what ByD already holds.
+	notification_id = grn.inbound_delivery_notification_id or str(grn.grn_number)
 	
 	payload = {
 		"ID": notification_id,
@@ -338,7 +350,17 @@ def create_inbound_delivery_notification_on_byd(grn: GoodsReceivedNote):
 	
 	status = get_or_create_byd_posting_status(grn, request_payload=payload, task_name='vimp.tasks.create_inbound_delivery_notification_on_byd')
 	po_id = grn.purchase_order.po_id
-	
+
+	# Idempotency guard: stale scheduled retries, admin re-dispatches and broker
+	# re-deliveries all re-enter this function. If a previous attempt already
+	# completed there is nothing to do — re-running would duplicate the document.
+	if status.status == 'success':
+		logger.info(f"GRN {grn.grn_number}: delivery notification already posted to ByD; skipping.")
+		return True
+	if grn.is_nullified:
+		logger.warning(f"GRN {grn.grn_number} is nullified; not posting a delivery notification.")
+		return False
+
 	try:
 		# Serialise writes per purchase order so concurrent workers don't lock each other out.
 		with byd_util.po_write_lock(po_id) as acquired:
@@ -346,39 +368,62 @@ def create_inbound_delivery_notification_on_byd(grn: GoodsReceivedNote):
 				raise byd_util.ByDObjectLockedError(
 					f"PO {po_id} is being posted by another worker; deferring GRN {grn.grn_number}."
 				)
-			# Create the notification
-			response = rest_client.create_inbound_delivery_notification(payload)
-			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+			# Resume support: only create the document if no prior attempt did. The
+			# ObjectID is persisted BEFORE the posting step, so a retry after a failed
+			# post lands here and skips straight to posting — retrying used to re-run
+			# the create as well, which is exactly what produced duplicate documents.
+			object_id = grn.inbound_delivery_object_id
+			already_posted = bool((grn.inbound_delivery_metadata or {}).get("post_response"))
+			if not object_id:
+				# A previous attempt may have created the document without us ever
+				# seeing the response (worker killed / connection dropped mid-call).
+				# The deterministic ID makes that recoverable by lookup.
+				existing = rest_client.get_inbound_delivery_by_external_id(notification_id)
+				if existing:
+					object_id = existing.get("ObjectID")
+					# ReleaseStatusCode '3' == Released: it was already posted too.
+					already_posted = str(existing.get("ReleaseStatusCode", "")) == "3"
+					create_response = {"recovered_from_lookup": True, "ObjectID": object_id}
+				else:
+					# Create the notification
+					response = rest_client.create_inbound_delivery_notification(payload)
+					object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+					create_response = response
+				if not object_id:
+					raise ValueError(
+						f"ByD did not return an ObjectID for delivery notification {notification_id}."
+					)
 
-			grn.inbound_delivery_object_id = object_id
-			grn.inbound_delivery_notification_id = notification_id
-			grn.inbound_delivery_metadata = {
-				"payload": payload,
-				"create_response": response
-			}
-			grn.save(update_fields=[
-				'inbound_delivery_object_id',
-				'inbound_delivery_notification_id',
-				'inbound_delivery_metadata'
-			])
-			
-			# Add a delay before posting
-			time.sleep(5)
-			
-			# Post the notification
-			post_response = rest_client.post_delivery_notification(object_id)
-			grn.inbound_delivery_metadata.update({
-				"post_response": post_response,
-			})
-			grn.save(update_fields=['inbound_delivery_metadata'])
-			
+				grn.inbound_delivery_object_id = object_id
+				grn.inbound_delivery_notification_id = notification_id
+				grn.inbound_delivery_metadata = {
+					"payload": payload,
+					"create_response": create_response
+				}
+				grn.save(update_fields=[
+					'inbound_delivery_object_id',
+					'inbound_delivery_notification_id',
+					'inbound_delivery_metadata'
+				])
+
+				# Add a delay before posting
+				time.sleep(5)
+
+			if not already_posted:
+				# Post the notification
+				post_response = rest_client.post_delivery_notification(object_id)
+				grn.inbound_delivery_metadata.update({
+					"post_response": post_response,
+				})
+				grn.save(update_fields=['inbound_delivery_metadata'])
+
 			# Mark as success
-			status.mark_success(
-				response.get("d", {})
-				.get("results", {})
-			)
+			status.mark_success({
+				"ObjectID": object_id,
+				"ID": notification_id,
+			})
 		return True
-		
+
 	except Exception as e:
 		logger.error(f"Error creating GRN {grn.grn_number}: {e}")
 		# Mark as failure
@@ -443,7 +488,12 @@ def create_invoice_on_byd(invoice: Invoice):
 	
 	status = get_or_create_byd_posting_status(invoice, request_payload=payload, task_name='vimp.tasks.create_invoice_on_byd')
 	po_id = invoice.purchase_order.po_id
-	
+
+	# Idempotency guard: see create_inbound_delivery_notification_on_byd.
+	if status.status == 'success':
+		logger.info(f"Invoice {invoice.id}: already posted to ByD; skipping.")
+		return True
+
 	try:
 		# Serialise writes per purchase order so an invoice and a delivery posting for the
 		# same PO don't run concurrently and lock each other out in ByD.
@@ -452,23 +502,30 @@ def create_invoice_on_byd(invoice: Invoice):
 				raise byd_util.ByDObjectLockedError(
 					f"PO {po_id} is being posted by another worker; deferring invoice {invoice.id}."
 				)
-			# Create the invoice
-			response = rest_client.create_supplier_invoice(payload)
-			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
-			
-			# Add a delay before posting
-			time.sleep(5)
-			
+			# Resume support: a previous attempt may have created the ByD invoice and
+			# failed at the posting step. Its ObjectID was persisted on the status row
+			# (mark_failure leaves response_data untouched), so don't create it again.
+			object_id = (status.response_data or {}).get("ObjectID")
+			if not object_id:
+				# Create the invoice
+				response = rest_client.create_supplier_invoice(payload)
+				object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+				if not object_id:
+					raise ValueError(f"ByD did not return an ObjectID for invoice {invoice.id}.")
+				# Persist BEFORE posting so a failed post resumes instead of re-creating.
+				status.response_data = {"ObjectID": object_id, "stage": "created"}
+				status.save(update_fields=['response_data', 'updated_at'])
+
+				# Add a delay before posting
+				time.sleep(5)
+
 			# Post the invoice
-			response = rest_client.post_invoice(object_id)
-			
+			rest_client.post_invoice(object_id)
+
 			# Mark as success
-			status.mark_success(
-				response.get("d", {})
-				.get("results", {})
-			)
+			status.mark_success({"ObjectID": object_id, "stage": "posted"})
 		return True
-		
+
 	except Exception as e:
 		logger.error(f"Error creating Invoice {invoice.id}: {e}")
 		# Mark as failure
@@ -573,6 +630,16 @@ def cancel_inbound_delivery_notification_on_byd(grn_id: int, cancel_payload: dic
 		task_name='vimp.tasks.cancel_inbound_delivery_notification_on_byd'
 	)
 
+	# Idempotency guards: a re-queued cancellation (admin re-click, duplicate
+	# dispatch) must not post a second negative-quantity document.
+	if grn.is_nullified:
+		logger.info(f"GRN {grn.grn_number} is already nullified; skipping cancellation.")
+		return True
+	if status.status == 'success':
+		# The cancellation reached ByD but the local bookkeeping was interrupted.
+		grn.mark_nullified(reason="Admin-triggered nullification")
+		return True
+
 	po_id = grn.purchase_order.po_id
 
 	try:
@@ -582,17 +649,28 @@ def cancel_inbound_delivery_notification_on_byd(grn_id: int, cancel_payload: dic
 				raise byd_util.ByDObjectLockedError(
 					f"PO {po_id} is being posted by another worker; cannot cancel GRN {grn.grn_number} yet."
 				)
-			response = rest_client.create_inbound_delivery_notification(cancel_payload)
-			object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+			# Resume support: don't create a second cancellation document if a prior
+			# attempt already created one and failed at the posting step.
+			object_id = (status.response_data or {}).get("ObjectID")
 			if not object_id:
-				raise ValueError("ByD did not return ObjectID for cancellation.")
+				response = rest_client.create_inbound_delivery_notification(cancel_payload)
+				object_id = response.get("d", {}).get("results", {}).get("ObjectID")
+				if not object_id:
+					raise ValueError("ByD did not return ObjectID for cancellation.")
+				# Persist BEFORE posting so a failed post resumes instead of re-creating.
+				status.response_data = {"ObjectID": object_id, "stage": "created"}
+				status.save(update_fields=['response_data', 'updated_at'])
+				create_response = response
+			else:
+				create_response = {"resumed_with_object_id": object_id}
 
 			time.sleep(5)
 
 			post_response = rest_client.post_delivery_notification(object_id)
 
 			status.mark_success({
-				"object_id": object_id,
+				"ObjectID": object_id,
+				"stage": "posted",
 				"post_response": post_response,
 			})
 
@@ -600,7 +678,7 @@ def cancel_inbound_delivery_notification_on_byd(grn_id: int, cancel_payload: dic
 			# the variables are always bound; failures short-circuit straight to except.
 			grn.inbound_delivery_metadata.setdefault("nullifications", []).append({
 				"payload": cancel_payload,
-				"create_response": response,
+				"create_response": create_response,
 				"post_response": post_response,
 				"posting_status_id": status.id,
 				"cancelled_on": timezone.now().isoformat(),

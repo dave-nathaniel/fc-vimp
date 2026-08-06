@@ -15,7 +15,6 @@ import string
 from datetime import datetime
 from copy import deepcopy
 from decimal import Decimal
-import uuid
 from django_q.tasks import async_task
 from .models import (
 	PurchaseOrder, PurchaseOrderLineItem, GoodsReceivedNote,
@@ -126,7 +125,11 @@ class GoodsReceivedNoteAdmin(ModelAdmin):
 
 		cancel_payload = deepcopy(payload)
 		notification_id = grn.inbound_delivery_notification_id or str(grn.grn_number)
-		cancel_payload["ID"] = f"{notification_id}-CAN-{uuid.uuid4().hex[:4].upper()}"
+		# Deterministic cancellation ID (no random suffix): a GRN is only ever
+		# nullified once, and a re-queued/retried cancellation must present the
+		# SAME external ID so ByD can recognise it as a re-send rather than
+		# accepting a second negative-quantity document.
+		cancel_payload["ID"] = f"{notification_id}-CAN"
 		cancel_payload["Item"] = []
 
 		for item in payload["Item"]:

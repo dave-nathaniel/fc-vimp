@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 #   "9" -> Follow-Up Document Created
 VALID_PO_LIFECYCLE_STATUS_CODES = ("6", "9")
 
+# Default (connect, read) timeouts for every SAP call. Bounding the read matters:
+# an unbounded hung call keeps the django-q worker busy until the cluster kills it
+# at Q_CLUSTER['timeout'], and a killed task is never acknowledged — the broker
+# then re-delivers it and the whole task re-runs from the top (which is how a
+# hung-but-committed ByD create turns into a duplicate document).
+DEFAULT_HTTP_TIMEOUT = (15, 120)
+
 # Initialize the authentication class
 sap_auth = SAPAuthentication()
 
@@ -77,13 +84,15 @@ class RESTServices:
 	
 	def __get__(self, *args, **kwargs):
 		self.refresh_csrf_token()
+		kwargs.setdefault('timeout', DEFAULT_HTTP_TIMEOUT)
 		return self.session.get(*args, **kwargs, auth=self.auth)
-	
+
 	def __post__(self, *args, **kwargs):
 		'''
 			This method makes a POST request to the given URL with CSRF protection
 		'''
 		self.refresh_csrf_token()
+		kwargs.setdefault('timeout', DEFAULT_HTTP_TIMEOUT)
 		headers = {
 			'Accept': 'application/json',
 			'Content-Type': 'application/json'
@@ -331,3 +340,28 @@ class RESTServices:
 		except Exception as e:
 			logger.error(f"Error posting Delivery Notification: {str(e)}")
 			raise
+
+	def get_inbound_delivery_by_external_id(self, external_id: str):
+		'''
+			Look up an existing Inbound Delivery Notification by the external ID it
+			was created with. Used to recover the ObjectID of a document that a
+			previous, interrupted attempt already created in ByD (e.g. the worker
+			died while waiting for the create response), so a retry can resume at
+			the posting step instead of creating a duplicate document.
+			Returns the matching entry (dict) or None. Lookup failures are treated
+			as "not found" so the caller falls back to creating the document.
+		'''
+		action_url = (f"{self.endpoint}/sap/byd/odata/cust/v1/khinbounddelivery/"
+					  f"InboundDeliveryCollection?$format=json&$filter=ID eq '{external_id}'&$top=1")
+		try:
+			response = self.__get__(action_url)
+			if response.status_code == 200:
+				results = response.json().get("d", {}).get("results", [])
+				return results[0] if results else None
+			logger.warning(
+				f"Inbound delivery lookup for ID '{external_id}' returned "
+				f"HTTP {response.status_code}; treating as not found."
+			)
+		except Exception as e:
+			logger.warning(f"Inbound delivery lookup for ID '{external_id}' failed: {e}")
+		return None

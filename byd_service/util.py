@@ -1,6 +1,7 @@
 from datetime import datetime
 import random
 import re
+import uuid
 from contextlib import contextmanager
 
 from django.core.cache import cache
@@ -37,7 +38,10 @@ def is_byd_lock_error(error) -> bool:
 
 # Redis-backed mutex used to serialise ByD writes per purchase order.
 PO_LOCK_PREFIX = "byd:po-write-lock"
-PO_LOCK_TTL = 180  # seconds; auto-expires so a dead worker can't hold it forever
+# Auto-expires so a dead worker can't hold the lock forever. Must exceed
+# Q_CLUSTER['timeout'] (300s): a worker can legitimately be alive that long, and
+# a lock that expires while its holder is still working lets a second worker in.
+PO_LOCK_TTL = 420
 
 
 @contextmanager
@@ -51,12 +55,16 @@ def po_write_lock(po_id, ttl: int = PO_LOCK_TTL):
 		PO at a time. Yields True if the lock was acquired, False otherwise.
 	"""
 	key = f"{PO_LOCK_PREFIX}:{po_id}"
+	# Unique ownership token: release must only delete a lock this worker still
+	# holds. Without it, a worker whose lock already expired would delete the
+	# lock a *different* worker now owns, silently disabling the mutex.
+	token = uuid.uuid4().hex
 	# cache.add only sets the key if it does not already exist -> atomic mutex.
-	acquired = cache.add(key, "1", ttl)
+	acquired = cache.add(key, token, ttl)
 	try:
 		yield acquired
 	finally:
-		if acquired:
+		if acquired and cache.get(key) == token:
 			cache.delete(key)
 
 

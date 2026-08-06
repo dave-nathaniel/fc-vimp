@@ -56,12 +56,15 @@ class SAPAuthentication:
 						'x-csrf-token': response.headers.get('x-csrf-token', '')
 					}
 					return s, auth_headers, auth
-				else:
-					logger.error(f"Failed to fetch CSRF token. Status code: {response.status_code}, Response: {response.text}")
-					raise ValueError(f"Failed to fetch CSRF token. Status code: {response.status_code}")
+				logger.error(f"Failed to fetch CSRF token. Status code: {response.status_code}, Response: {response.text}")
 			except Exception as e:
 				logger.error(f"Error during session initialization: {str(e)}")
-				raise
+			# Fail SOFT: this runs at import time (class decoration), so raising here
+			# would crash the whole app — web, qcluster, migrations and tests — over a
+			# SAP outage or stale credentials. Return the configured session without a
+			# token instead; RESTServices.refresh_csrf_token() (re)fetches it on first
+			# use, which makes the individual API call the failure boundary.
+			return s, {}, auth
 		
 		# Set the http_auth object for authentication
 		authentication = auth.HTTPBasicAuth(self.username, self.password)

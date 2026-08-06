@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.utils import IntegrityError
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
 from django.utils.timezone import now
@@ -35,33 +36,53 @@ class ByDPostingStatus(models.Model):
     def mark_success(self, response: dict):
         """
             Marks the posting as successful and saves the response.
+            Uses update_fields so concurrent writers (e.g. a racing retry
+            incrementing retry_count) are not clobbered by a full-row save.
         """
         self.status = 'success'
         self.response_data = response
         self.error_message = ""
-        self.save()
+        self.save(update_fields=['status', 'response_data', 'error_message', 'updated_at'])
 
     def mark_failure(self, error: str):
         """
             Marks the posting as failed and records the error message.
+            Deliberately leaves response_data untouched: it may hold the
+            ObjectID of a document a previous attempt already created in ByD,
+            which the task uses to resume at the posting step.
         """
         self.status = 'failed'
         self.error_message = error
-        self.save()
+        self.save(update_fields=['status', 'error_message', 'updated_at'])
 
     def increment_retry(self):
         """
-            Increments the retry count for the posting.
+            Atomically increments the retry count using an F() expression.
+            A plain read-modify-write here lets two concurrent failures both
+            read N and write N+1, which forks the retry chain (each fork then
+            schedules its own future retries). Refreshes from the DB so callers
+            can compare retry_count against a cap immediately afterwards.
         """
-        self.retry_count += 1
-        self.save()
+        self.retry_count = models.F('retry_count') + 1
+        self.save(update_fields=['retry_count', 'updated_at'])
+        self.refresh_from_db(fields=['retry_count'])
 
     def __str__(self):
         return f"Posting for {self.related_object} | Status: {self.get_status_display()} | On {str(self.created_at).split(' ')[0]}"
-    
+
     class Meta:
-        verbose_name_plural = "6.1 Posting Report"
+        verbose_name = "6.1 Posting Report"
         verbose_name_plural = "6.1 Posting Reports"
+        constraints = [
+            # One posting-status row (and therefore ONE retry chain) per
+            # (object, task). Without this, a racing get_or_create can produce
+            # parallel rows whose independent retry chains multiply ByD posting
+            # attempts for the same document.
+            models.UniqueConstraint(
+                fields=['content_type', 'object_id', 'django_q_task_name'],
+                name='uniq_byd_posting_per_object_task',
+            ),
+        ]
 
 
 def get_or_create_byd_posting_status(instance, request_payload=None, task_name=None):
@@ -79,19 +100,29 @@ def get_or_create_byd_posting_status(instance, request_payload=None, task_name=N
     obj_id = instance.id
 
     # Retrieve or create the ByDPostingStatus
-    posting_status, created = ByDPostingStatus.objects.get_or_create(
-        content_type=content_type,
-        object_id=obj_id,
-	    django_q_task_name=task_name,
-        defaults={
-            'status': 'pending',
-            'request_payload': request_payload,
-        }
-    )
+    try:
+        posting_status, created = ByDPostingStatus.objects.get_or_create(
+            content_type=content_type,
+            object_id=obj_id,
+            django_q_task_name=task_name,
+            defaults={
+                'status': 'pending',
+                'request_payload': request_payload,
+            }
+        )
+    except IntegrityError:
+        # Two workers raced get_or_create for the same (object, task); the
+        # unique constraint made this one lose. Adopt the winner's row so both
+        # share a single status/retry chain.
+        posting_status, created = ByDPostingStatus.objects.get(
+            content_type=content_type,
+            object_id=obj_id,
+            django_q_task_name=task_name,
+        ), False
 
     # Update the request payload if the record already exists
     if not created and request_payload:
         posting_status.request_payload = request_payload
-        posting_status.save()
+        posting_status.save(update_fields=['request_payload', 'updated_at'])
 
     return posting_status

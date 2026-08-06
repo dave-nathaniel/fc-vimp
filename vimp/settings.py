@@ -337,6 +337,16 @@ SESSION_CACHE_ALIAS = 'default'
 # (e.g. ContentType creation during post_migrate) causing duplicate inserts.
 RUNNING_TESTS = any(arg in sys.argv for arg in ["test", "pytest"])
 RUNNING_MIGRATIONS = any(arg in sys.argv for arg in ["migrate", "makemigrations"])
+# Tests must not depend on a live Redis (test-db migrations write to the cache
+# via post_migrate hooks): swap in an in-memory cache when the test runner is
+# driving, mirroring the CACHALOT_ENABLED guard below.
+if RUNNING_TESTS:
+	CACHES = {
+		'default': {
+			'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+			'LOCATION': 'vimp-tests',
+		}
+	}
 CACHALOT_ENABLED = (
 	(not RUNNING_TESTS)
 	and (not RUNNING_MIGRATIONS)
