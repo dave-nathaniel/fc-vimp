@@ -12,7 +12,8 @@ from approval_service.views import (
 
 urlpatterns = [
 	# Sign
-    path('sign/<str:target_class>/<int:object_id>', sign_signable_view),
+    # path('sign/<str:target_class>/<int:object_id>', sign_signable_view),
+    path('sign/<str:target_class>', sign_signable_view),
 	# Get signables for a specific user's role.
     path('get/<str:target_class>/<str:status_filter>', get_user_signable_view),
 	# Get signables for a specific user's role.
