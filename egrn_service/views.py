@@ -17,7 +17,7 @@ from byd_service.rest import RESTServices
 from django.contrib.auth import get_user_model
 from overrides.rest_framework import APIResponse
 from django.core.exceptions import ObjectDoesNotExist
-from django.db.models import Q, Sum, Case, When, Value, CharField, F
+from django.db.models import Q, Sum, Case, When, Value, CharField, F, OuterRef, Subquery, DecimalField
 from django.db.models.functions import Coalesce
 from openpyxl import Workbook
 from core_service.cache_utils import (
@@ -316,6 +316,8 @@ def download_grns(request):
 
 
 def _build_filtered_grns_queryset(request):
+	from invoice_service.models import InvoiceLineItem
+
 	django_filters = {}
 	store_lookup_q = None
 	q_filters = None
@@ -343,6 +345,41 @@ def _build_filtered_grns_queryset(request):
 					store_lookup_q |= Q(line_items__purchase_order_line_item__delivery_store__store_name__icontains=identifier)
 					store_lookup_q |= Q(line_items__purchase_order_line_item__delivery_store__byd_cost_center_code__iexact=identifier)
 	
+	# Per-GRN aggregates as correlated subqueries. Computing several Sum()s in one
+	# .annotate() across different multi-valued relations (PO lines x GRN lines x
+	# invoice lines) makes the joins multiply, so every total is inflated by the
+	# others' row count - which is why invoice_status_code filtering returned every
+	# row regardless of the requested status. Subqueries keep each Sum isolated.
+	_dec = DecimalField(max_digits=20, decimal_places=3)
+	po_total_qty_sq = (
+		PurchaseOrderLineItem.objects
+		.filter(purchase_order=OuterRef('purchase_order_id'))
+		.values('purchase_order')
+		.annotate(total=Sum('quantity'))
+		.values('total')[:1]
+	)
+	po_delivered_qty_sq = (
+		GoodsReceivedLineItem.objects
+		.filter(grn__purchase_order=OuterRef('purchase_order_id'))
+		.values('grn__purchase_order')
+		.annotate(total=Sum('quantity_received'))
+		.values('total')[:1]
+	)
+	invoice_quantity_sq = (
+		InvoiceLineItem.objects
+		.filter(grn_line_item__grn=OuterRef('pk'))
+		.values('grn_line_item__grn')
+		.annotate(total=Sum('quantity'))
+		.values('total')[:1]
+	)
+	invoice_total_qty_sq = (
+		GoodsReceivedLineItem.objects
+		.filter(grn=OuterRef('pk'))
+		.values('grn')
+		.annotate(total=Sum('quantity_received'))
+		.values('total')[:1]
+	)
+
 	queryset = GoodsReceivedNote.objects.select_related(
 		'purchase_order',
 		'purchase_order__vendor',
@@ -350,10 +387,10 @@ def _build_filtered_grns_queryset(request):
 	).prefetch_related(
 		'line_items__purchase_order_line_item__delivery_store'
 	).filter(**django_filters).annotate(
-		po_total_qty=Coalesce(Sum('purchase_order__line_items__quantity'), Decimal('0.0')),
-		po_delivered_qty=Coalesce(Sum('purchase_order__line_items__grn_line_item__quantity_received'), Decimal('0.0')),
-		invoice_quantity=Coalesce(Sum('line_items__invoice_items__quantity'), Decimal('0.0')),
-		invoice_total_qty=Coalesce(Sum('line_items__quantity_received'), Decimal('0.0')),
+		po_total_qty=Coalesce(Subquery(po_total_qty_sq, output_field=_dec), Decimal('0.0'), output_field=_dec),
+		po_delivered_qty=Coalesce(Subquery(po_delivered_qty_sq, output_field=_dec), Decimal('0.0'), output_field=_dec),
+		invoice_quantity=Coalesce(Subquery(invoice_quantity_sq, output_field=_dec), Decimal('0.0'), output_field=_dec),
+		invoice_total_qty=Coalesce(Subquery(invoice_total_qty_sq, output_field=_dec), Decimal('0.0'), output_field=_dec),
 	).annotate(
 		delivery_status_code_db=Case(
 			When(Q(po_delivered_qty__gte=F('po_total_qty')) & Q(po_total_qty__gt=0), then=Value('3')),
