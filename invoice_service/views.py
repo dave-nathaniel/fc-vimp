@@ -64,22 +64,42 @@ class VendorInvoiceView(APIView):
 			# Check if all required fields are present
 			if not all(field in data for field in required_fields):
 				continue
-			try:
-				# Retrieve the PurchaseOrder object, making sure it belongs to the authenticated vendor
-				grn_number = data['grn_number']
-				grn = GoodsReceivedNote.objects.get(grn_number=grn_number, purchase_order__vendor=request.user.vendor_profile)
-			except ObjectDoesNotExist:
-				# Record an error for this entry and continue to the next entry
-				failed[grn_number] = f"A GRN with ID {data['grn_number']} was not found for this vendor."
-				continue
+			grn_number = data['grn_number']
+			vendor_document_id = data.get('vendor_document_id')
 			# Perform all operations for this invoice atomically
 			try:
 				with transaction.atomic():
+					try:
+						# Lock the GRN row (no join in the locked query) so two
+						# near-simultaneous submissions for the same GRN cannot both
+						# pass the duplicate check below. grn_number is unique.
+						grn = GoodsReceivedNote.objects.select_for_update().get(grn_number=grn_number)
+					except ObjectDoesNotExist:
+						failed[grn_number] = f"A GRN with ID {grn_number} was not found for this vendor."
+						continue
+					if grn.purchase_order.vendor_id != request.user.vendor_profile.id:
+						failed[grn_number] = f"A GRN with ID {grn_number} was not found for this vendor."
+						continue
+
+					# Reject a repeat submission of the same vendor document against the
+					# same purchase order - this is the "submit the same invoice more
+					# than once" path from the Payables report.
+					existing = Invoice.objects.filter(
+						purchase_order=grn.purchase_order,
+						external_document_id=vendor_document_id,
+					).first() if vendor_document_id else None
+					if existing:
+						failed[grn_number] = (
+							f"An invoice with document reference '{vendor_document_id}' already "
+							f"exists for PO {grn.purchase_order.po_id} (Invoice {existing.id})."
+						)
+						continue
+
 					# Create the Invoice object
 					invoice_data = {
 						'grn': grn.id,
 						'purchase_order': grn.purchase_order.id,
-						'external_document_id': data.get('vendor_document_id'),
+						'external_document_id': vendor_document_id,
 						'description': data.get('description', ''),
 						'due_date': data['due_date'],
 						'payment_terms': data['payment_terms'],

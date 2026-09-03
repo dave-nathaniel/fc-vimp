@@ -275,6 +275,11 @@ class Invoice(Signable):
 	class Meta:
 		verbose_name = "3.1 Invoice"
 		verbose_name_plural = "3.1 Invoices"
+		# Duplicate prevention is enforced in VendorInvoiceView.post (application
+		# level, inside select_for_update on the GRN) - no DB constraint / migration.
+		# A DB-level UniqueConstraint on (purchase_order, external_document_id) would
+		# be a stronger backstop but needs the pre-existing historical collisions
+		# cleaned first and a partial-index approach MySQL doesn't support.
 
 
 class InvoiceLineItem(models.Model):
@@ -300,25 +305,37 @@ class InvoiceLineItem(models.Model):
 	
 	def get_invoiced_quantity(self):
 		'''
-			Return the quantity already invoiced for this line item.
+			Return the quantity already invoiced against THIS GRN line item
+			(excluding this row itself when it is being re-saved).
 		'''
 		invoiced = InvoiceLineItem.objects.filter(grn_line_item=self.grn_line_item)
+		if self.pk:
+			invoiced = invoiced.exclude(pk=self.pk)
 		invoiced_quantity = invoiced.aggregate(quantity=Sum('quantity'))['quantity']
 		invoiced_quantity = invoiced_quantity or 0.00
 		return float(invoiced_quantity)
-	
+
 	def get_invoiceable_quantity(self):
 		'''
-			Return the quantity that can be invoiced for this line item.
+			Quantity that may still be invoiced against THIS GRN line = what was
+			received on this GRN line minus what has already been invoiced against
+			it. Previously this used po_line_item.delivered_quantity (the PO-wide
+			received total across every GRN), so as long as the PO had headroom a
+			duplicate invoice for the same GRN line always fit through.
 		'''
 		invoiced = self.get_invoiced_quantity()
-		return float(self.po_line_item.delivered_quantity) - invoiced
-		
+		if self.grn_line_item is not None:
+			receivable = float(self.grn_line_item.quantity_received)
+		else:
+			receivable = float(self.po_line_item.delivered_quantity)
+		return receivable - invoiced
+
 	def clean(self, ):
-		if self.quantity < 0.00:
+		if self.quantity <= 0.00:
 			raise ValidationError("Invoice quantity must be greater than 0")
-		if float(self.quantity) > self.get_invoiceable_quantity():
-			raise ValidationError(f"Invoice quantity exceeds the outstanding invoiceable quantity ({self.get_invoiceable_quantity()})")
+		invoiceable = self.get_invoiceable_quantity()
+		if float(self.quantity) > invoiceable:
+			raise ValidationError(f"Invoice quantity exceeds the outstanding invoiceable quantity ({invoiceable})")
 	
 	def save(self, *args, **kwargs):
 		# Save the instance with the calculated fields updated

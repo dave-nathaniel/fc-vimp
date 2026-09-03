@@ -364,13 +364,15 @@ class GoodsReceivedNote(models.Model):
 	
 	@property
 	def invoice_status(self):
-		# If all related GoodsReceivedLineItem instances have is_invoiced as True, return 'Finished'
-		if all(item.is_invoiced for item in self.line_items.all()):
+		line_items = list(self.line_items.all())
+		# Finished: there are received lines and every one of them is fully invoiced.
+		# The `line_items and` guard stops an empty GRN reading as Finished (all([]) is True).
+		if line_items and all(item.is_invoiced for item in line_items):
 			return self.invoicing_status_code[2]
-		# If any related GoodsReceivedLineItem instances have is_invoiced as True, return 'In Process'
-		if any(item.is_invoiced for item in self.line_items.all()):
+		# In Process: at least one line has an invoice raised against it.
+		if any(item.has_any_invoice for item in line_items):
 			return self.invoicing_status_code[1]
-		# If no related GoodsReceivedLineItem instances have is_invoiced as True, return 'Not Started'
+		# Not Started: no invoice exists against any line.
 		return self.invoicing_status_code[0]
 		
 	@property
@@ -509,8 +511,18 @@ class GoodsReceivedLineItem(models.Model):
 		return invoiced_quantity
 	
 	@property
+	def has_any_invoice(self):
+		return self.invoice_items.exists()
+
+	@property
 	def is_invoiced(self):
-		return self.invoiced_quantity == self.quantity_received
+		# Fully invoiced once the invoiced quantity reaches what was received.
+		# Use >= (not ==) so that an over-invoiced line still counts as done.
+		# With ==, a single duplicate invoice pushes invoiced_quantity past
+		# quantity_received, the check flips back to False, the GRN regresses to
+		# "Not Started", and that regressed status invites yet another submission -
+		# the feedback loop behind the duplicate invoices.
+		return self.quantity_received > 0 and self.invoiced_quantity >= self.quantity_received
 	
 	def net_value(self):
 		return float(self.quantity_received) * float(self.purchase_order_line_item.unit_price)
