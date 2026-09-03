@@ -294,12 +294,13 @@ def download_grns(request):
 		if not grn_ids:
 			return APIResponse("No GRNs found for the specified criteria.", status=status.HTTP_404_NOT_FOUND)
 		
-		line_items_map, delivered_quantity_map = _collect_grn_line_items(grn_ids)
+		line_items_map, delivered_quantity_map, invoice_status_map = _collect_grn_line_items(grn_ids)
 		file_path, row_count = _write_grn_export_file(
 			request=request,
 			queryset=grns,
 			line_items_map=line_items_map,
 			delivered_quantity_map=delivered_quantity_map,
+			invoice_status_map=invoice_status_map,
 		)
 		download_url = _build_media_download_url(request, file_path)
 		
@@ -445,11 +446,14 @@ def _build_filtered_grns_queryset(request):
 
 
 def _collect_grn_line_items(grn_ids: list):
+	from invoice_service.models import InvoiceLineItem
+
 	line_items_map = defaultdict(list)
 	delivered_quantity_map = defaultdict(lambda: Decimal('0'))
+	invoice_status_map = {}
 
 	if not grn_ids:
-		return line_items_map, delivered_quantity_map
+		return line_items_map, delivered_quantity_map, invoice_status_map
 
 	line_items = GoodsReceivedLineItem.objects.filter(
 		grn_id__in=grn_ids
@@ -457,10 +461,33 @@ def _collect_grn_line_items(grn_ids: list):
 		'purchase_order_line_item__delivery_store'
 	)
 
+	# One aggregate query for every invoiced quantity across all the GRNs, keyed
+	# by GRN line item. Replaces the per-GRN GoodsReceivedNote.invoice_status
+	# model property (which runs an aggregate per line, per GRN, with no
+	# prefetch) - the N+1 that made this export scale linearly with GRN count and
+	# blow past the gunicorn 120s worker timeout around 2500 rows.
+	invoiced_by_gli = dict(
+		InvoiceLineItem.objects.filter(grn_line_item__grn_id__in=grn_ids)
+		.values('grn_line_item_id')
+		.annotate(total=Sum('quantity'))
+		.values_list('grn_line_item_id', 'total')
+	)
+	# per GRN: [line_count, fully_invoiced_line_count, has_any_invoice]
+	status_acc = defaultdict(lambda: [0, 0, False])
+
 	for line_item in line_items.iterator(chunk_size=1000):
 		grn_id = line_item.grn_id
 		po_line_item = line_item.purchase_order_line_item
-		delivered_quantity_map[po_line_item.id] += line_item.quantity_received or Decimal('0')
+		received = line_item.quantity_received or Decimal('0')
+		delivered_quantity_map[po_line_item.id] += received
+
+		invoiced = invoiced_by_gli.get(line_item.id) or Decimal('0')
+		acc = status_acc[grn_id]
+		acc[0] += 1
+		if invoiced > 0:
+			acc[2] = True
+		if received > 0 and invoiced >= received:
+			acc[1] += 1
 
 		delivery_store = getattr(po_line_item, 'delivery_store', None)
 		line_items_map[grn_id].append({
@@ -476,10 +503,19 @@ def _collect_grn_line_items(grn_ids: list):
 			'total_quantity': po_line_item.quantity or Decimal('0'),
 		})
 
-	return line_items_map, delivered_quantity_map
+	for grn_id in grn_ids:
+		line_count, fully_invoiced, has_any = status_acc.get(grn_id, [0, 0, False])
+		if line_count and fully_invoiced == line_count:
+			invoice_status_map[grn_id] = ('3', 'Finished')
+		elif has_any:
+			invoice_status_map[grn_id] = ('2', 'In Process')
+		else:
+			invoice_status_map[grn_id] = ('1', 'Not Started')
+
+	return line_items_map, delivered_quantity_map, invoice_status_map
 
 
-def _write_grn_export_file(request, queryset, line_items_map, delivered_quantity_map):
+def _write_grn_export_file(request, queryset, line_items_map, delivered_quantity_map, invoice_status_map):
 	download_dir = _ensure_grn_download_dir()
 	user_identifier = getattr(request.user, 'id', None) or 'anonymous'
 	filename = f"grns_{user_identifier}_{timezone.now().strftime('%Y%m%d%H%M%S')}_{uuid4().hex[:8]}.xlsx"
@@ -492,12 +528,14 @@ def _write_grn_export_file(request, queryset, line_items_map, delivered_quantity
 	row_count = 0
 	for grn in queryset.iterator(chunk_size=500):
 		grn_rows = line_items_map.get(grn.id, [])
+		invoice_status = invoice_status_map.get(grn.id, ('1', 'Not Started'))
 		for line_info in grn_rows:
 			worksheet.append(
 				_build_grn_export_row(
 					grn,
 					line_info,
 					delivered_quantity_map,
+					invoice_status,
 				)
 			)
 			row_count += 1
@@ -507,7 +545,7 @@ def _write_grn_export_file(request, queryset, line_items_map, delivered_quantity
 	return file_path, row_count
 
 
-def _build_grn_export_row(grn, line_info, delivered_quantity_map):
+def _build_grn_export_row(grn, line_info, delivered_quantity_map, invoice_status=('1', 'Not Started')):
 	po = getattr(grn, 'purchase_order', None)
 	vendor_profile = getattr(po, 'vendor', None) if po else None
 	vendor_user = getattr(vendor_profile, 'user', None) if vendor_profile else None
@@ -532,7 +570,7 @@ def _build_grn_export_row(grn, line_info, delivered_quantity_map):
 		_format_datetime(grn.created),
 		line_info.get('store_name', ''),
 		line_info.get('store_code', ''),
-		_format_invoice_status(grn),
+		_format_invoice_status(invoice_status),
 		delivery_status,
 		line_info.get('product_name', ''),
 		line_info.get('product_code', ''),
@@ -556,9 +594,8 @@ def _format_vendor_name(user):
 	return user.email or ''
 
 
-def _format_invoice_status(grn):
-	code = getattr(grn, 'invoice_status_code', '')
-	text = getattr(grn, 'invoice_status_text', '')
+def _format_invoice_status(invoice_status):
+	code, text = invoice_status if invoice_status else ('', '')
 	if code or text:
 		code_str = f"[{code}]" if code else ""
 		return f"{code_str} {text}".strip()
